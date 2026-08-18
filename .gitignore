@@ -1,0 +1,10 @@
+# Katha — .gitignore (per user convention: .md untracked except README)
+*.md
+!README.md
+.env
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+*.log

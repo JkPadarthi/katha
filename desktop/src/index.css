@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+/* ── Katha tokens — the Hermes design vocabulary ──────────────────────
+   Lifted from the Hermes default skin (hermes_cli/skin_engine.py):
+   base #0e0e12 · accent #FFBF00 · dim #B8860B — plus the neutral chrome
+   observed in the Hermes desktop: hairline borders, rounded panels,
+   warm-white text, generous spacing, zero glare. */
+@theme {
+  --color-base: #0e0e12;      /* app background */
+  --color-panel: #131318;     /* rails + panels */
+  --color-panel-2: #1a1a22;   /* raised: active row, bubbles */
+  --color-line: #26262e;      /* hairline borders */
+  --color-ink: #e8e6e0;       /* primary text — warm white */
+  --color-mute: #8f8f98;      /* secondary text */
+  --color-gold: #ffbf00;      /* accent — Hermes ui_accent */
+  --color-dim: #b8860b;       /* dim gold — Hermes banner_dim */
+  --color-ok: #5af7b0;
+  --color-warn: #ffcf5f;
+  --color-err: #ff6b7d;
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-serif: "Georgia", "Iowan Old Style", "Times New Roman", serif;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* The page is where the author lives — let them select text freely. */
+.page-surface, .page-surface * { user-select: text; }
+
+/* Custom title bar drag region (Electron frameless). */
+.titlebar { -webkit-app-region: drag; }
+.titlebar button { -webkit-app-region: no-drag; }
+
+/* Hairline borders everywhere, one recipe. */
+.hairline { border-color: var(--color-line); }
+
+/* Thin, quiet scrollbars — part of the calm. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #2c2c34; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a44; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Focus rings in gold — the Hermes accent handshake. */
+:focus-visible { outline: 1px solid var(--color-gold); outline-offset: 1px; }

@@ -9,6 +9,7 @@ export default function Page({ chapter, series }) {
   const [savedAt, setSavedAt] = useState('')
   const [revision, setRevision] = useState(0)
   const [drafts, setDrafts] = useState(0)
+  const [saving, setSaving] = useState(false)
 
   // Load chapter content from the archive when the selection changes.
   useEffect(() => {
@@ -51,6 +52,21 @@ export default function Page({ chapter, series }) {
 
   const words = body.trim() ? body.trim().split(/\s+/).length : 0
 
+  // Manual save — immediate PUT (no debounce), banks a revision on demand.
+  const handleManualSave = () => {
+    if (!chapter || !series || saving) return
+    setSaving(true)
+    api
+      .saveChapter(series.series, series.book, chapter.id, body)
+      .then((c) => {
+        setRevision(c.revision)
+        setDrafts((d) => d + 1)
+        setSavedAt('saved · ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+      })
+      .catch(() => setSavedAt('offline'))
+      .finally(() => setSaving(false))
+  }
+
   return (
     <main className="page-surface flex min-h-0 flex-col bg-base">
       <div className="shrink-0 px-10 pt-6 pb-2">
@@ -67,9 +83,18 @@ export default function Page({ chapter, series }) {
           <span>{savedAt || '…'}</span>
           <span>·</span>
           <span>rev {revision}{drafts ? ` · ${drafts} draft${drafts > 1 ? 's' : ''}` : ''}</span>
-          <span className="ml-auto flex items-center gap-1.5">
-            <span className="h-1 w-1 rounded-full bg-ok" />
-            autosave
+          <span className="ml-auto flex items-center gap-2">
+            <span className="flex items-center gap-1.5">
+              <span className="h-1 w-1 rounded-full bg-ok" />
+              autosave
+            </span>
+            <button
+              onClick={handleManualSave}
+              disabled={saving}
+              className="rounded-md border border-gold/40 px-2.5 py-0.5 text-[10.5px] font-medium text-ink transition-colors hover:bg-gold/10 disabled:opacity-40"
+            >
+              {saving ? '…' : 'Save'}
+            </button>
           </span>
         </div>
       </div>

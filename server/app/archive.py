@@ -110,7 +110,12 @@ def list_chapters(book: Path) -> list[dict]:
     out = []
     if not cd.exists():
         return out
+    # IMPORTANT: match ONLY canonical chapter files ch-NN.md. Revision
+    # snapshots live as ch-NN.<rev>.md (D9 time machine) — those must NOT be
+    # counted as chapters. The regex excludes any name with a second segment.
     for f in sorted(cd.glob("ch-*.md")):
+        if not re.fullmatch(r"ch-\d{2}\.md", f.name):
+            continue  # revision snapshot (ch-01.1.md) or marker — skip
         m = f.stem  # ch-01
         title = _chapter_title(f)
         out.append({

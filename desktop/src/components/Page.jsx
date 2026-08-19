@@ -1,32 +1,58 @@
 import React, { useEffect, useState } from 'react'
-import { sampleProse } from '../data.js'
+import * as api from '../api.js'
 
-// THE PAGE — the quiet center. Markdown textarea backed by autosave
-// (localStorage in 0.1; the FastAPI archive takes over in 0.2).
-export default function Page({ chapter }) {
-  const [title, setTitle] = useState(chapter.title)
-  const [body, setBody] = useState(sampleProse)
-  const [savedAt, setSavedAt] = useState('just now')
-  const [drafts] = useState(12)
+// THE PAGE — the quiet center. Loads real content from the FastAPI archive
+// (0.2.1) and autosaves via PUT → md write + revision snapshot on disk.
+export default function Page({ chapter, series }) {
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [savedAt, setSavedAt] = useState('')
+  const [revision, setRevision] = useState(0)
+  const [drafts, setDrafts] = useState(0)
 
-  useEffect(() => setTitle(chapter.title), [chapter.id, chapter.title])
-
-  // Debounced autosave stub — proves the loop before the server exists.
+  // Load chapter content from the archive when the selection changes.
   useEffect(() => {
+    if (!chapter || !series) return
+    let alive = true
+    setBody('')
+    setTitle(chapter.title)
+    api
+      .getChapter(series.series, series.book, chapter.id)
+      .then((c) => {
+        if (!alive) return
+        // Split leading '# Title' heading from the markdown body.
+        const lines = (c.content || '').split('\n')
+        if (lines[0] && lines[0].startsWith('# ')) {
+          lines.shift()
+        }
+        setBody(lines.join('\n').trim())
+        setRevision(c.revision || 0)
+        setSavedAt('loaded')
+      })
+      .catch(() => setBody(''))
+    return () => { alive = false }
+  }, [chapter?.id, series?.series, series?.book])
+
+  // Autosave → PUT to the archive (writes md + revision on the Pi).
+  useEffect(() => {
+    if (!chapter || !series || !(body || title)) return
     const t = setTimeout(() => {
-      try {
-        localStorage.setItem(`katha:${chapter.id}`, body)
-        setSavedAt('saved · ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
-      } catch { /* preview mode */ }
-    }, 800)
+      api
+        .saveChapter(series.series, series.book, chapter.id, body)
+        .then((c) => {
+          setRevision(c.revision)
+          setDrafts((d) => d + 1)
+          setSavedAt('saved · ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+        })
+        .catch(() => setSavedAt('offline'))
+    }, 900)
     return () => clearTimeout(t)
-  }, [body, chapter.id])
+  }, [body, title, chapter?.id, series?.series, series?.book])
 
   const words = body.trim() ? body.trim().split(/\s+/).length : 0
 
   return (
     <main className="page-surface flex min-h-0 flex-col bg-base">
-      {/* Page header: title + status line */}
       <div className="shrink-0 px-10 pt-6 pb-2">
         <input
           value={title}
@@ -38,9 +64,9 @@ export default function Page({ chapter }) {
         <div className="mt-1 flex items-center gap-3 text-[10.5px] text-mute/70">
           <span>{words} words</span>
           <span>·</span>
-          <span>{savedAt}</span>
+          <span>{savedAt || '…'}</span>
           <span>·</span>
-          <span>{drafts} drafts</span>
+          <span>rev {revision}{drafts ? ` · ${drafts} draft${drafts > 1 ? 's' : ''}` : ''}</span>
           <span className="ml-auto flex items-center gap-1.5">
             <span className="h-1 w-1 rounded-full bg-ok" />
             autosave
@@ -48,7 +74,6 @@ export default function Page({ chapter }) {
         </div>
       </div>
 
-      {/* The blank page */}
       <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-16">
         <textarea
           value={body}

@@ -3,8 +3,8 @@
 Tables:
     books    (id, series, title)
     chapters (id, book_id, title, path, words, revision)
+    search_index (FTS5: kind, series, book_id, doc_id, title, body)  [0.2.2]
 Revisions keep full snapshots as files (D9); this DB stores their metadata.
-FTS5 arrives in 0.2.2 — schema is pre-shaped for it.
 """
 
 from __future__ import annotations
@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS revisions (
 );
 CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id);
 CREATE INDEX IF NOT EXISTS idx_revisions_chapter ON revisions(chapter_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+    kind, series, book_id, doc_id, title, body
+);
 """
 
 
@@ -107,5 +110,49 @@ def delete_book_index(book_id: str):
     conn = connect()
     conn.execute("DELETE FROM chapters WHERE book_id=?", (book_id,))
     conn.execute("DELETE FROM books WHERE id=?", (book_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------- FTS5 search (0.2.2) ----------
+
+def index_doc(kind: str, series: str, book_id: str, doc_id: str,
+               title: str, body: str):
+    """Index (or replace) one searchable doc — chapter or bible entry."""
+    conn = connect()
+    conn.execute(
+        "DELETE FROM search_index WHERE kind=? AND doc_id=? AND book_id=?",
+        (kind, doc_id, book_id),
+    )
+    conn.execute(
+        "INSERT INTO search_index (kind, series, book_id, doc_id, title, body) "
+        "VALUES (?,?,?,?,?,?)",
+        (kind, series, book_id, doc_id, title, body),
+    )
+    conn.commit()
+    conn.close()
+
+
+def search(query: str, limit: int = 20) -> list[dict]:
+    """Full-text search across chapters + bible. Returns ranked hits with a
+    snippet. The query is passed as a plain phrase to FTS5's MATCH (safe —
+    parameterised, no SQL injection)."""
+    conn = connect()
+    # FTS5 MATCH with the raw phrase; escape is handled by parameter binding.
+    rows = conn.execute(
+        "SELECT kind, series, book_id, doc_id, title, "
+        "       snippet(search_index, 5, '<mark>', '</mark>', '…', 24) AS snippet "
+        "FROM search_index "
+        "WHERE search_index MATCH ? "
+        "ORDER BY rank LIMIT ?",
+        (query, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def clear_search_index():
+    conn = connect()
+    conn.execute("DELETE FROM search_index")
     conn.commit()
     conn.close()

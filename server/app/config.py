@@ -19,4 +19,4 @@ DATA_DIR = Path(os.environ.get("KATHA_DATA", Path(__file__).resolve().parent.par
 DB_PATH = DATA_DIR / "katha.db"
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "0.2.1"
+VERSION = "0.2.2"

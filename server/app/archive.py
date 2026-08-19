@@ -264,3 +264,33 @@ def read_bible(book: Path) -> dict[str, str]:
         for f in sorted(bd.glob("*.md")):
             out[f.name] = f.read_text(encoding="utf-8")
     return out
+
+
+# ---------- searchable docs (0.2.2) ----------
+
+def iter_searchable_docs():
+    """Yield every searchable doc as (kind, series, book_id, doc_id, title, body).
+
+    Walks the archive on disk — the md files are the truth, this just reads
+    them so the FTS index can be rebuilt from scratch (reindex)."""
+    for series_dir in sorted(ARCHIVE_ROOT.iterdir()):
+        if not series_dir.is_dir():
+            continue
+        series_slug = series_dir.name
+        for b in sorted(series_dir.iterdir()):
+            if not b.is_dir():
+                continue
+            book_id = b.name
+            cd = b / "chapters"
+            if cd.exists():
+                for f in sorted(cd.glob("ch-*.md")):
+                    # Only canonical ch-NN.md — skip revision snapshots (ch-NN.R.md).
+                    if not re.fullmatch(r"ch-\d{2}\.md", f.name):
+                        continue
+                    yield ("chapter", series_slug, book_id, f.stem,
+                           _chapter_title(f), f.read_text(encoding="utf-8"))
+            bd = b / "bible"
+            if bd.exists():
+                for f in sorted(bd.glob("*.md")):
+                    yield ("bible", series_slug, book_id, f.name,
+                           f.stem, f.read_text(encoding="utf-8"))

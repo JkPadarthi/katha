@@ -38,7 +38,7 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "0.2.1"
+    assert body["version"] == "0.2.2"
     assert body["db_ok"] is True
 
 
@@ -125,3 +125,66 @@ def test_404_on_missing_chapter():
     series, book = ar.slugify(SERIES), ar.slugify(BOOK)
     r = client.get(f"/api/books/{series}/{book}/chapters/nope")
     assert r.status_code == 404
+
+
+# ---------- FTS5 search (0.2.2) ----------
+
+def _reindex():
+    from app.main import reindex_search
+    reindex_search()
+
+
+def test_search_reindex_populates_index():
+    # Rebuild FTS from disk (the seed already wrote md files), search a stable
+    # term — "Varna" lives only in ch-02's seeded body, which no earlier test
+    # mutates, so it's a reliable chapter-only hit.
+    _reindex()
+    r = client.get("/api/search", params={"q": "Varna"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] >= 1
+    assert body["hits"][0]["kind"] == "chapter"
+    assert body["hits"][0]["doc_id"] == "ch-02"
+
+
+def test_search_returns_snippet_with_mark():
+    _reindex()
+    r = client.get("/api/search", params={"q": "Varna"})
+    hit = r.json()["hits"][0]
+    assert "<mark>" in hit["snippet"]
+
+
+def test_search_finds_bible_entry():
+    _reindex()
+    # "Kael" appears in bible/characters.md (stable) — and also chapters,
+    # so the result set should span both kinds.
+    r = client.get("/api/search", params={"q": "Kael"})
+    body = r.json()
+    kinds = {h["kind"] for h in body["hits"]}
+    assert "bible" in kinds  # characters.md carries Kael's name
+
+
+def test_search_empty_query_returns_no_hits():
+    r = client.get("/api/search", params={"q": ""})
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
+
+
+def test_search_no_match():
+    _reindex()
+    r = client.get("/api/search", params={"q": "zzzznonexistentword"})
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
+
+
+def test_search_excludes_revision_snapshots():
+    # ch-01 has revision snapshots (ch-01.N.md) from the autosave test earlier.
+    # They must NOT appear as separate search hits — only canonical chapters.
+    _reindex()
+    r = client.get("/api/search", params={"q": "Kael"})
+    body = r.json()
+    doc_ids = {h["doc_id"] for h in body["hits"] if h["kind"] == "chapter"}
+    # No doc_id may contain a '.' (revision marker), and no ch-01.1 etc.
+    assert all("." not in d for d in doc_ids), f"revision leaked: {doc_ids}"
+    assert "ch-01" in doc_ids          # the canonical chapter IS indexed
+    assert "ch-01.1" not in doc_ids    # revision snapshot is NOT

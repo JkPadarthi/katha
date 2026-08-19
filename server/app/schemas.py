@@ -70,3 +70,18 @@ class BookCreate(BaseModel):
 class BibleOut(BaseModel):
     book_id: str
     files: dict[str, str]             # filename → content
+
+
+class SearchHit(BaseModel):
+    kind: str                          # "chapter" | "bible"
+    series: str
+    book_id: str
+    doc_id: str
+    title: str
+    snippet: str
+
+
+class SearchOut(BaseModel):
+    query: str
+    count: int
+    hits: list[SearchHit]

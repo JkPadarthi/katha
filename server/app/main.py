@@ -1,9 +1,8 @@
-"""Katha Archive API — FastAPI entry point (0.2.1)."""
+"""Katha Archive API — FastAPI entry point (0.2.2)."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +22,8 @@ from .schemas import (
     HealthOut,
     RevisionContentOut,
     RevisionOut,
+    SearchHit,
+    SearchOut,
 )
 
 app = FastAPI(title="Katha Archive", version=VERSION)
@@ -34,6 +35,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def reindex_search():
+    """Rebuild the FTS index from the md archive (source of truth)."""
+    db.clear_search_index()
+    for kind, series, book_id, doc_id, title, body in ar.iter_searchable_docs():
+        db.index_doc(kind, series, book_id, doc_id, title, body)
 
 
 # ---------- helpers ----------
@@ -104,6 +112,7 @@ def new_chapter(series: str, book_id: str, payload: ChapterCreate):
     bdir = _resolve_book_path(series, book_id)
     meta = ar.create_chapter(bdir, payload.title, payload.content)
     db.upsert_chapter({**meta, "book_id": bdir.name})
+    db.index_doc("chapter", series, bdir.name, meta["id"], payload.title, payload.content)
     chapter = ar.get_chapter(bdir, meta["id"])
     assert chapter is not None
     return ChapterOut(**ar._chapter_meta(bdir, meta["id"], payload.title, chapter),
@@ -145,6 +154,7 @@ def save_chapter(series: str, book_id: str, chapter_id: str, payload: ChapterUpd
         "words": words,
         "revision": rev,
     })
+    db.index_doc("chapter", series, bdir.name, chapter.stem, title, payload.content)
     return ChapterOut(
         id=chapter.stem, book_id=bdir.name, title=title,
         words=words, path=chapter.relative_to(ARCHIVE_ROOT).as_posix(),
@@ -177,3 +187,19 @@ def read_revision(series: str, book_id: str, chapter_id: str, number: int):
 def read_bible(series: str, book_id: str):
     bdir = _resolve_book_path(series, book_id)
     return BibleOut(book_id=bdir.name, files=ar.read_bible(bdir))
+
+
+@app.get("/api/search", response_model=SearchOut, tags=["search"])
+def search(q: str = "", limit: int = 20):
+    """Full-text search across chapters + bible (FTS5, 0.2.2)."""
+    q = q.strip()
+    if not q:
+        return SearchOut(query=q, count=0, hits=[])
+    hits = [SearchHit(**h) for h in db.search(q, limit)]
+    return SearchOut(query=q, count=len(hits), hits=hits)
+
+
+@app.post("/api/search/reindex", status_code=204, tags=["search"])
+def reindex():
+    """Rebuild the FTS index from the md archive (idempotent, cheap)."""
+    reindex_search()

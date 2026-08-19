@@ -28,10 +28,10 @@ export function health() {
 // Returns the archive in the shape the Rail already expects:
 //   [{ series, books: [{ id, title, chapters: [{id,title,words}], bible }] }]
 export async function loadArchive() {
-  const tree = await req('/books')          // [{series, books:[{id,title,chapter_count}]}]
+  const tree = await req('/books')          // [{series, title, books:[{id,title,chapter_count}]}]
   const archive = []
   for (const s of tree) {
-    const series = { name: s.series, books: [] }
+    const series = { name: s.series, title: s.title || s.series, books: [] }
     for (const b of s.books) {
       const chapters = await req(`/books/${s.series}/${b.id}/chapters`)
       let bible = {}

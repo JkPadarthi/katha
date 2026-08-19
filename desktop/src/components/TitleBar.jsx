@@ -13,7 +13,7 @@ export default function TitleBar() {
       </div>
 
       <div className="hidden text-[11px] text-mute/70 select-none md:block">
-        {k?.isElectron ? 'desktop' : 'browser preview'} · Phase 0.1
+        {k?.isElectron ? 'desktop' : 'browser preview'} · Phase 0.2
       </div>
 
       <div className="flex items-center gap-1">

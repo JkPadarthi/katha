@@ -21,7 +21,7 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive })
           <>
             <span className="h-1.5 w-1.5 rounded-full bg-gold/70" />
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[11.5px] font-medium text-ink">{series.name}</div>
+              <div className="truncate text-[11.5px] font-medium text-ink">{series.title || series.name}</div>
               <div className="truncate text-[10.5px] text-mute">{series.books[0].title}</div>
             </div>
             <button
@@ -49,7 +49,7 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive })
               <>
                 {!collapsed && (
                   <span className="w-7 shrink-0 text-right text-[10px] text-mute/70">
-                    {c.id.replace('ch', '')}
+                    {c.id.replace(/^ch-?/, '')}
                   </span>
                 )}
                 {!collapsed && (

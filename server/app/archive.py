@@ -71,8 +71,9 @@ def list_books() -> list[dict]:
                 "words": words,
             })
         tree[series_dir.name] = books
-    # flatten into list of {series, books}
-    return [{"series": s, "books": b} for s, b in tree.items()]
+    # flatten into list of {series, title, books}
+    return [{"series": s, "title": _read_series_title(ARCHIVE_ROOT / s), "books": b}
+            for s, b in tree.items()]
 
 
 def _read_book_json(book: Path) -> dict:
@@ -85,9 +86,23 @@ def _read_book_json(book: Path) -> dict:
     return {"id": book.name, "title": book.name}
 
 
+def _read_series_title(series_dir: Path) -> str:
+    p = series_dir / "series.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text()).get("title", series_dir.name)
+        except json.JSONDecodeError:
+            pass
+    return series_dir.name
+
+
 def ensure_book(series: str, book_title: str) -> dict:
     bdir = book_dir(series, book_title)
     bdir.mkdir(parents=True, exist_ok=True)
+    # Write series.json (human title) once — mirrors book.json at the series level.
+    sp = bdir.parent / "series.json"
+    if not sp.exists():
+        sp.write_text(json.dumps({"title": series}, indent=2), encoding="utf-8")
     (bdir / "chapters").mkdir(exist_ok=True)
     (bdir / "bible").mkdir(exist_ok=True)
     meta = {

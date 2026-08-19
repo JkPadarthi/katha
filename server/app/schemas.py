@@ -21,6 +21,7 @@ class BookOut(BaseModel):
 class BooksTreeOut(BaseModel):
     """Series → books tree (the rail)."""
     series: str
+    title: str = ""
     books: list[BookOut]
 
 

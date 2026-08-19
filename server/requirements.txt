@@ -1,0 +1,5 @@
+# Katha Archive — FastAPI backend (0.2.1)
+# md files on disk are the SOURCE OF TRUTH; SQLite is an index only (D6, D14).
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+pydantic==2.13.4

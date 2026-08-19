@@ -1,0 +1,27 @@
+# Katha Archive — FastAPI + SQLite (index-only) over the md archive.
+# Runs on the Pi 5; desktop client reaches it over Tailscale (D12).
+# For the "monitoring" network note: this service does not join it (0.2 scope).
+name: katha-archive
+
+services:
+  archive:
+    build: .
+    container_name: katha-archive
+    restart: unless-stopped
+    ports:
+      - "4901:4901"
+    environment:
+      # Archive root + index location inside the container (bind-mounted below).
+      KATHA_ARCHIVE: /data/archive
+      KATHA_DATA: /data/index
+    volumes:
+      # md archive (source of truth) + sqlite index both persist on the host.
+      - ./archive:/data/archive
+      - ./data:/data/index
+    # healthcheck mirrors the heartbeat endpoint.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4901/api/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

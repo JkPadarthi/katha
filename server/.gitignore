@@ -1,0 +1,8 @@
+# Katha server — keep the venv and runtime index/archive out of git.
+.venv/
+__pycache__/
+*.pyc
+# Runtime data: archive (md) + sqlite index are generated/seeded at boot.
+archive/
+data/
+*.db

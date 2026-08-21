@@ -5,6 +5,8 @@ import * as api from '../api.js'
 // (0.2.1) and autosaves via PUT → md write + revision snapshot on disk.
 // 0.3.3 — selection capture + rewrite trigger; App.jsx owns the rewrite
 // pipeline + diff overlay, this just hands selection up + accepts replacements.
+// 0.3.5 — three apply operations exposed via pageApi: insertAtCursor,
+//         replaceSelection, appendToChapter.
 export default function Page({ chapter, series, onSelection, onReplaceRequested }) {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -103,7 +105,45 @@ export default function Page({ chapter, series, onSelection, onReplaceRequested 
         ta.setSelectionRange(cursor, cursor)
       })
     }
-    return () => { pageApi.replaceSelection = null }
+
+    // 0.3.5 — Muse "apply" buttons. These operate on the body and place the
+    // caret at the end of the inserted text.
+    pageApi.insertAtCursor = (newText) => {
+      const ta = taRef.current
+      const cursor = ta ? ta.selectionStart : body.length
+      const before = body.slice(0, cursor)
+      const after = body.slice(cursor)
+      // Ensure a clean break if the cursor sits mid-paragraph.
+      const needsBreakBefore = before.length > 0 && !before.endsWith('\n\n')
+      const needsBreakAfter = after.length > 0 && !after.startsWith('\n')
+      const text = (needsBreakBefore ? '\n\n' : '') + newText + (needsBreakAfter ? '\n' : '')
+      setBody(before + text + after)
+      requestAnimationFrame(() => {
+        if (!ta) return
+        const newCursor = cursor + text.length
+        ta.focus()
+        ta.setSelectionRange(newCursor, newCursor)
+      })
+    }
+
+    pageApi.appendToChapter = (newText) => {
+      // Always append with a clean double-newline separator.
+      const needsSep = body.length > 0 && !body.endsWith('\n\n')
+      const text = (needsSep ? '\n\n' : '') + newText
+      setBody(body + text)
+      requestAnimationFrame(() => {
+        const ta = taRef.current
+        if (!ta) return
+        ta.focus()
+        ta.setSelectionRange(body.length + text.length, body.length + text.length)
+      })
+    }
+
+    return () => {
+      pageApi.replaceSelection = null
+      pageApi.insertAtCursor = null
+      pageApi.appendToChapter = null
+    }
   }, [onReplaceRequested, body])
 
   return (
@@ -155,6 +195,6 @@ export default function Page({ chapter, series, onSelection, onReplaceRequested 
   )
 }
 
-// Tiny shared module object so App can call into Page's `replaceSelection`.
+// Tiny shared module object so App can call into Page's apply operations.
 // Single-page-app, no router — this is fine.
-export const pageApi = { replaceSelection: null }
+export const pageApi = { replaceSelection: null, insertAtCursor: null, appendToChapter: null }

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import * as api from '../api.js'
+import { pageApi } from './Page.jsx'
 
 // THE MUSE — Zed-style chat panel. 0.3 wires the streaming chat via the
 // FastAPI Muse proxy (server/app/muse.py). The thread lives in component
@@ -11,6 +12,16 @@ const CHIPS = [
   { id: 'scene',    label: '✦ new scene' },
   { id: 'canon',    label: '⚑ canon?' }
 ]
+
+const APPLY = ['insert at cursor', 'replace selection', 'append to chapter']
+
+// Latest assistant message text — what the apply buttons push to the Page.
+function _latestAssistant(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && messages[i].text) return messages[i].text
+  }
+  return ''
+}
 
 // Quick prompts — what fills the composer when a chip is clicked.
 const CHIP_PROMPTS = {
@@ -87,6 +98,9 @@ export default function Muse() {
   const onChip = (chipId) => {
     setDraft(CHIP_PROMPTS[chipId] || '')
   }
+
+  // Latest assistant text — drives the apply buttons.
+  const latestAssistantText = _latestAssistant(messages) || streaming
 
   return (
     <aside className="flex min-h-0 flex-col border-l hairline bg-panel">
@@ -183,9 +197,29 @@ export default function Muse() {
           placeholder="Tell the Muse what to write…"
         />
         <div className="mt-2 flex items-center justify-between">
-          <span className="text-[9.5px] text-mute/50">
-            Enter to send · Shift+Enter newline
-          </span>
+          <div className="flex gap-1.5">
+            {APPLY.map((a) => {
+              const mode = a === 'insert at cursor' ? 'insert'
+                : a === 'replace selection' ? 'replace'
+                : 'append'
+              const disabled = !latestAssistantText || !_applyAvailable(mode)
+              return (
+                <button
+                  key={a}
+                  disabled={disabled}
+                  onClick={() => applyTo(mode, latestAssistantText)}
+                  className="rounded border hairline px-2 py-1 text-[10px] text-mute/70 transition-colors hover:border-gold/50 hover:text-gold disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-mute/70"
+                  title={
+                    !latestAssistantText ? 'Wait for the Muse to finish a reply'
+                      : !_applyAvailable(mode) ? `Apply "${mode}" is not available right now`
+                      : `Apply the latest Muse reply: ${mode}`
+                  }
+                >
+                  {a}
+                </button>
+              )
+            })}
+          </div>
           {busy ? (
             <button
               onClick={stop}
@@ -206,4 +240,20 @@ export default function Muse() {
       </div>
     </aside>
   )
+
+  // --- apply helpers -----------------------------------------------------
+
+  function _applyAvailable(mode) {
+    if (mode === 'insert') return !!pageApi.insertAtCursor
+    if (mode === 'replace') return !!pageApi.replaceSelection
+    if (mode === 'append') return !!pageApi.appendToChapter
+    return false
+  }
+
+  function applyTo(mode, text) {
+    if (!text || busy) return
+    if (mode === 'insert' && pageApi.insertAtCursor) pageApi.insertAtCursor(text)
+    if (mode === 'replace' && pageApi.replaceSelection) pageApi.replaceSelection(text)
+    if (mode === 'append' && pageApi.appendToChapter) pageApi.appendToChapter(text)
+  }
 }

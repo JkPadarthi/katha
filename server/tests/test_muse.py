@@ -25,6 +25,7 @@ os.environ["KATHA_ARCHIVE"] = str(Path(_TMP) / "archive")
 os.environ["KATHA_DATA"] = str(Path(_TMP) / "data")
 
 from app.main import app  # noqa: E402
+from app import archive as ar  # noqa: E402
 
 
 # --- helpers --------------------------------------------------------------
@@ -212,3 +213,212 @@ def test_muse_rewrite_style_routes_through_correct_model(monkeypatch: pytest.Mon
 
     assert captured["body"]["model"] == config.MUSE_REWRITE_MODEL
     assert captured["body"]["model"] != config.MUSE_CHAT_MODEL
+
+
+# --- canon context (D18) ---------------------------------------------------
+
+def test_canon_context_includes_current_chapter(monkeypatch: pytest.MonkeyPatch):
+    """When the rewrite carries a `chapter_id`, the system prompt must include
+    the chapter's text so the Muse knows what it's rewriting in context."""
+    captured: dict = {}
+
+    import httpx
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        captured["body"] = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson({"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "rewritten"}, "done": True}),
+        )
+
+    transport = httpx.MockTransport(_handler)
+    from app import muse as muse_mod
+    real_client = muse_mod._client  # type: ignore[attr-defined]
+    mock_client = httpx.AsyncClient(transport=transport, timeout=real_client.timeout)
+    monkeypatch.setattr(muse_mod, "_client", mock_client)
+
+    series_slug = ar.slugify("The Ember Throne")
+    book_slug = ar.slugify("The First Flame")
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/rewrite",
+            json={"text": "Hello world.", "style": "novel", "chapter_id": f"{series_slug}/{book_slug}/ch-01"},
+        ) as r:
+            assert r.status_code == 200
+            list(r.iter_lines())
+
+    # The canon context is its own system message. There should be at least 2:
+    # 1. the style prompt, 2. the canon-context block.
+    sys_msgs = [m for m in captured["body"]["messages"] if m["role"] == "system"]
+    canon_msg = next((m for m in sys_msgs if "CURRENT CHAPTER" in m["content"]), None)
+    assert canon_msg is not None, f"no canon-context system message found; sys_msgs={[m['content'][:50] for m in sys_msgs]}"
+    assert "CURRENT CHAPTER" in canon_msg["content"]
+    # ch-01 contains "Ember" in the seeded prose — assert the chapter was loaded.
+    assert "Ember" in canon_msg["content"]
+
+
+def test_canon_context_omitted_when_no_chapter_id(monkeypatch: pytest.MonkeyPatch):
+    """Without a `chapter_id`, the Muse call should NOT inject the canon
+    context block — the request is just a free-form rewrite."""
+    captured: dict = {}
+
+    import httpx
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        captured["body"] = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson({"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    transport = httpx.MockTransport(_handler)
+    from app import muse as muse_mod
+    real_client = muse_mod._client  # type: ignore[attr-defined]
+    mock_client = httpx.AsyncClient(transport=transport, timeout=real_client.timeout)
+    monkeypatch.setattr(muse_mod, "_client", mock_client)
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/rewrite",
+            json={"text": "Plain rewrite.", "style": "novel"},
+        ) as r:
+            assert r.status_code == 200
+            list(r.iter_lines())
+
+    sys_msgs = [m for m in captured["body"]["messages"] if m["role"] == "system"]
+    # The base system prompt still exists (style prompt), but it should NOT
+    # contain the canon-context block.
+    assert not any("CURRENT CHAPTER" in m["content"] for m in sys_msgs)
+
+
+# --- style digest (D19) ---------------------------------------------------
+
+def test_style_digest_is_cached_and_reused(tmp_path, monkeypatch):
+    """First call for a book: model is asked for a digest. Second call: cached
+    file is read — model is NOT asked again."""
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
+
+    # Find the seeded book — Ember Throne / First Flame. Style digest path
+    # lives at archive/.katha/muse/style-<book-slug>.md.
+    series_slug = ar.slugify("The Ember Throne")
+    book_slug = ar.slugify("The First Flame")
+    digest_path = ARCHIVE_ROOT / ".katha" / "muse" / f"style-{book_slug}.md"
+
+    # Pre-seed a digest to simulate "already learned". The Muse must NOT
+    # call the model when this file exists.
+    digest_path.parent.mkdir(parents=True, exist_ok=True)
+    digest_path.write_text("Established voice: third-person close, lyrical, short sentences.\n", encoding="utf-8")
+
+    captured: dict = {}
+
+    import httpx
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        captured["body"] = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson({"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    transport = httpx.MockTransport(_handler)
+    real_client = muse_mod._client
+    mock_client = httpx.AsyncClient(transport=transport, timeout=real_client.timeout)
+    monkeypatch.setattr(muse_mod, "_client", mock_client)
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/rewrite",
+            json={"text": "x", "style": "novel", "chapter_id": f"{series_slug}/{book_slug}/ch-01"},
+        ) as r:
+            assert r.status_code == 200
+            list(r.iter_lines())
+
+    # The cached digest should appear in the canon-context system prompt.
+    canon_msgs = [m for m in captured["body"]["messages"] if m["role"] == "system" and "CURRENT CHAPTER" in m["content"]]
+    assert len(canon_msgs) == 1
+    assert "Established voice" in canon_msgs[0]["content"]
+
+
+# --- thread persistence (D19) --------------------------------------------
+
+def test_thread_is_persisted_to_archive_dot_katha(tmp_path):
+    """When a Muse call carries a chapter_id, the exchange must be appended to
+    `archive/.katha/muse/<chapter-slug>.md`."""
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
+
+    series_slug = ar.slugify("The Ember Throne")
+    book_slug = ar.slugify("The First Flame")
+    thread_path = ARCHIVE_ROOT / ".katha" / "muse" / "ch-01.md"
+
+    # Clean any pre-existing file from earlier test runs.
+    if thread_path.exists():
+        thread_path.unlink()
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/chat",
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "chapter_id": f"{series_slug}/{book_slug}/ch-01",
+            },
+        ) as r:
+            assert r.status_code == 200
+            list(r.iter_lines())
+
+    assert thread_path.exists()
+    body = thread_path.read_text(encoding="utf-8")
+    assert "hello" in body
+    assert "ASSISTANT" in body
+
+
+def test_style_digest_auto_generated_on_first_touch(monkeypatch: pytest.MonkeyPatch):
+    """First call for a book with no cached digest: the Muse generates one
+    via the rewrite model and writes it to disk."""
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
+
+    series_slug = ar.slugify("The Ember Throne")
+    book_slug = ar.slugify("The First Flame")
+    digest_path = ARCHIVE_ROOT / ".katha" / "muse" / f"style-{book_slug}.md"
+
+    # Clean any pre-existing digest from earlier test runs.
+    if digest_path.exists():
+        digest_path.unlink()
+
+    # Patch the sync httpx.Client (style digest is sync to avoid event-loop conflict).
+    import httpx as _httpx
+    from unittest.mock import patch as _patch
+
+    class _SyncClientOK(_httpx.Client):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+        def post(self, url, json=None, **kw):
+            req = _httpx.Request("POST", url, json=json)
+            return _httpx.Response(
+                200,
+                json={
+                    "model": json["model"],
+                    "message": {"role": "assistant", "content": "Auto-generated style fingerprint."},
+                    "done": True,
+                },
+                request=req,
+            )
+        def __enter__(self): return self
+        def __exit__(self, *a): self.close()
+
+    with _patch("httpx.Client", _SyncClientOK):
+        digest = muse_mod._load_style_summary(book_slug, ARCHIVE_ROOT / series_slug / book_slug)
+
+    assert "Auto-generated" in digest
+    assert digest_path.exists()
+    assert "Auto-generated" in digest_path.read_text(encoding="utf-8")

@@ -1,11 +1,13 @@
-"""Katha Archive API — FastAPI entry point (0.2.2)."""
+"""Katha Archive API — FastAPI entry point (0.3.1)."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from . import archive as ar
 from . import db
@@ -20,6 +22,8 @@ from .schemas import (
     ChapterOut,
     ChapterUpdate,
     HealthOut,
+    MuseChatRequest,
+    MuseRewriteRequest,
     RevisionContentOut,
     RevisionOut,
     SearchHit,
@@ -203,3 +207,70 @@ def search(q: str = "", limit: int = 20):
 def reindex():
     """Rebuild the FTS index from the md archive (idempotent, cheap)."""
     reindex_search()
+
+
+# ---------- Muse (0.3 Muse, D16/D17/D19) ----------------------------------
+
+from . import muse as muse_mod  # noqa: E402  (after app init — needs config)
+
+
+async def _sse_from(async_iter) -> AsyncIterator[bytes]:
+    """Wrap an async iterator of strings in SSE `data:` lines.
+
+    Each chunk becomes one event: `data: <chunk>\n\n`. Stream ends with
+    `data: [DONE]\n\n` so the client can detect EOF without a timeout.
+    """
+    async for chunk in async_iter:
+        # SSE forbids raw newlines in `data:`. Newlines in the prose get
+        # escaped to '\n' literals — the client un-escapes.
+        safe = chunk.replace("\n", "\\n")
+        yield f"data: {safe}\n\n".encode("utf-8")
+    yield b"data: [DONE]\n\n"
+
+
+@app.get("/api/muse/models", tags=["muse"])
+def muse_models():
+    """Configured Muse models + Ollama base (for the UI display)."""
+    return muse_mod.models_info()
+
+
+@app.post("/api/muse/chat", tags=["muse"])
+async def muse_chat(payload: MuseChatRequest):
+    """Stream a chat reply as SSE.
+
+    Body:
+        messages:    list of {role, content} — the full thread
+        chapter_id:  optional, currently unused (canon context wired in 0.3.4)
+        chip:        optional hint: 'rewrite' | 'continue' | 'scene' | 'canon'
+    """
+    gen = muse_mod.chat(
+        messages=[m.model_dump() for m in payload.messages],
+        chapter_id=payload.chapter_id,
+        chip=payload.chip,
+    )
+    return StreamingResponse(
+        _sse_from(gen),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/muse/rewrite", tags=["muse"])
+async def muse_rewrite(payload: MuseRewriteRequest):
+    """Stream a single rewrite proposal as SSE.
+
+    Body:
+        text:       the selection to rewrite
+        style:      'novel' (default) | 'scene' | 'clean'
+        chapter_id: optional
+    """
+    gen = muse_mod.rewrite(
+        text=payload.text,
+        style=payload.style,
+        chapter_id=payload.chapter_id,
+    )
+    return StreamingResponse(
+        _sse_from(gen),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

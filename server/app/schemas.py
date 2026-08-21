@@ -85,3 +85,22 @@ class SearchOut(BaseModel):
     query: str
     count: int
     hits: list[SearchHit]
+
+
+# --- Muse (0.3) -----------------------------------------------------------
+
+class MuseMessage(BaseModel):
+    role: str
+    content: str
+
+
+class MuseChatRequest(BaseModel):
+    messages: list[MuseMessage]
+    chapter_id: str | None = None
+    chip: str | None = None  # 'rewrite' | 'continue' | 'scene' | 'canon'
+
+
+class MuseRewriteRequest(BaseModel):
+    text: str
+    style: str = "novel"      # 'novel' | 'scene' | 'clean'
+    chapter_id: str | None = None

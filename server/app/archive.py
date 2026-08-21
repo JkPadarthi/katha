@@ -50,15 +50,24 @@ def book_json_path(book: Path) -> Path:
     return book / "book.json"
 
 
+def _is_hidden(p: Path) -> bool:
+    """True if the path's name starts with `.` (Unix dotfile convention).
+
+    Used by the archive walkers to skip Muse persistence (`archive/.katha/`)
+    and any other dotfile-prefixed directory the user (or the Muse) creates.
+    """
+    return p.name.startswith(".")
+
+
 def list_books() -> list[dict]:
     """Scan the archive root → series → books tree (rail source)."""
     tree: dict[str, list[dict]] = {}
     for series_dir in sorted(ARCHIVE_ROOT.iterdir()):
-        if not series_dir.is_dir():
+        if not series_dir.is_dir() or _is_hidden(series_dir):
             continue
         books = []
         for b in sorted(series_dir.iterdir()):
-            if not b.is_dir():
+            if not b.is_dir() or _is_hidden(b):
                 continue
             meta = _read_book_json(b)
             chapters = list_chapters(b)
@@ -274,11 +283,11 @@ def iter_searchable_docs():
     Walks the archive on disk — the md files are the truth, this just reads
     them so the FTS index can be rebuilt from scratch (reindex)."""
     for series_dir in sorted(ARCHIVE_ROOT.iterdir()):
-        if not series_dir.is_dir():
+        if not series_dir.is_dir() or _is_hidden(series_dir):
             continue
         series_slug = series_dir.name
         for b in sorted(series_dir.iterdir()):
-            if not b.is_dir():
+            if not b.is_dir() or _is_hidden(b):
                 continue
             book_id = b.name
             cd = b / "chapters"

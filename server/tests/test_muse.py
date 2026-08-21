@@ -381,6 +381,62 @@ def test_thread_is_persisted_to_archive_dot_katha(tmp_path):
     assert "ASSISTANT" in body
 
 
+def test_muse_persistence_dir_excluded_from_books_listing():
+    """`/api/books` must NOT surface the Muse persistence directory
+    (`archive/.katha/`) as a fake series. Otherwise the Rail shows a phantom
+    empty book, App.jsx picks it as the first book, and the user sees a
+    stuck 'Loading archive…' because the phantom book has no chapters."""
+    from app import archive as ar_mod
+    from app.config import ARCHIVE_ROOT
+
+    # Plant a hidden directory that mirrors what Muse persistence writes.
+    hidden = ARCHIVE_ROOT / ".katha" / "muse"
+    hidden.mkdir(parents=True, exist_ok=True)
+    # And a book.json that *would* be read if the dir were not hidden.
+    (hidden / "book.json").write_text(
+        '{"id": "muse", "series": ".katha", "title": "muse"}',
+        encoding="utf-8",
+    )
+
+    try:
+        books = ar_mod.list_books()
+        # Must not contain a series whose slug starts with "."
+        slugs = [b["series"] for b in books]
+        assert not any(s.startswith(".") for s in slugs), (
+            f"hidden directory leaked into books listing: {slugs}"
+        )
+        # And the real series must still be present.
+        assert "the-ember-throne" in slugs
+    finally:
+        # Cleanup — both the file and the directory.
+        (hidden / "book.json").unlink(missing_ok=True)
+        # Leave the parent dirs; tests run on a temp archive normally.
+
+
+def test_muse_persistence_dir_excluded_from_search_index():
+    """`iter_searchable_docs` must NOT yield docs from `.katha/` — otherwise
+    Muse threads leak into chapter search. Tests with a realistic structure:
+    a hidden `.katha/<book>/chapters/` subtree."""
+    from app import archive as ar_mod
+    from app.config import ARCHIVE_ROOT
+
+    hidden = ARCHIVE_ROOT / ".katha" / "muse-fake" / "chapters"
+    hidden.mkdir(parents=True, exist_ok=True)
+    # A would-be chapter file inside the hidden dir.
+    (hidden / "ch-01.md").write_text(
+        "# hidden\n\nThis is Muse persistence and must not be searchable.",
+        encoding="utf-8",
+    )
+
+    try:
+        for kind, series, *_ in ar_mod.iter_searchable_docs():
+            assert not series.startswith("."), f"hidden series {series} leaked into search"
+    finally:
+        (hidden / "ch-01.md").unlink(missing_ok=True)
+        hidden.rmdir()
+        (hidden.parent).rmdir()
+
+
 def test_style_digest_auto_generated_on_first_touch(monkeypatch: pytest.MonkeyPatch):
     """First call for a book with no cached digest: the Muse generates one
     via the rewrite model and writes it to disk."""

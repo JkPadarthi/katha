@@ -159,7 +159,7 @@ export default function App() {
                   className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-gold/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-gold shadow-lg shadow-black/40 hover:bg-gold/10"
                   title="Rewrite the selected text with the Muse"
                 >
-                  � Rewrite selection
+                  ✎ Rewrite selection
                 </button>
               )}
             </div>

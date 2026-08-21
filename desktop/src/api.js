@@ -1,12 +1,27 @@
 // Katha API client — talks to the FastAPI archive (0.2.1).
-// Base URL: Tailscale address of Bharat by default (works from the web
-// preview on the same machine too, since Bharat == this host). Override
-// with VITE_KATHA_API for other origins (e.g. packaged desktop later).
-const BASE =
-  import.meta.env.VITE_KATHA_API ||
-  (import.meta.env.DEV
-    ? 'http://localhost:4901'
-    : 'http://100.86.68.51:4901')
+// Base URL resolution (priority, top to bottom):
+//   1. VITE_KATHA_API env (explicit override — used by packaged desktop)
+//   2. Same host as the page (browser served on Bharat → localhost:4901;
+//      browser served via Tailscale from another machine → that machine's
+//      Tailscale IP on :4901). This is the dev-safe default.
+//   3. Hard fallback to the Tailscale address (legacy).
+const _FALLBACK_HOST = '100.86.68.51'
+function _resolveBase() {
+  const envBase = import.meta.env.VITE_KATHA_API
+  if (envBase) return envBase
+  if (typeof window !== 'undefined' && window.location && window.location.hostname) {
+    const host = window.location.hostname
+    // Only switch to the same host when it's NOT localhost (a Windows
+    // laptop hitting localhost:5173 wants the API on localhost too — same
+    // machine). For Tailscale / LAN IPs, mirror the host.
+    if (host && host !== 'localhost' && host !== '127.0.0.1') {
+      return `http://${host}:4901`
+    }
+    return 'http://localhost:4901'
+  }
+  return `http://${_FALLBACK_HOST}:4901`
+}
+const BASE = _resolveBase()
 
 async function req(path, options = {}) {
   const res = await fetch(`${BASE}/api${path}`, {

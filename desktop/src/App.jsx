@@ -13,6 +13,9 @@ export default function App() {
   const [activeChapter, setActiveChapter] = useState(null)
   const [railCollapsed, setRailCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // Surface archive-load errors so the user sees what went wrong (instead
+  // of a silent "Loading archive…" forever).
+  const [loadError, setLoadError] = useState('')
   // Rewrite flow (0.3.3)
   const [selection, setSelection] = useState(null)
   const [rewriteOpen, setRewriteOpen] = useState(false)
@@ -23,20 +26,30 @@ export default function App() {
   // Load the live archive from the FastAPI backend (0.2.1).
   useEffect(() => {
     let alive = true
+    setLoadError('')
     api
       .loadArchive()
       .then((a) => {
         if (!alive) return
         setArchive(a)
-        const firstBook = a[0]
-        if (firstBook && firstBook.books[0]) {
-          const b = firstBook.books[0]
-          setSeries({ series: firstBook.name, book: b.id })
+        // Pick the first book that actually has chapters. Defensive — even
+        // with the hidden-dir fix, a future empty seeded series shouldn't
+        // leave us stuck on an empty book.
+        const firstWithChapters = a.find((s) => s.books?.some((b) => b.chapters?.length))
+        const series0 = firstWithChapters || a[0]
+        if (series0 && series0.books[0]) {
+          const b = series0.books[0]
+          setSeries({ series: series0.name, book: b.id })
           setActiveChapter(b.chapters[0]?.id || null)
+        } else if (a.length === 0) {
+          setLoadError('Server returned an empty archive.')
         }
       })
       .catch((err) => {
-        if (alive) console.error('Archive load failed:', err.message)
+        if (alive) {
+          console.error('Archive load failed:', err.message)
+          setLoadError(`${err.message || err}`)
+        }
       })
     return () => { alive = false }
   }, [])
@@ -165,6 +178,15 @@ export default function App() {
             </div>
             <Muse />
           </>
+        ) : loadError ? (
+          <div className="flex flex-col items-center justify-center gap-2 text-center text-mute">
+            <div className="text-[12px] text-red-300">Failed to load archive</div>
+            <div className="text-[10.5px] text-mute/70">{loadError}</div>
+            <div className="text-[10px] text-mute/50">
+              Server at <code className="text-ink">{api.BASE}</code> didn't respond.
+              Open DevTools (F12) → Network for details.
+            </div>
+          </div>
         ) : (
           <div className="flex items-center justify-center text-mute">
             Loading archive…

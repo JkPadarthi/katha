@@ -1,17 +1,24 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import TitleBar from './components/TitleBar.jsx'
 import Rail from './components/Rail.jsx'
-import Page from './components/Page.jsx'
+import Page, { pageApi } from './components/Page.jsx'
 import Muse from './components/Muse.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
+import DiffOverlay from './components/DiffOverlay.jsx'
 import * as api from './api.js'
 
 export default function App() {
   const [archive, setArchive] = useState(null)
-  const [series, setSeries] = useState(null)   // {series, book} ids of loaded book
+  const [series, setSeries] = useState(null)
   const [activeChapter, setActiveChapter] = useState(null)
   const [railCollapsed, setRailCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // Rewrite flow (0.3.3)
+  const [selection, setSelection] = useState(null)
+  const [rewriteOpen, setRewriteOpen] = useState(false)
+  const [proposed, setProposed] = useState('')
+  const [rewriteBusy, setRewriteBusy] = useState(false)
+  const [rewriteStyle, setRewriteStyle] = useState('novel')
 
   // Load the live archive from the FastAPI backend (0.2.1).
   useEffect(() => {
@@ -29,7 +36,6 @@ export default function App() {
         }
       })
       .catch((err) => {
-        // Graceful degrade: nothing loaded, surface the error once.
         if (alive) console.error('Archive load failed:', err.message)
       })
     return () => { alive = false }
@@ -42,7 +48,10 @@ export default function App() {
         e.preventDefault()
         setPaletteOpen((v) => !v)
       }
-      if (e.key === 'Escape') setPaletteOpen(false)
+      if (e.key === 'Escape') {
+        setPaletteOpen(false)
+        setRewriteOpen(false)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -61,6 +70,60 @@ export default function App() {
     () => book?.chapters?.find((c) => c.id === activeChapter) || null,
     [book, activeChapter]
   )
+
+  // --- Rewrite flow ------------------------------------------------------
+
+  const runRewrite = async (sel, style) => {
+    if (!sel || !sel.text) return
+    setProposed('')
+    setRewriteBusy(true)
+    setRewriteOpen(true)
+    try {
+      const full = await api.museRewrite({
+        text: sel.text,
+        style,
+        chapterId: null,
+        onDelta: (acc) => setProposed(acc)
+      })
+      setProposed(full)
+    } catch (e) {
+      setProposed('— Muse unavailable: ' + (e.message || 'unknown error') + ' —')
+    } finally {
+      setRewriteBusy(false)
+    }
+  }
+
+  // Triggered when the Page reports a non-empty selection — debounced by
+  // the textarea's selection events; we just stash the latest.
+  const onSelection = (sel) => setSelection(sel)
+
+  const onRewriteClick = () => {
+    if (!selection || !selection.text) return
+    runRewrite(selection, rewriteStyle)
+  }
+
+  const onAccept = () => {
+    if (pageApi.replaceSelection && proposed) {
+      pageApi.replaceSelection(proposed)
+    }
+    setRewriteOpen(false)
+    setProposed('')
+  }
+
+  const onRetry = () => {
+    if (!selection) return
+    runRewrite(selection, rewriteStyle)
+  }
+
+  const onStyleChange = (s) => {
+    setRewriteStyle(s)
+    if (rewriteOpen && selection) runRewrite(selection, s)
+  }
+
+  const onCloseRewrite = () => {
+    setRewriteOpen(false)
+    setProposed('')
+  }
 
   return (
     <div className="flex h-full flex-col bg-base">
@@ -81,7 +144,25 @@ export default function App() {
               onSelect={jumpTo}
               archive={archive}
             />
-            <Page chapter={chapter} series={series} onSaved={() => {}} />
+            <div className="relative min-h-0">
+              <Page
+                chapter={chapter}
+                series={series}
+                onSaved={() => {}}
+                onSelection={onSelection}
+                onReplaceRequested={true}
+              />
+              {/* Floating ✎ button — appears when the user has a non-empty selection */}
+              {selection && selection.text && !rewriteOpen && (
+                <button
+                  onClick={onRewriteClick}
+                  className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-gold/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-gold shadow-lg shadow-black/40 hover:bg-gold/10"
+                  title="Rewrite the selected text with the Muse"
+                >
+                  � Rewrite selection
+                </button>
+              )}
+            </div>
             <Muse />
           </>
         ) : (
@@ -95,6 +176,18 @@ export default function App() {
           onClose={() => setPaletteOpen(false)}
           onJump={jumpTo}
           archive={archive}
+        />
+      )}
+      {rewriteOpen && selection && (
+        <DiffOverlay
+          original={selection.text}
+          proposed={proposed}
+          busy={rewriteBusy}
+          style={rewriteStyle}
+          onStyleChange={onStyleChange}
+          onAccept={onAccept}
+          onRetry={onRetry}
+          onClose={onCloseRewrite}
         />
       )}
     </div>

@@ -107,8 +107,12 @@ export function museChat({ messages, chapterId, chip, onDelta, signal }) {
         buf = buf.slice(idx + 2)
         for (const line of event.split('\n')) {
           if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (payload === '[DONE]') return acc
+          // SSE `data: ` prefix is 6 chars (data: + 1 space). Preserve any
+          // leading whitespace in the payload itself — it's part of the prose.
+          const payload = line.length > 5 && line[5] === ' '
+            ? line.slice(6)
+            : line.slice(5)
+          if (payload.trim() === '[DONE]') return acc
           acc += unescapeSse(payload)
         }
         if (onDelta) onDelta(acc)
@@ -143,8 +147,10 @@ export function museRewrite({ text, style, chapterId, onDelta, signal }) {
         buf = buf.slice(idx + 2)
         for (const line of event.split('\n')) {
           if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (payload === '[DONE]') return acc
+          const payload = line.length > 5 && line[5] === ' '
+            ? line.slice(6)
+            : line.slice(5)
+          if (payload.trim() === '[DONE]') return acc
           acc += unescapeSse(payload)
         }
         if (onDelta) onDelta(acc)

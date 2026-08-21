@@ -82,11 +82,9 @@ def test_muse_chat_streams_tokens(monkeypatch: pytest.MonkeyPatch):
         ) as r:
             assert r.status_code == 200
             assert "text/event-stream" in r.headers["content-type"]
-            payload = "".join(line for line in r.iter_lines() if line.startswith("data:"))
+            payload = _sse_payload(r)
 
     # The streamed tokens, when concatenated, reconstruct the visible reply.
-    # Each `data:` line is a delta; the simplest invariant is "Hi there!"
-    # appears in the concatenated payload.
     assert "Hi" in payload
     assert "there" in payload
     assert "!" in payload
@@ -108,7 +106,7 @@ def test_muse_chat_strips_think_blocks(monkeypatch: pytest.MonkeyPatch):
             json={"messages": [{"role": "user", "content": "what?"}], "chapter_id": None},
         ) as r:
             assert r.status_code == 200
-            payload = "".join(line for line in r.iter_lines() if line.startswith("data:"))
+            payload = _sse_payload(r)
 
     assert "<think>" not in payload
     assert "plan" not in payload
@@ -127,3 +125,90 @@ def test_muse_models_endpoint():
     assert body["chat_model"] == config.MUSE_CHAT_MODEL
     assert body["rewrite_model"] == config.MUSE_REWRITE_MODEL
     assert body["ollama_base"] == config.OLLAMA_BASE
+
+
+# --- rewrite streaming ----------------------------------------------------
+
+def _sse_payload(r) -> str:
+    """Concatenate just the data payload (no `data: ` prefix, no [DONE]).
+
+    SSE format is `data: <payload>` — the prefix is 6 chars (`data:` + 1 space).
+    We don't strip the payload beyond that prefix because internal whitespace
+    IS part of the prose (e.g. the space between sentences).
+    """
+    out = []
+    for line in r.iter_lines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[6:] if len(line) > 5 and line[5] == ' ' else line[5:]
+        if payload.strip() == "[DONE]":
+            continue
+        out.append(payload.replace("\\n", "\n").replace("\\\\", "\\"))
+    return "".join(out)
+
+
+def test_muse_rewrite_streams_single_proposal(monkeypatch: pytest.MonkeyPatch):
+    """`/api/muse/rewrite` yields SSE tokens whose concatenation is the full
+    rewrite proposal — stripped of any <think> blocks. The user types prose,
+    the server returns a single streamed rewrite."""
+    chunks = [
+        {"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "<think>plan</think>"}, "done": False},
+        {"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "The dog padded slowly"}, "done": False},
+        {"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": " across the sun-baked road."}, "done": True},
+    ]
+    _patch_ollama(monkeypatch, _ollama_chat_ndjson(*chunks))
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/rewrite",
+            json={
+                "text": "The dog walked slowly across the dusty road.",
+                "style": "clean",
+                "chapter_id": None,
+            },
+        ) as r:
+            assert r.status_code == 200
+            assert "text/event-stream" in r.headers["content-type"]
+            payload = _sse_payload(r)
+
+    assert "The dog padded slowly across the sun-baked road." in payload
+    assert "<think>" not in payload
+    assert "plan" not in payload
+
+
+def test_muse_rewrite_style_routes_through_correct_model(monkeypatch: pytest.MonkeyPatch):
+    """The rewrite endpoint must use MUSE_REWRITE_MODEL (the thinking model),
+    NOT MUSE_CHAT_MODEL. We assert this by capturing the upstream request URL
+    payload via the mock transport."""
+    captured: dict = {}
+
+    import httpx
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        captured["body"] = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson({"model": captured["body"]["model"], "message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    transport = httpx.MockTransport(_handler)
+    from app import muse as muse_mod
+    real_client = muse_mod._client  # type: ignore[attr-defined]
+    mock_client = httpx.AsyncClient(transport=transport, timeout=real_client.timeout)
+    monkeypatch.setattr(muse_mod, "_client", mock_client)
+
+    from app import config
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/rewrite",
+            json={"text": "Hello world.", "style": "novel"},
+        ) as r:
+            assert r.status_code == 200
+            list(r.iter_lines())
+
+    assert captured["body"]["model"] == config.MUSE_REWRITE_MODEL
+    assert captured["body"]["model"] != config.MUSE_CHAT_MODEL

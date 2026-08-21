@@ -1,7 +1,7 @@
 {
   "name": "katha-desktop",
   "productName": "Katha",
-  "version": "0.1.3",
+  "version": "0.2.3",
   "description": "A self-hosted story-writing IDE — chapters, the page, the Muse.",
   "private": true,
   "main": "electron/main.cjs",
@@ -12,6 +12,7 @@
     "dist": "vite build && electron-builder"
   },
   "dependencies": {
+    "diff": "^9.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -26,8 +27,16 @@
   "build": {
     "appId": "xyz.katha.desktop",
     "productName": "Katha",
-    "files": ["dist/**/*", "electron/**/*"],
-    "win": { "target": "nsis" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

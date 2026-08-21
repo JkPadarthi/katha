@@ -1,15 +1,19 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import * as api from '../api.js'
 
 // THE PAGE — the quiet center. Loads real content from the FastAPI archive
 // (0.2.1) and autosaves via PUT → md write + revision snapshot on disk.
-export default function Page({ chapter, series }) {
+// 0.3.3 — selection capture + rewrite trigger; App.jsx owns the rewrite
+// pipeline + diff overlay, this just hands selection up + accepts replacements.
+export default function Page({ chapter, series, onSelection, onReplaceRequested }) {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [savedAt, setSavedAt] = useState('')
   const [revision, setRevision] = useState(0)
   const [drafts, setDrafts] = useState(0)
   const [saving, setSaving] = useState(false)
+  const taRef = useRef(null)
+  const lastSelectionRef = useRef({ start: 0, end: 0, text: '' })
 
   // Load chapter content from the archive when the selection changes.
   useEffect(() => {
@@ -67,8 +71,43 @@ export default function Page({ chapter, series }) {
       .finally(() => setSaving(false))
   }
 
+  // Track selection in the textarea so the rewrite button knows what to send.
+  // selectionchange fires on any cursor move (incl. typing) — we only fire
+  // onSelection when there's a non-empty range.
+  const captureSelection = () => {
+    const ta = taRef.current
+    if (!ta) return
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    const text = start !== end ? ta.value.slice(start, end) : ''
+    lastSelectionRef.current = { start, end, text }
+    if (text && onSelection) onSelection({ start, end, text })
+  }
+
+  // Accept a rewrite: replace the last-known selection range with new text.
+  // Called from App.jsx via ref-style callback prop (see replaceSelection).
+  useEffect(() => {
+    if (!onReplaceRequested) return
+    // App stores the replace fn on a module-level object that Page reads.
+    pageApi.replaceSelection = (newText) => {
+      const { start, end } = lastSelectionRef.current
+      const before = body.slice(0, start)
+      const after = body.slice(end)
+      setBody(before + newText + after)
+      // Restore selection/cursor to the new text.
+      requestAnimationFrame(() => {
+        const ta = taRef.current
+        if (!ta) return
+        const cursor = start + newText.length
+        ta.focus()
+        ta.setSelectionRange(cursor, cursor)
+      })
+    }
+    return () => { pageApi.replaceSelection = null }
+  }, [onReplaceRequested, body])
+
   return (
-    <main className="page-surface flex min-h-0 flex-col bg-base">
+    <main className="page-surface relative flex min-h-0 flex-col bg-base">
       <div className="shrink-0 px-10 pt-6 pb-2">
         <input
           value={title}
@@ -101,8 +140,12 @@ export default function Page({ chapter, series }) {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-16">
         <textarea
+          ref={taRef}
           value={body}
           onChange={(e) => setBody(e.target.value)}
+          onSelect={captureSelection}
+          onKeyUp={captureSelection}
+          onMouseUp={captureSelection}
           spellCheck={false}
           className="h-full min-h-[60vh] w-full resize-none border-none bg-transparent font-serif text-[16px] leading-[1.85] text-ink/95 placeholder:text-mute/40 focus:outline-none"
           placeholder="The page is blank. The story begins here."
@@ -111,3 +154,7 @@ export default function Page({ chapter, series }) {
     </main>
   )
 }
+
+// Tiny shared module object so App can call into Page's `replaceSelection`.
+// Single-page-app, no router — this is fine.
+export const pageApi = { replaceSelection: null }

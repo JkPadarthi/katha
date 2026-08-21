@@ -65,3 +65,7 @@ export function saveChapter(series, bookId, chapterId, content) {
     body: JSON.stringify({ content })
   })
 }
+
+export function search(query, limit = 20) {
+  return req(`/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+}

@@ -91,7 +91,11 @@ export default function App() {
         )}
       </div>
       {paletteOpen && archive && (
-        <CommandPalette onClose={() => setPaletteOpen(false)} onJump={jumpTo} />
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onJump={jumpTo}
+          archive={archive}
+        />
       )}
     </div>
   )

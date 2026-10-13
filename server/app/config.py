@@ -27,7 +27,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "0.4.0"
+VERSION = "1.0.0"
 
 # --- Muse upstream (0.3 Muse, D16/D19) ----------------------------------------
 # Friend's jenga box — direct Ollama, trusted LAN. No key needed.
@@ -57,3 +57,7 @@ CORS_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+
+# Daily word goal for the writing-ritual streak (1.0). The client may override
+# per-request; this is the default when it doesn't.
+DAILY_GOAL = int(os.environ.get("KATHA_DAILY_GOAL", "500"))

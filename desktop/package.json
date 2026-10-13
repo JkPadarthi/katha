@@ -1,7 +1,7 @@
 {
   "name": "katha-desktop",
   "productName": "Katha",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "A self-hosted story-writing IDE — chapters, the page, the Muse.",
   "private": true,
   "scripts": {

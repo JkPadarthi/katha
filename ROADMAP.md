@@ -8,15 +8,15 @@ Phases 0.0 → 2.0. Single-user, self-hosted, no SaaS, by design.
 - **0.2 Archive** ✅ — FastAPI + SQLite (index only) + md storage; chapters CRUD, autosave, revision history; FTS5 search.
 - **0.3 Muse** ✅ — streaming chat, quick chips, apply-to-page, rewrite-with-diff + style presets, canon context + style digest + thread persistence.
 - **0.3.8 hardening** ✅ — CORS allowlist, path-traversal guards, composite-key index migration, SSE escape fix, async canon loaders, editable titles.
-- **0.4 Courier + polish** (current) — focus mode ✅, canon sweep (audit + approval-gated bible diffs) ✅, PWA packaging ✅ (client replaces the Electron desktop app; served from the Pi over Tailscale).
+- **0.4 Courier + polish** ✅ — focus mode, canon sweep (audit + approval-gated bible diffs), PWA packaging (client replaces the Electron desktop app; served from the Pi over Tailscale).
 - **Exit criteria** — Jaswanth writes a story in Katha and the Muse genuinely helps.
 
 ## Phase 1.0 — Experience extras
 
-- Reading mode — flip the page into book form; annotate (md sidecars).
-- Writing rituals — goals, streaks, quiet discipline (discipline > motivation).
-- Delivery — downloadable EPUB export.
-- Optional — proactive nudge toggle (D11).
+- Reading mode — flip the page into book form; annotate (md sidecars). ✅
+- Writing rituals — goals, streaks, quiet discipline (discipline > motivation). ✅
+- Delivery — downloadable EPUB export. ✅
+- Optional — proactive nudge toggle (D11). ✅
 
 ## Phase 2.0 — PWA everywhere (was: native mobile)
 

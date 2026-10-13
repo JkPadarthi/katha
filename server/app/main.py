@@ -1,4 +1,4 @@
-"""Katha Archive API — FastAPI entry point (0.4.0)."""
+"""Katha Archive API — FastAPI entry point (1.0.0)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,14 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import archive as ar
 from . import db
-from .config import ARCHIVE_ROOT, CORS_ORIGINS, VERSION, WEB_DIR
+from . import epub
+from . import stats
+from .config import ARCHIVE_ROOT, CORS_ORIGINS, DAILY_GOAL, VERSION, WEB_DIR
 from .schemas import (
     BibleOut,
     BibleUpdate,
@@ -29,6 +31,9 @@ from .schemas import (
     MuseChatRequest,
     MuseRewriteRequest,
     MuseSweepRequest,
+    NoteOut,
+    NotesOut,
+    NotesUpdate,
     RevisionContentOut,
     RevisionOut,
     SearchHit,
@@ -156,10 +161,13 @@ def save_chapter(series: str, book_id: str, chapter_id: str, payload: ChapterUpd
         raise HTTPException(404, "chapter not found")
     existing_title = ar._chapter_title(chapter)
     title = (payload.title or "").strip() or existing_title
+    prev_file_words = ar._count_words(chapter.read_text(encoding="utf-8"))
     new_text = f"# {title}\n\n{payload.content}".rstrip() + "\n"
     chapter.write_text(new_text, encoding="utf-8")
     rev = ar.write_revision(chapter, payload.content, title)
     words = ar._count_words(payload.content)
+    stats.append_write(ar._mtime(chapter), series, bdir.name, chapter.stem,
+                       words, ar._count_words(new_text) - prev_file_words)
     db.record_revision(bdir.name, chapter.stem, rev, ar._mtime(chapter), words)
     db.upsert_chapter({
         "id": chapter.stem,
@@ -195,6 +203,35 @@ def read_revision(series: str, book_id: str, chapter_id: str, number: int):
     if rev is None:
         raise HTTPException(404, "revision not found")
     return rev
+
+
+# ---------- reading-mode notes (1.0) --------------------------------------
+
+def _notes_out(bdir: Path, chapter_id: str) -> NotesOut:
+    notes = ar.read_notes(bdir, chapter_id) or []
+    chap = ar.get_chapter(bdir, chapter_id)
+    assert chap is not None
+    return NotesOut(chapter_id=chap.stem, notes=[NoteOut(**n) for n in notes])
+
+
+@app.get("/api/books/{series}/{book_id}/chapters/{chapter_id}/notes",
+         response_model=NotesOut, tags=["notes"])
+def get_notes(series: str, book_id: str, chapter_id: str):
+    """Read a chapter's annotations (md sidecar; [] when none exist)."""
+    bdir = _resolve_book_path(series, book_id)
+    if ar.get_chapter(bdir, chapter_id) is None:
+        raise HTTPException(404, "chapter not found")
+    return _notes_out(bdir, chapter_id)
+
+
+@app.put("/api/books/{series}/{book_id}/chapters/{chapter_id}/notes",
+         response_model=NotesOut, tags=["notes"])
+def put_notes(series: str, book_id: str, chapter_id: str, payload: NotesUpdate):
+    """Replace a chapter's annotations — rewrites `ch-NN.notes.md` (md truth)."""
+    bdir = _resolve_book_path(series, book_id)
+    if ar.write_notes(bdir, chapter_id, [n.model_dump() for n in payload.notes]) is None:
+        raise HTTPException(404, "chapter not found")
+    return _notes_out(bdir, chapter_id)
 
 
 @app.get("/api/books/{series}/{book_id}/bible", response_model=BibleOut,
@@ -233,6 +270,30 @@ def search(q: str = "", limit: int = 20):
 def reindex():
     """Rebuild the FTS index from the md archive (idempotent, cheap)."""
     reindex_search()
+
+
+# ---------- writing rituals (1.0) -----------------------------------------
+
+@app.get("/api/stats", tags=["stats"])
+def get_stats(goal: int | None = None):
+    """Writing-ritual summary: today's words, goal, streak, 14-day history."""
+    return stats.summary(goal if goal and goal > 0 else DAILY_GOAL)
+
+
+# ---------- delivery: EPUB export (1.0) -----------------------------------
+
+@app.get("/api/books/{series}/{book_id}/export.epub", tags=["export"])
+def export_epub(series: str, book_id: str):
+    """Build and return a downloadable EPUB for the book (chapters + bible)."""
+    bdir = _resolve_book_path(series, book_id)
+    title = _book_title(bdir)
+    data = epub.build_epub(ar._read_series_title(bdir.parent), title, bdir)
+    filename = f"{ar.slugify(title)}.epub"
+    return Response(
+        content=data,
+        media_type="application/epub+zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------- Muse (0.3 Muse, D16/D17/D19) ----------------------------------

@@ -6,8 +6,11 @@ temp dir, so the md files on disk are genuinely exercised (source of truth).
 
 from __future__ import annotations
 
+import io
 import os
 import tempfile
+import xml.dom.minidom
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -38,7 +41,7 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "0.4.0"
+    assert body["version"] == "1.0.0"
     assert body["db_ok"] is True
 
 
@@ -216,3 +219,101 @@ def test_bible_put_rejects_non_md_name():
         json={"content": "x"},
     )
     assert r.status_code == 400
+
+
+# --- reading-mode notes (1.0) ---------------------------------------------
+
+def test_notes_roundtrip_writes_sidecar():
+    """PUT notes → ch-NN.notes.md on disk (md truth); GET reads them back."""
+    series, book = ar.slugify(SERIES), ar.slugify(BOOK)
+    url = f"/api/books/{series}/{book}/chapters/ch-01/notes"
+
+    assert client.get(url).json()["notes"] == []       # none yet
+
+    payload = {"notes": [
+        {"quote": "The door opened.", "body": "Pacing — too early?"},
+        {"quote": "You heard wrong.", "body": "Great line."},
+    ]}
+    r = client.put(url, json=payload)
+    assert r.status_code == 200
+    assert [n["quote"] for n in r.json()["notes"]] == ["The door opened.", "You heard wrong."]
+
+    # md sidecar on disk
+    sidecar = ar.chapters_dir(ar.book_dir(SERIES, BOOK)) / "ch-01.notes.md"
+    assert sidecar.is_file()
+    assert "The door opened." in sidecar.read_text(encoding="utf-8")
+
+    # not counted as a chapter
+    chapters = client.get(f"/api/books/{series}/{book}/chapters").json()["chapters"]
+    assert all(c["id"] != "ch-01.notes" for c in chapters)
+
+
+def test_notes_delete_by_put_replace():
+    series, book = ar.slugify(SERIES), ar.slugify(BOOK)
+    url = f"/api/books/{series}/{book}/chapters/ch-02/notes"
+    client.put(url, json={"notes": [{"quote": "a", "body": "b"}]})
+    r = client.put(url, json={"notes": []})
+    assert r.json()["notes"] == []
+
+
+def test_notes_404_on_missing_chapter():
+    series, book = ar.slugify(SERIES), ar.slugify(BOOK)
+    r = client.get(f"/api/books/{series}/{book}/chapters/nope/notes")
+    assert r.status_code == 404
+
+
+# --- writing rituals (1.0) ------------------------------------------------
+
+def test_stats_track_daily_words():
+    """Saving a chapter logs the net words added; /api/stats reports today's
+    total, the goal, and a streak."""
+    series, book = ar.slugify(SERIES), ar.slugify(BOOK)
+    url = f"/api/books/{series}/{book}/chapters/ch-03"
+    # Two saves: the second adds three words over the first.
+    client.put(url, json={"content": "one two three", "title": "The Inn at Crosswater"})
+    client.put(url, json={"content": "one two three four five six", "title": "The Inn at Crosswater"})
+
+    r = client.get("/api/stats", params={"goal": 1})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["goal"] == 1
+    assert body["today"] >= 3
+    assert body["streak"] >= 1
+    assert len(body["history"]) == 14
+
+
+def test_stats_goal_defaults_when_unset():
+    r = client.get("/api/stats")
+    assert r.status_code == 200
+    assert r.json()["goal"] > 0
+
+
+# --- EPUB export (1.0) ----------------------------------------------------
+
+def test_epub_export_is_valid_zip():
+    series, book = ar.slugify(SERIES), ar.slugify(BOOK)
+    r = client.get(f"/api/books/{series}/{book}/export.epub")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/epub+zip")
+    assert "attachment" in r.headers.get("content-disposition", "")
+
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    names = z.namelist()
+    # `mimetype` must be FIRST and stored uncompressed.
+    assert names[0] == "mimetype"
+    assert z.read("mimetype") == b"application/epub+zip"
+    assert z.getinfo("mimetype").compress_type == zipfile.ZIP_STORED
+
+    for required in ("META-INF/container.xml", "OEBPS/content.opf",
+                     "OEBPS/nav.xhtml", "OEBPS/toc.ncx", "OEBPS/style.css"):
+        assert required in names, required
+    assert any(n.startswith("OEBPS/ch-") for n in names)
+
+    # The package + nav must be well-formed XML.
+    xml.dom.minidom.parseString(z.read("OEBPS/content.opf"))
+    xml.dom.minidom.parseString(z.read("OEBPS/nav.xhtml"))
+
+
+def test_epub_export_404_on_missing_book():
+    r = client.get(f"/api/books/{ar.slugify(SERIES)}/nope/export.epub")
+    assert r.status_code == 404

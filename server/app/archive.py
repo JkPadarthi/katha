@@ -289,6 +289,85 @@ def read_bible(book: Path) -> dict[str, str]:
     return out
 
 
+# ---------- reading-mode notes (1.0) ----------
+# Annotations live as a markdown sidecar next to the chapter (ch-NN.notes.md)
+# so they stay portable and git-able, and are skipped by the ch-\d{2}\.md
+# chapter regexes. Format:
+#     # Notes — ch-01
+#
+#     ## <created_at>
+#     > quoted passage
+#
+#     note body
+#
+#     ---
+
+def notes_path(book: Path, chapter_id: str) -> Path | None:
+    chapter = get_chapter(book, chapter_id)
+    if not chapter:
+        return None
+    return chapter.parent / f"{chapter.stem}.notes.md"
+
+
+def read_notes(book: Path, chapter_id: str) -> list[dict] | None:
+    p = notes_path(book, chapter_id)
+    if p is None:
+        return None
+    if not p.is_file():
+        return []
+    return _parse_notes(p.read_text(encoding="utf-8"))
+
+
+def _parse_notes(text: str) -> list[dict]:
+    notes = []
+    for block in re.split(r"(?m)^---\s*$", text):
+        created = ""
+        quote_lines: list[str] = []
+        body_lines: list[str] = []
+        started = False
+        for ln in block.splitlines():
+            if ln.startswith("## "):
+                created = ln[3:].strip()
+                started = True
+                continue
+            if not started or ln.startswith("# "):
+                continue
+            if ln.startswith("> ") or ln == ">":
+                quote_lines.append(ln[2:] if len(ln) > 2 else "")
+            elif ln.strip() == "" and not body_lines:
+                continue
+            else:
+                body_lines.append(ln)
+        if not created:
+            continue
+        notes.append({
+            "created_at": created,
+            "quote": "\n".join(quote_lines).strip(),
+            "body": "\n".join(body_lines).strip(),
+        })
+    return notes
+
+
+def write_notes(book: Path, chapter_id: str, notes: list[dict]) -> Path | None:
+    p = notes_path(book, chapter_id)
+    if p is None:
+        return None
+    cid = chapter_id if re.fullmatch(r"ch-\d{2}", chapter_id) else f"ch-{int(chapter_id):02d}"
+    lines = [f"# Notes — {cid}", ""]
+    for n in notes:
+        created = (n.get("created_at") or "").strip() or _now()
+        lines.append(f"## {created}")
+        quote = (n.get("quote") or "").strip()
+        if quote:
+            lines.extend(f"> {ql}" for ql in quote.splitlines())
+            lines.append("")
+        lines.append((n.get("body") or "").strip())
+        lines.extend(["", "---", ""])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return p
+
+
 # ---------- searchable docs (0.2.2) ----------
 
 def iter_searchable_docs():

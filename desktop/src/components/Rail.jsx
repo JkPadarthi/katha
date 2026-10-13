@@ -1,4 +1,5 @@
 import React from 'react'
+import Rituals from './Rituals.jsx'
 
 // The CHAPTERS pane — the session-rail analog. Collapses to icons like a
 // proper IDE. Active chapter glows gold.
@@ -99,6 +100,8 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive })
           </>
         )}
       </div>
+
+      {!collapsed && <Rituals />}
 
       <div className="border-t hairline p-1.5">
         <button className="flex w-full items-center justify-center gap-1 rounded-md px-2 py-1.5 text-[11px] text-mute hover:bg-panel-2 hover:text-ink">

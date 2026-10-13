@@ -118,3 +118,26 @@ class MuseSweepRequest(BaseModel):
 
 class BibleUpdate(BaseModel):
     content: str
+
+
+# --- reading-mode notes (1.0) ---------------------------------------------
+
+class NoteOut(BaseModel):
+    quote: str = ""
+    body: str = ""
+    created_at: str = ""
+
+
+class NotesOut(BaseModel):
+    chapter_id: str
+    notes: list[NoteOut]
+
+
+class NoteIn(BaseModel):
+    quote: str = ""
+    body: str = ""
+    created_at: str | None = None
+
+
+class NotesUpdate(BaseModel):
+    notes: list[NoteIn]

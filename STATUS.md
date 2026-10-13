@@ -1,7 +1,8 @@
 # Katha — Status
 
-**Phase 0.4** — the IDE is complete and shipping as an installable PWA; the
-client is served from the same FastAPI server as the API.
+**Phase 1.0** — the IDE is complete and shipping as an installable PWA, with
+reading mode, writing rituals, and EPUB delivery. The client is served from the
+same FastAPI server as the API.
 
 ## Done
 - **0.1 Shell** — three panes, Hermes tokens, Cmd+K.
@@ -14,13 +15,15 @@ client is served from the same FastAPI server as the API.
 - **0.4** — focus mode; canon sweep (continuity report + approval-gated bible
   diffs); Electron replaced by a PWA (manifest, shell-only service worker,
   icons), served same-origin from the Pi.
+- **1.0** — reading mode with margin-note annotations (`ch-NN.notes.md`
+  sidecars); writing rituals (daily goal, streak, 14-day history); EPUB export
+  (stdlib); optional proactive nudge.
 
 ## Next
-- **1.0** — reading mode + annotations; writing rituals (goals/streaks);
-  EPUB export; optional nudge toggle.
+- **2.0** — the PWA as the universal client (desktop + mobile). No Flutter.
 
 ## Verify
-- Server: `cd server && .venv\Scripts\python.exe -m pytest -q` (33 tests).
+- Server: `cd server && .venv\Scripts\python.exe -m pytest -q` (40 tests).
 - Client: `cd desktop && npm run build`.
 - Install: build, serve via the Pi, open over `tailscale serve` HTTPS, Install app.
 

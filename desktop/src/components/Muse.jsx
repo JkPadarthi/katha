@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from 'react'
 import * as api from '../api.js'
 import { pageApi } from './Page.jsx'
 
+// Imperative bridge so App can pre-fill the composer (proactive nudge).
+export const museApi = { setDraft: null }
+
 // THE MUSE — Zed-style chat panel. 0.3 wires the streaming chat via the
 // FastAPI Muse proxy (server/app/muse.py). The thread lives in component
 // state; persistent per-chapter history ships in 0.3.4.
@@ -39,6 +42,12 @@ export default function Muse() {
   const [error, setError] = useState('')
   const abortRef = useRef(null)
   const threadRef = useRef(null)
+
+  useEffect(() => {
+    // Let App (the proactive nudge) pre-fill the composer.
+    museApi.setDraft = (t) => setDraft(t)
+    return () => { museApi.setDraft = null }
+  }, [])
 
   // Autoscroll the thread as the assistant streams.
   useEffect(() => {

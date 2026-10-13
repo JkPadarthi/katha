@@ -1,12 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react'
 import * as api from '../api.js'
+import ReadingView from './ReadingView.jsx'
+import { getSetting, setSetting } from '../settings.js'
 
 // THE PAGE — the quiet center. Loads real content from the FastAPI archive
-// (0.2.1) and autosaves via PUT → md write + revision snapshot on disk.
+// and autosaves via PUT → md write + revision snapshot on disk.
 // 0.3.3 — selection capture + rewrite trigger; App.jsx owns the rewrite
 // pipeline + diff overlay, this just hands selection up + accepts replacements.
 // 0.3.5 — three apply operations exposed via pageApi: insertAtCursor,
 //         replaceSelection, appendToChapter.
+// 1.0   — Edit/Read modes. Read renders the chapter as prose and supports
+//         margin-note annotations (persisted to a ch-NN.notes.md sidecar).
 export default function Page({ chapter, series, focus, onSelection, onReplaceRequested }) {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -14,8 +18,13 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
   const [revision, setRevision] = useState(0)
   const [drafts, setDrafts] = useState(0)
   const [saving, setSaving] = useState(false)
+  // Edit vs Read. Persisted so the app reopens where you left off.
+  const [mode, setMode] = useState(() => getSetting('mode', 'edit'))
+  const [notes, setNotes] = useState([])
   const taRef = useRef(null)
   const lastSelectionRef = useRef({ start: 0, end: 0, text: '' })
+
+  useEffect(() => { setSetting('mode', mode) }, [mode])
 
   // Load chapter content from the archive when the selection changes.
   useEffect(() => {
@@ -37,6 +46,17 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
         setSavedAt('loaded')
       })
       .catch(() => setBody(''))
+    return () => { alive = false }
+  }, [chapter?.id, series?.series, series?.book])
+
+  // Load this chapter's annotations.
+  useEffect(() => {
+    if (!chapter || !series) return
+    let alive = true
+    api
+      .getNotes(series.series, series.book, chapter.id)
+      .then((n) => alive && setNotes(n.notes || []))
+      .catch(() => alive && setNotes([]))
     return () => { alive = false }
   }, [chapter?.id, series?.series, series?.book])
 
@@ -74,9 +94,27 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
       .finally(() => setSaving(false))
   }
 
+  // --- annotations -------------------------------------------------------
+
+  const commitNotes = (list = notes) => {
+    if (!chapter || !series) return
+    api.saveNotes(series.series, series.book, chapter.id, list).catch(() => {})
+  }
+  const addNote = (quote) => {
+    const next = [...notes, { quote, body: '', created_at: '' }]
+    setNotes(next)
+    commitNotes(next)
+  }
+  const setNoteBody = (i, text) => {
+    setNotes((ns) => ns.map((n, idx) => (idx === i ? { ...n, body: text } : n)))
+  }
+  const deleteNote = (i) => {
+    const next = notes.filter((_, idx) => idx !== i)
+    setNotes(next)
+    commitNotes(next)
+  }
+
   // Track selection in the textarea so the rewrite button knows what to send.
-  // selectionchange fires on any cursor move (incl. typing) — we only fire
-  // onSelection when there's a non-empty range.
   const captureSelection = () => {
     const ta = taRef.current
     if (!ta) return
@@ -147,16 +185,24 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
     }
   }, [onReplaceRequested, body])
 
+  const reading = mode === 'read'
+
   return (
     <main className="page-surface relative flex min-h-0 flex-col bg-base">
       <div className={'shrink-0 pb-2 ' + (focus ? 'mx-auto w-full max-w-[68ch] px-6 pt-14' : 'px-10 pt-6')}>
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          spellCheck={false}
-          className={'w-full border-none bg-transparent font-serif font-semibold text-ink placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[30px]' : 'text-[26px]')}
-          placeholder="Chapter title"
-        />
+        {reading ? (
+          <h1 className={'font-serif font-semibold text-ink ' + (focus ? 'text-[30px]' : 'text-[26px]')}>
+            {title || chapter?.title || ''}
+          </h1>
+        ) : (
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            spellCheck={false}
+            className={'w-full border-none bg-transparent font-serif font-semibold text-ink placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[30px]' : 'text-[26px]')}
+            placeholder="Chapter title"
+          />
+        )}
         <div className="mt-1 flex items-center gap-3 text-[10.5px] text-mute/70">
           <span>{words} words</span>
           <span>·</span>
@@ -164,33 +210,55 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
           <span>·</span>
           <span>rev {revision}{drafts ? ` · ${drafts} draft${drafts > 1 ? 's' : ''}` : ''}</span>
           <span className="ml-auto flex items-center gap-2">
-            <span className="flex items-center gap-1.5">
-              <span className="h-1 w-1 rounded-full bg-ok" />
-              autosave
-            </span>
+            {!reading && (
+              <span className="flex items-center gap-1.5">
+                <span className="h-1 w-1 rounded-full bg-ok" />
+                autosave
+              </span>
+            )}
             <button
-              onClick={handleManualSave}
-              disabled={saving}
-              className="rounded-md border border-gold/40 px-2.5 py-0.5 text-[10.5px] font-medium text-ink transition-colors hover:bg-gold/10 disabled:opacity-40"
+              onClick={() => setMode((m) => (m === 'edit' ? 'read' : 'edit'))}
+              className="rounded-md border hairline px-2.5 py-0.5 text-[10.5px] font-medium text-mute transition-colors hover:text-ink"
+              title={reading ? 'Back to editing' : 'Read as book'}
             >
-              {saving ? '…' : 'Save'}
+              {reading ? 'Edit' : 'Read'}
             </button>
+            {!reading && (
+              <button
+                onClick={handleManualSave}
+                disabled={saving}
+                className="rounded-md border border-gold/40 px-2.5 py-0.5 text-[10.5px] font-medium text-ink transition-colors hover:bg-gold/10 disabled:opacity-40"
+              >
+                {saving ? '…' : 'Save'}
+              </button>
+            )}
           </span>
         </div>
       </div>
 
       <div className={'min-h-0 flex-1 overflow-y-auto pb-16 ' + (focus ? 'mx-auto w-full max-w-[68ch] px-6' : 'px-10')}>
-        <textarea
-          ref={taRef}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onSelect={captureSelection}
-          onKeyUp={captureSelection}
-          onMouseUp={captureSelection}
-          spellCheck={false}
-          className={'h-full min-h-[60vh] w-full resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]')}
-          placeholder="The page is blank. The story begins here."
-        />
+        {reading ? (
+          <ReadingView
+            body={body}
+            notes={notes}
+            onAddNote={addNote}
+            onNoteBody={setNoteBody}
+            onDeleteNote={deleteNote}
+            onCommitNotes={() => commitNotes()}
+          />
+        ) : (
+          <textarea
+            ref={taRef}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            onSelect={captureSelection}
+            onKeyUp={captureSelection}
+            onMouseUp={captureSelection}
+            spellCheck={false}
+            className={'h-full min-h-[60vh] w-full resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]')}
+            placeholder="The page is blank. The story begins here."
+          />
+        )}
       </div>
     </main>
   )

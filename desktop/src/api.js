@@ -162,3 +162,44 @@ export function museSweep({ series, bookId, target, bibleName, onDelta, signal }
     bible_name: bibleName || null
   }, { onDelta, signal })
 }
+
+// --- reading-mode notes (1.0) ---------------------------------------------
+
+export function getNotes(series, bookId, chapterId) {
+  return req(`/books/${series}/${bookId}/chapters/${chapterId}/notes`)
+}
+
+export function saveNotes(series, bookId, chapterId, notes) {
+  return req(`/books/${series}/${bookId}/chapters/${chapterId}/notes`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      notes: (notes || []).map((n) => ({
+        quote: n.quote || '',
+        body: n.body || '',
+        created_at: n.created_at || null
+      }))
+    })
+  })
+}
+
+// --- writing rituals (1.0) ------------------------------------------------
+
+export function getStats(goal) {
+  return req('/stats' + (goal ? `?goal=${goal}` : ''))
+}
+
+// --- delivery: EPUB export (1.0) ------------------------------------------
+
+export async function exportEpub(series, bookId, filename) {
+  const res = await fetch(`/api/books/${series}/${bookId}/export.epub`)
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — export`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename || 'katha.epub'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}

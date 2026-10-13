@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react'
 // browser (or the installed app's own chrome) draws those. So this is the
 // brand mark, the version, and an "Install app" button when the browser
 // offers one (beforeinstallprompt).
-export default function TitleBar({ focus, onToggleFocus }) {
+export default function TitleBar({ focus, onToggleFocus, onOpenSettings }) {
   const [installEvt, setInstallEvt] = useState(null)
 
   useEffect(() => {
@@ -30,6 +30,13 @@ export default function TitleBar({ focus, onToggleFocus }) {
         <span className="text-[11px] font-medium tracking-wide text-mute">Katha</span>
       </div>
       <div className="flex items-center gap-2">
+        <button
+          onClick={onOpenSettings}
+          className="rounded-md border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-ink"
+          title="Settings"
+        >
+          ⚙
+        </button>
         <button
           onClick={onToggleFocus}
           className="rounded-md border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-ink"

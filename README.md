@@ -4,7 +4,7 @@ A self-hosted story-writing IDE. Three panes — chapters, the page, the Muse �
 
 Built to be *yours*: no SaaS, no stores. One FastAPI server on a Raspberry Pi 5 serves **both** the API and an installable **PWA**; your Markdown archive never leaves the Pi.
 
-**Status:** Phase 0.4 — see STATUS.md.
+**Status:** Phase 1.0 — see STATUS.md.
 
 ## Stack
 

@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react'
 import TitleBar from './components/TitleBar.jsx'
 import Rail from './components/Rail.jsx'
 import Page, { pageApi } from './components/Page.jsx'
-import Muse from './components/Muse.jsx'
+import Muse, { museApi } from './components/Muse.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
 import Sweep from './components/Sweep.jsx'
+import Settings from './components/Settings.jsx'
 import * as api from './api.js'
 import { getSetting, setSetting } from './settings.js'
 
@@ -19,6 +20,11 @@ export default function App() {
   const [focusMode, setFocusMode] = useState(() => getSetting('focus', false))
   // Canon sweep overlay (0.4)
   const [sweepOpen, setSweepOpen] = useState(false)
+  // Settings + writing rituals + proactive nudge (1.0)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [goal, setGoal] = useState(() => getSetting('goal', '') ?? '')
+  const [nudgeOn, setNudgeOn] = useState(() => getSetting('nudge', false))
+  const [nudge, setNudge] = useState(false)
   // Surface archive-load errors so the user sees what went wrong (instead
   // of a silent "Loading archive…" forever).
   const [loadError, setLoadError] = useState('')
@@ -83,6 +89,27 @@ export default function App() {
   }, [])
 
   useEffect(() => { setSetting('focus', focusMode) }, [focusMode])
+
+  // Proactive nudge (D11): when enabled, after a few quiet minutes offer to
+  // have the Muse continue. Off by default — quiet, never nagging.
+  useEffect(() => {
+    if (!nudgeOn) { setNudge(false); return }
+    let timer
+    const reset = () => {
+      setNudge(false)
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (!paletteOpen && !rewriteOpen && !sweepOpen && !settingsOpen) setNudge(true)
+      }, 4 * 60 * 1000)
+    }
+    const evs = ['keydown', 'mousemove', 'mousedown', 'touchstart']
+    evs.forEach((e) => window.addEventListener(e, reset))
+    reset()
+    return () => {
+      clearTimeout(timer)
+      evs.forEach((e) => window.removeEventListener(e, reset))
+    }
+  }, [nudgeOn, paletteOpen, rewriteOpen, sweepOpen, settingsOpen])
 
   const jumpTo = (id) => {
     setActiveChapter(id)
@@ -164,12 +191,30 @@ export default function App() {
       label: 'Canon sweep',
       hint: 'Muse',
       run: () => setSweepOpen(true)
+    },
+    ...(series
+      ? [{
+          id: 'export',
+          label: 'Export EPUB',
+          hint: 'Deliver',
+          run: () => api.exportEpub(series.series, series.book, `${series.book}.epub`).catch(() => {})
+        }]
+      : []),
+    {
+      id: 'settings',
+      label: 'Settings',
+      hint: '',
+      run: () => setSettingsOpen(true)
     }
   ]
 
   return (
     <div className="flex h-full flex-col bg-base">
-      <TitleBar focus={focusMode} onToggleFocus={() => setFocusMode((v) => !v)} />
+      <TitleBar
+        focus={focusMode}
+        onToggleFocus={() => setFocusMode((v) => !v)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
       <div
         className="grid min-h-0 flex-1"
         style={{
@@ -208,6 +253,21 @@ export default function App() {
                 >
                   ✎ Rewrite selection
                 </button>
+              )}
+              {nudge && !focusMode && (
+                <div className="absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border hairline bg-panel px-3 py-1.5 text-[11px] text-mute shadow-lg shadow-black/40">
+                  <span>Still going?</span>
+                  <button
+                    onClick={() => {
+                      if (museApi.setDraft) museApi.setDraft('Continue the scene from where I left off.')
+                      setNudge(false)
+                    }}
+                    className="rounded-full border border-gold/40 px-2 py-0.5 text-[10.5px] font-medium text-gold hover:bg-gold/10"
+                  >
+                    Ask the Muse
+                  </button>
+                  <button onClick={() => setNudge(false)} className="text-mute hover:text-ink">×</button>
+                </div>
               )}
             </div>
             {!focusMode && <Muse />}
@@ -249,6 +309,15 @@ export default function App() {
       )}
       {sweepOpen && series && (
         <Sweep series={series} onClose={() => setSweepOpen(false)} />
+      )}
+      {settingsOpen && (
+        <Settings
+          goal={goal}
+          onGoal={(v) => { setGoal(v); setSetting('goal', v === '' ? null : Number(v)) }}
+          nudge={nudgeOn}
+          onNudge={(v) => { setNudgeOn(v); setSetting('nudge', v) }}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
     </div>
   )

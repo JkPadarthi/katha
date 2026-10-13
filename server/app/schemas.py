@@ -105,3 +105,16 @@ class MuseRewriteRequest(BaseModel):
     text: str
     style: str = "novel"      # 'novel' | 'scene' | 'clean'
     chapter_id: str | None = None
+
+
+# --- canon sweep (0.4) ----------------------------------------------------
+
+class MuseSweepRequest(BaseModel):
+    series: str
+    book_id: str
+    target: str = "report"    # 'report' | 'bible'
+    bible_name: str | None = None
+
+
+class BibleUpdate(BaseModel):
+    content: str

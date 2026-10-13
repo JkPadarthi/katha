@@ -36,10 +36,6 @@ body {
 /* The page is where the author lives — let them select text freely. */
 .page-surface, .page-surface * { user-select: text; }
 
-/* Custom title bar drag region (Electron frameless). */
-.titlebar { -webkit-app-region: drag; }
-.titlebar button { -webkit-app-region: no-drag; }
-
 /* Hairline borders everywhere, one recipe. */
 .hairline { border-color: var(--color-line); }
 

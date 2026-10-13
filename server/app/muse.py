@@ -191,6 +191,22 @@ def models_info() -> dict:
 
 # --- canon context (D18) --------------------------------------------------
 
+def _resolve_bdir(series_slug: str, book_slug: str) -> Path | None:
+    """Resolve a series+book slug to a book dir, matching by title if needed
+    (same fallback as main.py:_resolve_book_path). None if not found."""
+    sd = ARCHIVE_ROOT / series_slug
+    if not sd.is_dir():
+        return None
+    bdir = sd / book_slug
+    if bdir.is_dir():
+        return bdir
+    for b in sorted(sd.iterdir()):
+        meta = ar_mod._read_book_json(b)  # type: ignore[attr-defined]
+        if meta.get("id") == book_slug or meta.get("title") == book_slug:
+            return b
+    return None
+
+
 def _parse_chapter_id(chapter_id: str) -> tuple[str, str, str] | None:
     """`series/book/ch-XX` → (series_slug, book_slug, chapter_id)."""
     parts = chapter_id.split("/")
@@ -218,19 +234,9 @@ async def _load_canon_context(chapter_id: str, user_prompt: str = "") -> str:
     if not parsed:
         return ""
     series_slug, book_slug, cid = parsed
-    sd = ARCHIVE_ROOT / series_slug
-    if not sd.is_dir():
+    bdir = _resolve_bdir(series_slug, book_slug)
+    if bdir is None:
         return ""
-    bdir = sd / book_slug
-    if not bdir.is_dir():
-        # Try matching by title (book.json) — same fallback as main.py:_resolve_book_path.
-        for b in sorted(sd.iterdir()):
-            meta = ar_mod._read_book_json(b)  # type: ignore[attr-defined]
-            if meta.get("id") == book_slug or meta.get("title") == book_slug:
-                bdir = b
-                break
-        else:
-            return ""
     chapter_path = bdir / "chapters" / f"{cid}.md"
     if not chapter_path.is_file():
         return ""
@@ -384,3 +390,96 @@ def read_thread(chapter_id: str) -> str:
     if path is None or not path.is_file():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+# --- canon sweep (0.4) ----------------------------------------------------
+# A whole-manuscript continuity pass. Two targets:
+#   report → stream a markdown audit of contradictions / drift (read-only)
+#   bible  → stream a proposed rewrite of one bible file (approval-gated)
+
+SWEEP_REPORT_PROMPT = (
+    "You are a continuity editor for a novel-in-progress. Read the whole "
+    "manuscript and its story bible below, then write a concise markdown "
+    "report covering: (1) canon contradictions, (2) timeline errors, "
+    "(3) character inconsistencies (names, traits, voice), (4) open questions "
+    "worth resolving. Cite the chapter or bible entry where relevant. Report "
+    "only real issues; if a section is clean, say so in one line."
+)
+
+SWEEP_BIBLE_PROMPT = (
+    "You maintain the story bible. Below is the full manuscript and the "
+    "current version of one bible file. Rewrite that bible file so it "
+    "accurately reflects the manuscript — fix omissions, wrong facts, and "
+    "drift. Keep the existing markdown style and headings. Reply with ONLY "
+    "the new file contents, no preamble."
+)
+
+# A sweep needs the whole book in context, so allow a larger cap than a
+# single-chapter Muse call. (Wide, not infinite — deepseek-r1 has 131K.)
+_SWEEP_CHAR_CAP = MUSECONTEXT_MAX_TOKENS * 8
+
+
+def _load_full_book_context(bdir: Path) -> str:
+    """Whole-book context: every chapter + every bible file, char-capped."""
+    parts: list[str] = []
+    cd = bdir / "chapters"
+    if cd.is_dir():
+        for f in sorted(cd.glob("ch-*.md")):
+            if not re.fullmatch(r"ch-\d{2}\.md", f.name):
+                continue
+            parts.append(f.read_text(encoding="utf-8").strip())
+    bd = bdir / "bible"
+    if bd.is_dir():
+        for f in sorted(bd.glob("*.md")):
+            parts.append(f"### BIBLE: {f.name}\n\n{f.read_text(encoding='utf-8').strip()}")
+    block = "\n\n---\n\n".join(parts)
+    if len(block) > _SWEEP_CHAR_CAP:
+        block = block[:_SWEEP_CHAR_CAP] + "\n\n[…truncated…]"
+    return block
+
+
+async def sweep_report(series: str, book_id: str) -> AsyncIterator[str]:
+    """Stream a whole-book continuity audit (read-only)."""
+    bdir = _resolve_bdir(series, book_id)
+    if bdir is None:
+        yield "Book not found."
+        return
+    context = _load_full_book_context(bdir) or "(this book has no chapters yet)"
+    payload = {
+        "model": MUSE_REWRITE_MODEL,
+        "messages": [
+            {"role": "system", "content": SWEEP_REPORT_PROMPT},
+            {"role": "user", "content": context},
+        ],
+        "options": {"num_predict": MUSE_NUM_PREDICT, "temperature": 0.3},
+    }
+    async for delta in _post_chat(payload):
+        yield delta
+
+
+async def sweep_bible(series: str, book_id: str, bible_name: str) -> AsyncIterator[str]:
+    """Stream a proposed rewrite of one bible file (approval-gated)."""
+    bdir = _resolve_bdir(series, book_id)
+    if bdir is None:
+        yield "Book not found."
+        return
+    if not re.fullmatch(r"[A-Za-z0-9._-]+\.md", bible_name or ""):
+        yield "Invalid bible file name."
+        return
+    target = bdir / "bible" / bible_name
+    current = target.read_text(encoding="utf-8") if target.is_file() else "(new file)"
+    context = _load_full_book_context(bdir)
+    user = (
+        f"## CURRENT BIBLE FILE: {bible_name}\n\n{current}\n\n"
+        f"## FULL MANUSCRIPT\n\n{context}"
+    )
+    payload = {
+        "model": MUSE_REWRITE_MODEL,
+        "messages": [
+            {"role": "system", "content": SWEEP_BIBLE_PROMPT},
+            {"role": "user", "content": user},
+        ],
+        "options": {"num_predict": MUSE_NUM_PREDICT, "temperature": 0.4},
+    }
+    async for delta in _post_chat(payload):
+        yield delta

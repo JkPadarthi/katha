@@ -1,6 +1,10 @@
-# Katha — .gitignore (per user convention: .md untracked except README)
+# Katha — .gitignore (.md untracked by default; the project docs are tracked)
 *.md
 !README.md
+!ROADMAP.md
+!DECISIONS.md
+!STATUS.md
+!PROJECT.md
 .env
 node_modules/
 dist/

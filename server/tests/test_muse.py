@@ -528,3 +528,85 @@ def test_style_digest_auto_generated_on_first_touch(monkeypatch: pytest.MonkeyPa
     assert "Auto-generated" in digest
     assert digest_path.exists()
     assert "Auto-generated" in digest_path.read_text(encoding="utf-8")
+
+
+# --- canon sweep (0.4) ----------------------------------------------------
+
+def test_sweep_report_streams(monkeypatch: pytest.MonkeyPatch):
+    """`/api/muse/sweep` with target='report' streams a whole-book continuity
+    audit built from the manuscript + bible."""
+    chunks = [
+        {"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "## Report\n"}, "done": False},
+        {"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "Kael's eyes change colour."}, "done": True},
+    ]
+    _patch_ollama(monkeypatch, _ollama_chat_ndjson(*chunks))
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/sweep",
+            json={
+                "series": ar.slugify("The Ember Throne"),
+                "book_id": ar.slugify("The First Flame"),
+                "target": "report",
+            },
+        ) as r:
+            assert r.status_code == 200
+            assert "text/event-stream" in r.headers["content-type"]
+            payload = _sse_payload(r)
+
+    assert "Report" in payload
+    assert "eyes change colour" in payload
+
+
+def test_sweep_bible_streams_and_approval_writes(monkeypatch: pytest.MonkeyPatch):
+    """target='bible' streams a proposed rewrite of one bible file. The
+    approval step (PUT) then writes it to disk — md is the truth."""
+    from app.config import ARCHIVE_ROOT
+
+    proposed_text = "# Characters\n\n## Kael\n- Grey eyes, carries a debt.\n"
+    chunks = [
+        {"model": "deepseek-r1:14b",
+         "message": {"role": "assistant", "content": proposed_text},
+         "done": True},
+    ]
+    _patch_ollama(monkeypatch, _ollama_chat_ndjson(*chunks))
+
+    name = "sweep-check.md"
+    series_slug, book_slug = ar.slugify("The Ember Throne"), ar.slugify("The First Flame")
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/sweep",
+            json={"series": series_slug, "book_id": book_slug,
+                  "target": "bible", "bible_name": name},
+        ) as r:
+            assert r.status_code == 200
+            proposed = _sse_payload(r)
+
+        put = client.put(
+            f"/api/books/{series_slug}/{book_slug}/bible/{name}",
+            json={"content": proposed},
+        )
+        assert put.status_code == 200
+        assert put.json()["files"][name] == proposed
+
+    on_disk = (ARCHIVE_ROOT / series_slug / book_slug / "bible" / name).read_text(encoding="utf-8")
+    assert on_disk == proposed
+
+
+def test_sweep_bible_rejects_bad_name(monkeypatch: pytest.MonkeyPatch):
+    _patch_ollama(monkeypatch, _ollama_chat_ndjson(
+        {"model": "deepseek-r1:14b", "message": {"role": "assistant", "content": "x"}, "done": True}
+    ))
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/sweep",
+            json={"series": ar.slugify("The Ember Throne"),
+                  "book_id": ar.slugify("The First Flame"),
+                  "target": "bible", "bible_name": "notes"},
+        ) as r:
+            payload = _sse_payload(r)
+    assert "Invalid bible file name." in payload

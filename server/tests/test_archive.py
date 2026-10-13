@@ -38,7 +38,7 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "0.3.1"
+    assert body["version"] == "0.4.0"
     assert body["db_ok"] is True
 
 
@@ -188,3 +188,31 @@ def test_search_excludes_revision_snapshots():
     assert all("." not in d for d in doc_ids), f"revision leaked: {doc_ids}"
     assert "ch-01" in doc_ids          # the canonical chapter IS indexed
     assert "ch-01.1" not in doc_ids    # revision snapshot is NOT
+
+
+# --- bible write (0.4 canon sweep approval) -------------------------------
+
+def test_bible_put_writes_and_indexes():
+    """PUT a bible file → written to disk (md is the truth) + searchable."""
+    name = "sweep-note.md"
+    content = "# Sweep Note\n\nThe Ember Throne's herald is named Borel."
+    r = client.put(
+        f"/api/books/{ar.slugify(SERIES)}/{ar.slugify(BOOK)}/bible/{name}",
+        json={"content": content},
+    )
+    assert r.status_code == 200
+    assert r.json()["files"][name] == content
+
+    bd = ar.bible_dir(ar.book_dir(SERIES, BOOK))
+    assert (bd / name).read_text(encoding="utf-8") == content
+
+    hits = client.get("/api/search", params={"q": "Borel"}).json()["hits"]
+    assert any(h["doc_id"] == name for h in hits)
+
+
+def test_bible_put_rejects_non_md_name():
+    r = client.put(
+        f"/api/books/{ar.slugify(SERIES)}/{ar.slugify(BOOK)}/bible/notes",
+        json={"content": "x"},
+    )
+    assert r.status_code == 400

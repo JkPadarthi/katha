@@ -23,7 +23,7 @@ function Snippet({ html }) {
   return <>{nodes}</>
 }
 
-export default function CommandPalette({ onClose, onJump, archive }) {
+export default function CommandPalette({ onClose, onJump, archive, commands = [] }) {
   const [q, setQ] = useState('')
   const [hits, setHits] = useState(null)   // null = idle, [] = no hits, [...] = hits
   const inputRef = useRef(null)
@@ -78,6 +78,21 @@ export default function CommandPalette({ onClose, onJump, archive }) {
         </div>
 
         <ul className="max-h-[340px] overflow-y-auto p-1.5">
+          {showChapters &&
+            commands.map((cmd) => (
+              <li key={cmd.id}>
+                <button
+                  onClick={() => { cmd.run(); onClose() }}
+                  className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12.5px] hover:bg-panel-2"
+                >
+                  <span className="text-ink">{cmd.label}</span>
+                  {cmd.hint && (
+                    <span className="text-[10px] tracking-wide text-mute/60 uppercase">{cmd.hint}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+
           {showChapters &&
             chapters.map((c) => (
               <li key={c.id}>

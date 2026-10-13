@@ -7,7 +7,7 @@ import * as api from '../api.js'
 // pipeline + diff overlay, this just hands selection up + accepts replacements.
 // 0.3.5 — three apply operations exposed via pageApi: insertAtCursor,
 //         replaceSelection, appendToChapter.
-export default function Page({ chapter, series, onSelection, onReplaceRequested }) {
+export default function Page({ chapter, series, focus, onSelection, onReplaceRequested }) {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [savedAt, setSavedAt] = useState('')
@@ -149,12 +149,12 @@ export default function Page({ chapter, series, onSelection, onReplaceRequested 
 
   return (
     <main className="page-surface relative flex min-h-0 flex-col bg-base">
-      <div className="shrink-0 px-10 pt-6 pb-2">
+      <div className={'shrink-0 pb-2 ' + (focus ? 'mx-auto w-full max-w-[68ch] px-6 pt-14' : 'px-10 pt-6')}>
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           spellCheck={false}
-          className="w-full border-none bg-transparent font-serif text-[26px] font-semibold text-ink placeholder:text-mute/40 focus:outline-none"
+          className={'w-full border-none bg-transparent font-serif font-semibold text-ink placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[30px]' : 'text-[26px]')}
           placeholder="Chapter title"
         />
         <div className="mt-1 flex items-center gap-3 text-[10.5px] text-mute/70">
@@ -179,7 +179,7 @@ export default function Page({ chapter, series, onSelection, onReplaceRequested 
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-16">
+      <div className={'min-h-0 flex-1 overflow-y-auto pb-16 ' + (focus ? 'mx-auto w-full max-w-[68ch] px-6' : 'px-10')}>
         <textarea
           ref={taRef}
           value={body}
@@ -188,7 +188,7 @@ export default function Page({ chapter, series, onSelection, onReplaceRequested 
           onKeyUp={captureSelection}
           onMouseUp={captureSelection}
           spellCheck={false}
-          className="h-full min-h-[60vh] w-full resize-none border-none bg-transparent font-serif text-[16px] leading-[1.85] text-ink/95 placeholder:text-mute/40 focus:outline-none"
+          className={'h-full min-h-[60vh] w-full resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]')}
           placeholder="The page is blank. The story begins here."
         />
       </div>

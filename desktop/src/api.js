@@ -1,30 +1,12 @@
-// Katha API client — talks to the FastAPI archive (0.2.1).
-// Base URL resolution (priority, top to bottom):
-//   1. VITE_KATHA_API env (explicit override — used by packaged desktop)
-//   2. Same host as the page (browser served on Bharat → localhost:4901;
-//      browser served via Tailscale from another machine → that machine's
-//      Tailscale IP on :4901). This is the dev-safe default.
-//   3. Hard fallback to the Tailscale address (legacy).
-const _FALLBACK_HOST = '100.86.68.51'
-function _resolveBase() {
-  const envBase = import.meta.env.VITE_KATHA_API
-  if (envBase) return envBase
-  if (typeof window !== 'undefined' && window.location && window.location.hostname) {
-    const host = window.location.hostname
-    // Only switch to the same host when it's NOT localhost (a Windows
-    // laptop hitting localhost:5173 wants the API on localhost too — same
-    // machine). For Tailscale / LAN IPs, mirror the host.
-    if (host && host !== 'localhost' && host !== '127.0.0.1') {
-      return `http://${host}:4901`
-    }
-    return 'http://localhost:4901'
-  }
-  return `http://${_FALLBACK_HOST}:4901`
-}
-const BASE = _resolveBase()
+// Katha API client — talks to the FastAPI archive.
+// The server serves this app AND the API from the same origin (the Pi, one
+// port), so every request is a same-origin `/api/...`. In dev, Vite proxies
+// `/api` to the local server (see vite.config.js). No base-URL juggling.
+
+export const BASE = ''
 
 async function req(path, options = {}) {
-  const res = await fetch(`${BASE}/api${path}`, {
+  const res = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options
   })
@@ -97,7 +79,7 @@ function unescapeSse(s) {
 }
 
 async function streamSse(path, body, { onDelta, signal }) {
-  const res = await fetch(`${BASE}/api${path}`, {
+  const res = await fetch(`/api${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -156,4 +138,27 @@ export function museRewrite({ text, style, chapterId, onDelta, signal }) {
 
 export function museModels() {
   return req('/muse/models')
+}
+
+// --- canon sweep (0.4) ----------------------------------------------------
+
+export function getBible(series, bookId) {
+  return req(`/books/${series}/${bookId}/bible`)
+}
+
+export function saveBible(series, bookId, name, content) {
+  return req(`/books/${series}/${bookId}/bible/${name}`, {
+    method: 'PUT',
+    body: JSON.stringify({ content })
+  })
+}
+
+// target: 'report' (whole-book audit) | 'bible' (proposed rewrite of one file)
+export function museSweep({ series, bookId, target, bibleName, onDelta, signal }) {
+  return streamSse('/muse/sweep', {
+    series,
+    book_id: bookId,
+    target: target || 'report',
+    bible_name: bibleName || null
+  }, { onDelta, signal })
 }

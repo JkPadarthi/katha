@@ -1,19 +1,23 @@
-"""Katha Archive API — FastAPI entry point (0.3.1)."""
+"""Katha Archive API — FastAPI entry point (0.4.0)."""
 
 from __future__ import annotations
 
+import mimetypes
+import re
 from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import archive as ar
 from . import db
-from .config import ARCHIVE_ROOT, CORS_ORIGINS, VERSION
+from .config import ARCHIVE_ROOT, CORS_ORIGINS, VERSION, WEB_DIR
 from .schemas import (
     BibleOut,
+    BibleUpdate,
     BookCreate,
     BooksTreeOut,
     ChapterCreate,
@@ -24,6 +28,7 @@ from .schemas import (
     HealthOut,
     MuseChatRequest,
     MuseRewriteRequest,
+    MuseSweepRequest,
     RevisionContentOut,
     RevisionOut,
     SearchHit,
@@ -199,6 +204,21 @@ def read_bible(series: str, book_id: str):
     return BibleOut(book_id=bdir.name, files=ar.read_bible(bdir))
 
 
+@app.put("/api/books/{series}/{book_id}/bible/{name}", response_model=BibleOut,
+         tags=["bible"])
+def save_bible(series: str, book_id: str, name: str, payload: BibleUpdate):
+    """Write a bible file (md is the truth) and reindex it. Used by the canon
+    sweep's approval step."""
+    bdir = _resolve_book_path(series, book_id)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+\.md", name):
+        raise HTTPException(400, "invalid bible file name")
+    bd = ar.bible_dir(bdir)
+    bd.mkdir(parents=True, exist_ok=True)
+    (bd / name).write_text(payload.content, encoding="utf-8")
+    db.index_doc("bible", series, bdir.name, name, name.rsplit(".", 1)[0], payload.content)
+    return BibleOut(book_id=bdir.name, files=ar.read_bible(bdir))
+
+
 @app.get("/api/search", response_model=SearchOut, tags=["search"])
 def search(q: str = "", limit: int = 20):
     """Full-text search across chapters + bible (FTS5, 0.2.2)."""
@@ -292,3 +312,48 @@ async def muse_rewrite(payload: MuseRewriteRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/muse/sweep", tags=["muse"])
+async def muse_sweep(payload: MuseSweepRequest):
+    """Stream a canon sweep as SSE.
+
+    Body:
+        series, book_id: which book
+        target:          'report' (whole-book continuity audit) |
+                         'bible'  (proposed rewrite of one bible file)
+        bible_name:      required when target='bible'
+    """
+    if payload.target == "bible":
+        gen = muse_mod.sweep_bible(payload.series, payload.book_id, payload.bible_name or "")
+    else:
+        gen = muse_mod.sweep_report(payload.series, payload.book_id)
+    return StreamingResponse(
+        _sse_from(gen),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------- static PWA client (same origin, one port) ---------------------
+
+# Serve the built SPA at `/` so the app and the API share an origin — the
+# service worker only installs in a secure context, and a single origin keeps
+# the client's requests same-origin (no CORS, no base-URL config).
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
+if WEB_DIR.is_dir():
+    _assets = WEB_DIR / "assets"
+    if _assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        # Never shadow the API — unknown /api paths must 404, not return HTML.
+        if full_path.startswith("api/"):
+            raise HTTPException(404, "not found")
+        candidate = WEB_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(str(candidate))
+        # SPA deep links fall through to the shell.
+        return FileResponse(str(WEB_DIR / "index.html"))

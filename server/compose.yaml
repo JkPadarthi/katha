@@ -1,11 +1,13 @@
-# Katha Archive — FastAPI + SQLite (index-only) over the md archive.
-# Runs on the Pi 5; desktop client reaches it over Tailscale (D12).
-# For the "monitoring" network note: this service does not join it (0.2 scope).
+# Katha Archive — FastAPI serves the API *and* the built PWA client from a
+# single port. Runs on the Pi 5; reach it over Tailscale (D12) and use
+# `tailscale serve` for the HTTPS origin a PWA needs to install.
 name: katha-archive
 
 services:
   archive:
-    build: .
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     container_name: katha-archive
     restart: unless-stopped
     ports:
@@ -14,6 +16,8 @@ services:
       # Archive root + index location inside the container (bind-mounted below).
       KATHA_ARCHIVE: /data/archive
       KATHA_DATA: /data/index
+      # The built client (copied into the image).
+      KATHA_WEB_DIR: /srv/web
     volumes:
       # md archive (source of truth) + sqlite index both persist on the host.
       - ./archive:/data/archive

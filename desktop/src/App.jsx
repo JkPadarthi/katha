@@ -5,7 +5,9 @@ import Page, { pageApi } from './components/Page.jsx'
 import Muse from './components/Muse.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
+import Sweep from './components/Sweep.jsx'
 import * as api from './api.js'
+import { getSetting, setSetting } from './settings.js'
 
 export default function App() {
   const [archive, setArchive] = useState(null)
@@ -13,6 +15,10 @@ export default function App() {
   const [activeChapter, setActiveChapter] = useState(null)
   const [railCollapsed, setRailCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // Focus mode — hide the rails, center the page on the writing. Persisted.
+  const [focusMode, setFocusMode] = useState(() => getSetting('focus', false))
+  // Canon sweep overlay (0.4)
+  const [sweepOpen, setSweepOpen] = useState(false)
   // Surface archive-load errors so the user sees what went wrong (instead
   // of a silent "Loading archive…" forever).
   const [loadError, setLoadError] = useState('')
@@ -23,7 +29,7 @@ export default function App() {
   const [rewriteBusy, setRewriteBusy] = useState(false)
   const [rewriteStyle, setRewriteStyle] = useState('novel')
 
-  // Load the live archive from the FastAPI backend (0.2.1).
+  // Load the live archive from the FastAPI backend.
   useEffect(() => {
     let alive = true
     setLoadError('')
@@ -54,21 +60,29 @@ export default function App() {
     return () => { alive = false }
   }, [])
 
-  // Cmd+K / Ctrl+K opens the palette — the IDE muscle memory.
+  // Cmd+K / Ctrl+K opens the palette; Ctrl+Shift+F toggles focus — the IDE
+  // muscle memory.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
         setPaletteOpen((v) => !v)
       }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setFocusMode((v) => !v)
+      }
       if (e.key === 'Escape') {
         setPaletteOpen(false)
         setRewriteOpen(false)
+        setFocusMode(false)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  useEffect(() => { setSetting('focus', focusMode) }, [focusMode])
 
   const jumpTo = (id) => {
     setActiveChapter(id)
@@ -138,29 +152,49 @@ export default function App() {
     setProposed('')
   }
 
+  const commands = [
+    {
+      id: 'focus',
+      label: focusMode ? 'Exit focus mode' : 'Enter focus mode',
+      hint: 'Ctrl+Shift+F',
+      run: () => setFocusMode((v) => !v)
+    },
+    {
+      id: 'sweep',
+      label: 'Canon sweep',
+      hint: 'Muse',
+      run: () => setSweepOpen(true)
+    }
+  ]
+
   return (
     <div className="flex h-full flex-col bg-base">
-      <TitleBar />
+      <TitleBar focus={focusMode} onToggleFocus={() => setFocusMode((v) => !v)} />
       <div
         className="grid min-h-0 flex-1"
         style={{
-          gridTemplateColumns: railCollapsed ? '48px 1fr 320px' : '232px 1fr 320px',
+          gridTemplateColumns: focusMode
+            ? '1fr'
+            : railCollapsed ? '48px 1fr 320px' : '232px 1fr 320px',
           transition: 'grid-template-columns 160ms ease'
         }}
       >
         {archive && series ? (
           <>
-            <Rail
-              collapsed={railCollapsed}
-              onToggle={() => setRailCollapsed((v) => !v)}
-              active={activeChapter}
-              onSelect={jumpTo}
-              archive={archive}
-            />
+            {!focusMode && (
+              <Rail
+                collapsed={railCollapsed}
+                onToggle={() => setRailCollapsed((v) => !v)}
+                active={activeChapter}
+                onSelect={jumpTo}
+                archive={archive}
+              />
+            )}
             <div className="relative min-h-0">
               <Page
                 chapter={chapter}
                 series={series}
+                focus={focusMode}
                 onSaved={() => {}}
                 onSelection={onSelection}
                 onReplaceRequested={true}
@@ -176,14 +210,14 @@ export default function App() {
                 </button>
               )}
             </div>
-            <Muse />
+            {!focusMode && <Muse />}
           </>
         ) : loadError ? (
           <div className="flex flex-col items-center justify-center gap-2 text-center text-mute">
             <div className="text-[12px] text-red-300">Failed to load archive</div>
             <div className="text-[10.5px] text-mute/70">{loadError}</div>
             <div className="text-[10px] text-mute/50">
-              Server at <code className="text-ink">{api.BASE}</code> didn't respond.
+              Server at <code className="text-ink">{window.location.origin}</code> didn't respond.
               Open DevTools (F12) → Network for details.
             </div>
           </div>
@@ -198,6 +232,7 @@ export default function App() {
           onClose={() => setPaletteOpen(false)}
           onJump={jumpTo}
           archive={archive}
+          commands={commands}
         />
       )}
       {rewriteOpen && selection && (
@@ -211,6 +246,9 @@ export default function App() {
           onRetry={onRetry}
           onClose={onCloseRewrite}
         />
+      )}
+      {sweepOpen && series && (
+        <Sweep series={series} onClose={() => setSweepOpen(false)} />
       )}
     </div>
   )

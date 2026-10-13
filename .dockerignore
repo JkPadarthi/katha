@@ -1,0 +1,12 @@
+# Keep the Docker build context lean — never ship deps, VCS, or runtime data.
+.git
+.omo
+.commandcode
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/dist
+server/archive
+server/data
+*.log

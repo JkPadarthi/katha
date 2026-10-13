@@ -18,8 +18,16 @@ ARCHIVE_ROOT = Path(os.environ.get("KATHA_ARCHIVE", Path(__file__).resolve().par
 DATA_DIR = Path(os.environ.get("KATHA_DATA", Path(__file__).resolve().parent.parent / "data"))
 DB_PATH = DATA_DIR / "katha.db"
 
+# Built PWA client, served by this same server at `/` — one origin, one port
+# (required for service-worker install over Tailscale). Absent in bare-API
+# dev; the static mount is skipped when the directory doesn't exist.
+WEB_DIR = Path(os.environ.get(
+    "KATHA_WEB_DIR",
+    Path(__file__).resolve().parent.parent.parent / "desktop" / "dist",
+))
+
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 # --- Muse upstream (0.3 Muse, D16/D19) ----------------------------------------
 # Friend's jenga box — direct Ollama, trusted LAN. No key needed.

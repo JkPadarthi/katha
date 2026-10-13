@@ -16,7 +16,8 @@ export default function DiffOverlay({
   onRetry,
   onClose,
   style,
-  onStyleChange
+  onStyleChange,
+  showStyles = true
 }) {
   // Word-level diff with whitespace preserved (so spaces between words show
   // up correctly).
@@ -62,23 +63,25 @@ export default function DiffOverlay({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex gap-0.5 rounded-md border hairline p-0.5">
-              {STYLES.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => onStyleChange(s)}
-                  disabled={busy}
-                  className={
-                    'rounded-sm px-2 py-0.5 text-[10.5px] transition-colors ' +
-                    (style === s
-                      ? 'bg-gold/20 text-gold'
-                      : 'text-mute hover:text-ink disabled:opacity-40')
-                  }
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
+            {showStyles && (
+              <div className="flex gap-0.5 rounded-md border hairline p-0.5">
+                {STYLES.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => onStyleChange(s)}
+                    disabled={busy}
+                    className={
+                      'rounded-sm px-2 py-0.5 text-[10.5px] transition-colors ' +
+                      (style === s
+                        ? 'bg-gold/20 text-gold'
+                        : 'text-mute hover:text-ink disabled:opacity-40')
+                    }
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
             <button
               onClick={onClose}
               className="text-[14px] text-mute hover:text-ink"

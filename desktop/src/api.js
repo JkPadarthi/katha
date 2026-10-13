@@ -74,10 +74,10 @@ export function getChapter(series, bookId, chapterId) {
   return req(`/books/${series}/${bookId}/chapters/${chapterId}`)
 }
 
-export function saveChapter(series, bookId, chapterId, content) {
+export function saveChapter(series, bookId, chapterId, content, title) {
   return req(`/books/${series}/${bookId}/chapters/${chapterId}`, {
     method: 'PUT',
-    body: JSON.stringify({ content })
+    body: JSON.stringify({ content, title: title || null })
   })
 }
 
@@ -86,93 +86,72 @@ export function search(query, limit = 20) {
 }
 
 // --- Muse (0.3 Muse, D16/D17/D19) ------------------------------------------
-// Server streams SSE `data: <chunk>\n\n` lines terminated by `data: [DONE]\n\n`.
-// Newlines inside `chunk` are escaped as `\n` literals — we un-escape them
-// on the client before appending to the assistant text. The onDelta callback
-// receives the cumulative *visible* text so far (the simplest UX contract).
+// Server streams SSE `data: <chunk>\n\n` events terminated by `data: [DONE]\n\n`.
+// Chunks are single-pass escaped (`\n` → `\n` literal, `\` → `\\`) — unescape
+// must match tokens in one pass or escaped backslashes corrupt. A failed
+// upstream arrives as `data: [ERROR] <message>` before [DONE]. onDelta
+// receives the cumulative *visible* text so far.
 
 function unescapeSse(s) {
-  return s.replace(/\\n/g, '\n').replace(/\\\\/g, '\\')
+  return s.replace(/\\n|\\\\/g, (m) => (m === '\\n' ? '\n' : '\\'))
+}
+
+async function streamSse(path, body, { onDelta, signal }) {
+  const res = await fetch(`${BASE}/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal
+  })
+  if (!res.ok || !res.body) {
+    throw new Error(`${res.status} ${res.statusText} — ${path}`)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buf = ''
+  let acc = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    // SSE events are separated by blank lines.
+    let idx
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const event = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      for (const line of event.split('\n')) {
+        if (!line.startsWith('data:')) continue
+        // SSE `data: ` prefix is 6 chars (data: + 1 space). Preserve any
+        // leading whitespace in the payload itself — it's part of the prose.
+        const payload = line.length > 5 && line[5] === ' '
+          ? line.slice(6)
+          : line.slice(5)
+        if (payload.startsWith('[ERROR]')) {
+          throw new Error(payload.slice(7).trim() || 'Muse error')
+        }
+        if (payload.trim() === '[DONE]') return acc
+        acc += unescapeSse(payload)
+      }
+      if (onDelta) onDelta(acc)
+    }
+  }
+  return acc
 }
 
 export function museChat({ messages, chapterId, chip, onDelta, signal }) {
-  // POST and read the SSE stream chunk-by-chunk.
-  return (async () => {
-    const res = await fetch(`${BASE}/api/muse/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, chapter_id: chapterId || null, chip: chip || null }),
-      signal
-    })
-    if (!res.ok || !res.body) {
-      throw new Error(`${res.status} ${res.statusText} — muse/chat`)
-    }
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder('utf-8')
-    let buf = ''
-    let acc = ''
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      // SSE events are separated by blank lines.
-      let idx
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const event = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        for (const line of event.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          // SSE `data: ` prefix is 6 chars (data: + 1 space). Preserve any
-          // leading whitespace in the payload itself — it's part of the prose.
-          const payload = line.length > 5 && line[5] === ' '
-            ? line.slice(6)
-            : line.slice(5)
-          if (payload.trim() === '[DONE]') return acc
-          acc += unescapeSse(payload)
-        }
-        if (onDelta) onDelta(acc)
-      }
-    }
-    return acc
-  })()
+  return streamSse('/muse/chat', {
+    messages,
+    chapter_id: chapterId || null,
+    chip: chip || null
+  }, { onDelta, signal })
 }
 
 export function museRewrite({ text, style, chapterId, onDelta, signal }) {
-  return (async () => {
-    const res = await fetch(`${BASE}/api/muse/rewrite`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, style: style || 'novel', chapter_id: chapterId || null }),
-      signal
-    })
-    if (!res.ok || !res.body) {
-      throw new Error(`${res.status} ${res.statusText} — muse/rewrite`)
-    }
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder('utf-8')
-    let buf = ''
-    let acc = ''
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let idx
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const event = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        for (const line of event.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.length > 5 && line[5] === ' '
-            ? line.slice(6)
-            : line.slice(5)
-          if (payload.trim() === '[DONE]') return acc
-          acc += unescapeSse(payload)
-        }
-        if (onDelta) onDelta(acc)
-      }
-    }
-    return acc
-  })()
+  return streamSse('/muse/rewrite', {
+    text,
+    style: style || 'novel',
+    chapter_id: chapterId || null
+  }, { onDelta, signal })
 }
 
 export function museModels() {

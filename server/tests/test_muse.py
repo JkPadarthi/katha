@@ -134,9 +134,16 @@ def _sse_payload(r) -> str:
     """Concatenate just the data payload (no `data: ` prefix, no [DONE]).
 
     SSE format is `data: <payload>` — the prefix is 6 chars (`data:` + 1 space).
-    We don't strip the payload beyond that prefix because internal whitespace
-    IS part of the prose (e.g. the space between sentences).
+    Unescape uses the same single-pass token match as the client (api.js):
+    sequential .replace() calls corrupt prose containing literal backslashes.
     """
+    import re
+
+    token_re = re.compile(r"\\n|\\\\")   # wire tokens: escaped newline | escaped backslash
+
+    def _un(m):
+        return "\n" if m.group(0) == "\\n" else "\\"
+
     out = []
     for line in r.iter_lines():
         if not line.startswith("data:"):
@@ -144,8 +151,33 @@ def _sse_payload(r) -> str:
         payload = line[6:] if len(line) > 5 and line[5] == ' ' else line[5:]
         if payload.strip() == "[DONE]":
             continue
-        out.append(payload.replace("\\n", "\n").replace("\\\\", "\\"))
+        assert not payload.startswith("[ERROR]"), f"stream error event: {payload}"
+        out.append(token_re.sub(_un, payload))
     return "".join(out)
+
+
+def test_muse_rewrite_sse_roundtrips_backslashes_and_newlines(monkeypatch: pytest.MonkeyPatch):
+    """Regression (0.3.x): the old sequential escape/unescape corrupted prose
+    containing literal backslashes ('C:\\notes' became 'C:<newline>otes').
+    The full server path — upstream chunks → _sse_escape → SSE wire — must
+    reconstruct the original text exactly, real newlines included."""
+    original = 'The map read C:\\new\\roads.\n\nKael followed it east.'
+    chunks = [
+        {"message": {"role": "assistant", "content": "The map read C:\\new\\roads."}, "done": False},
+        {"message": {"role": "assistant", "content": "\n\nKael followed it east."}, "done": True},
+    ]
+    _patch_ollama(monkeypatch, _ollama_chat_ndjson(*chunks))
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/rewrite",
+            json={"text": "rewrite me", "style": "novel"},
+        ) as r:
+            assert r.status_code == 200
+            payload = _sse_payload(r)
+
+    assert payload == original
 
 
 def test_muse_rewrite_streams_single_proposal(monkeypatch: pytest.MonkeyPatch):
@@ -349,9 +381,13 @@ def test_style_digest_is_cached_and_reused(tmp_path, monkeypatch):
 
 # --- thread persistence (D19) --------------------------------------------
 
-def test_thread_is_persisted_to_archive_dot_katha(tmp_path):
+def test_thread_is_persisted_to_archive_dot_katha(tmp_path, monkeypatch):
     """When a Muse call carries a chapter_id, the exchange must be appended to
     `archive/.katha/muse/<chapter-slug>.md`."""
+    import json as _json
+
+    import httpx
+
     from app import muse as muse_mod
     from app.config import ARCHIVE_ROOT
 
@@ -362,6 +398,21 @@ def test_thread_is_persisted_to_archive_dot_katha(tmp_path):
     # Clean any pre-existing file from earlier test runs.
     if thread_path.exists():
         thread_path.unlink()
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson(
+                {"model": body.get("model", "gemma4:12b"),
+                 "message": {"role": "assistant", "content": "mocked reply"},
+                 "done": True},
+            ),
+        )
+
+    transport = httpx.MockTransport(_handler)
+    mock_client = httpx.AsyncClient(transport=transport, timeout=muse_mod._client.timeout)
+    monkeypatch.setattr(muse_mod, "_client", mock_client)
 
     with TestClient(app) as client:
         with client.stream(
@@ -440,6 +491,10 @@ def test_muse_persistence_dir_excluded_from_search_index():
 def test_style_digest_auto_generated_on_first_touch(monkeypatch: pytest.MonkeyPatch):
     """First call for a book with no cached digest: the Muse generates one
     via the rewrite model and writes it to disk."""
+    import asyncio
+
+    import httpx
+
     from app import muse as muse_mod
     from app.config import ARCHIVE_ROOT
 
@@ -451,29 +506,24 @@ def test_style_digest_auto_generated_on_first_touch(monkeypatch: pytest.MonkeyPa
     if digest_path.exists():
         digest_path.unlink()
 
-    # Patch the sync httpx.Client (style digest is sync to avoid event-loop conflict).
-    import httpx as _httpx
-    from unittest.mock import patch as _patch
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "model": body.get("model", "deepseek-r1:14b"),
+                "message": {"role": "assistant", "content": "Auto-generated style fingerprint."},
+                "done": True,
+            },
+        )
 
-    class _SyncClientOK(_httpx.Client):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, **kw)
-        def post(self, url, json=None, **kw):
-            req = _httpx.Request("POST", url, json=json)
-            return _httpx.Response(
-                200,
-                json={
-                    "model": json["model"],
-                    "message": {"role": "assistant", "content": "Auto-generated style fingerprint."},
-                    "done": True,
-                },
-                request=req,
-            )
-        def __enter__(self): return self
-        def __exit__(self, *a): self.close()
+    transport = httpx.MockTransport(_handler)
+    mock_client = httpx.AsyncClient(transport=transport, timeout=muse_mod._client.timeout)
+    monkeypatch.setattr(muse_mod, "_client", mock_client)
 
-    with _patch("httpx.Client", _SyncClientOK):
-        digest = muse_mod._load_style_summary(book_slug, ARCHIVE_ROOT / series_slug / book_slug)
+    digest = asyncio.run(
+        muse_mod._load_style_summary(book_slug, ARCHIVE_ROOT / series_slug / book_slug)
+    )
 
     assert "Auto-generated" in digest
     assert digest_path.exists()

@@ -120,7 +120,7 @@ async def chat(
     if chip and chip in CHIP_PROMPTS:
         sys_parts.append({"role": "system", "content": CHIP_PROMPTS[chip]})
     if chapter_id:
-        canon = _load_canon_context(chapter_id, user_prompt=messages[-1]["content"] if messages else "")
+        canon = await _load_canon_context(chapter_id, user_prompt=messages[-1]["content"] if messages else "")
         if canon:
             sys_parts.append({"role": "system", "content": canon})
     full_messages = [*sys_parts, *messages]
@@ -156,7 +156,7 @@ async def rewrite(
     """Stream a single rewrite proposal for `text` in the chosen `style`."""
     sys_parts: list[dict] = [{"role": "system", "content": STYLE_PROMPTS.get(style, STYLE_PROMPTS["novel"])}]
     if chapter_id:
-        canon = _load_canon_context(chapter_id, user_prompt=text)
+        canon = await _load_canon_context(chapter_id, user_prompt=text)
         if canon:
             sys_parts.append({"role": "system", "content": canon})
 
@@ -194,12 +194,17 @@ def models_info() -> dict:
 def _parse_chapter_id(chapter_id: str) -> tuple[str, str, str] | None:
     """`series/book/ch-XX` → (series_slug, book_slug, chapter_id)."""
     parts = chapter_id.split("/")
-    if len(parts) != 3 or not parts[2].startswith("ch-"):
+    if len(parts) != 3:
         return None
-    return parts[0], parts[1], parts[2]
+    series_slug, book_slug, cid = parts
+    if not ar_mod.is_slug(series_slug) or not ar_mod.is_slug(book_slug):
+        return None
+    if not ar_mod.is_chapter_id(cid):
+        return None
+    return series_slug, book_slug, cid
 
 
-def _load_canon_context(chapter_id: str, user_prompt: str = "") -> str:
+async def _load_canon_context(chapter_id: str, user_prompt: str = "") -> str:
     """Build the canon-context system prompt for `chapter_id`.
 
     Returns "" if the chapter doesn't resolve. Otherwise returns a string
@@ -232,7 +237,7 @@ def _load_canon_context(chapter_id: str, user_prompt: str = "") -> str:
     chapter_text = chapter_path.read_text(encoding="utf-8")
 
     # Style digest (cached per book). Auto-generates on first touch.
-    style_digest = _load_style_summary(book_slug, bdir)
+    style_digest = await _load_style_summary(book_slug, bdir)
 
     # Bible hits — rank against the user prompt (or the chapter text).
     query = (user_prompt or chapter_text)[:500]
@@ -304,7 +309,7 @@ def _persist_thread(chapter_id: str, user_messages: list[dict], assistant_text: 
         print(f"[muse] persist_thread failed: {e}", file=sys.stderr)
 
 
-def _load_style_summary(book_slug: str, bdir: Path) -> str:
+async def _load_style_summary(book_slug: str, bdir: Path) -> str:
     """Return the cached style digest for `book_slug`, or generate one.
 
     Reads the last `MUSE_STYLE_PROSE_CHAPTERS` chapter files from `bdir`,
@@ -343,9 +348,6 @@ def _load_style_summary(book_slug: str, bdir: Path) -> str:
     )
     digest = ""
     try:
-        # Run synchronously via httpx (sync client) so we don't fight the
-        # running event loop — style digest generation is a one-shot, not
-        # part of an active stream.
         url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
         payload = {
             "model": MUSE_REWRITE_MODEL,
@@ -353,11 +355,12 @@ def _load_style_summary(book_slug: str, bdir: Path) -> str:
             "stream": False,
             "options": {"num_predict": 400, "temperature": 0.4},
         }
-        with httpx.Client(timeout=MUSE_UPSTREAM_TIMEOUT) as sync_client:
-            r = sync_client.post(url, json=payload)
-            r.raise_for_status()
-            obj = r.json()
-            digest = strip_think(obj.get("message", {}).get("content", "")).strip()
+        # Async on purpose: this runs inside streaming generators. A sync
+        # client here froze the whole event loop for up to the full timeout.
+        r = await _client.post(url, json=payload)
+        r.raise_for_status()
+        obj = r.json()
+        digest = strip_think(obj.get("message", {}).get("content", "")).strip()
     except Exception as e:
         import sys
         print(f"[muse] style digest generation failed: {e}", file=sys.stderr)

@@ -40,12 +40,13 @@ export default function Page({ chapter, series, onSelection, onReplaceRequested 
     return () => { alive = false }
   }, [chapter?.id, series?.series, series?.book])
 
-  // Autosave → PUT to the archive (writes md + revision on the Pi).
+  // Autosave → PUT to the archive (writes md + revision on the Pi). The
+  // title rides along: the server rewrites the md H1 heading when it changes.
   useEffect(() => {
     if (!chapter || !series || !(body || title)) return
     const t = setTimeout(() => {
       api
-        .saveChapter(series.series, series.book, chapter.id, body)
+        .saveChapter(series.series, series.book, chapter.id, body, title)
         .then((c) => {
           setRevision(c.revision)
           setDrafts((d) => d + 1)
@@ -63,7 +64,7 @@ export default function Page({ chapter, series, onSelection, onReplaceRequested 
     if (!chapter || !series || saving) return
     setSaving(true)
     api
-      .saveChapter(series.series, series.book, chapter.id, body)
+      .saveChapter(series.series, series.book, chapter.id, body, title)
       .then((c) => {
         setRevision(c.revision)
         setDrafts((d) => d + 1)

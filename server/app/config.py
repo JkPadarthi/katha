@@ -37,3 +37,15 @@ MUSE_NUM_PREDICT = int(os.environ.get("MUSE_NUM_PREDICT", "4096"))
 MUSE_STYLE_PROSE_CHAPTERS = int(os.environ.get("MUSE_STYLE_PROSE_CHAPTERS", "3"))
 # HTTP timeout for the upstream Ollama call. Streaming responses can take long.
 MUSE_UPSTREAM_TIMEOUT = float(os.environ.get("MUSE_UPSTREAM_TIMEOUT", "300"))
+
+# Allowed browser origins (comma-separated env). The old wildcard let ANY
+# website the author visits read/rewrite the archive cross-origin. "null"
+# covers the packaged Electron renderer loading file://.
+CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "KATHA_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,null",
+    ).split(",")
+    if o.strip()
+]

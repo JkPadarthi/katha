@@ -18,10 +18,22 @@ from pathlib import Path
 from .config import ARCHIVE_ROOT
 
 _SERIES_RE = re.compile(r"[^a-z0-9]+")
+# Safe path segment: a lowercase slug — no dots (..), separators, or unicode.
+_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
 def slugify(name: str) -> str:
     return _SERIES_RE.sub("-", name.lower()).strip("-")
+
+
+def is_slug(s: str) -> bool:
+    """Security guard for request params that become filesystem paths:
+    rejects '..', separators, and non-slug characters."""
+    return bool(_SLUG_RE.fullmatch(s))
+
+
+def is_chapter_id(cid: str) -> bool:
+    return bool(re.fullmatch(r"ch-\d{2}", cid))
 
 
 def _now() -> str:
@@ -161,6 +173,8 @@ def get_chapter(book: Path, chapter_id: str) -> Path | None:
     # allow '1' -> 'ch-01'
     if chapter_id.isdigit():
         chapter_id = f"ch-{int(chapter_id):02d}"
+    if not is_chapter_id(chapter_id):
+        return None
     cand = cd / f"{chapter_id}.md"
     return cand if cand.exists() else None
 

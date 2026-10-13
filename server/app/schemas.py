@@ -60,6 +60,7 @@ class ChapterCreate(BaseModel):
 
 class ChapterUpdate(BaseModel):
     content: str
+    title: str | None = None         # empty/None → keep the existing heading
 
 
 class BookCreate(BaseModel):

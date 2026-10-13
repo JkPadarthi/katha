@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from . import archive as ar
 from . import db
-from .config import ARCHIVE_ROOT, VERSION
+from .config import ARCHIVE_ROOT, CORS_ORIGINS, VERSION
 from .schemas import (
     BibleOut,
     BookCreate,
@@ -32,10 +32,11 @@ from .schemas import (
 
 app = FastAPI(title="Katha Archive", version=VERSION)
 
-# For dev: desktop (vite :5173) talking directly during 0.2 wiring (Tailscale in prod, D12).
+# Browser origins allowed to call the API (KATHA_CORS_ORIGINS env). Never
+# wildcard: with no auth, * lets any visited webpage rewrite the archive.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -52,6 +53,9 @@ def reindex_search():
 
 def _resolve_book_path(series: str, book_id: str) -> Path:
     """Match a series+book_id to a real dir; book_id may be slug or title."""
+    # Traversal guard: params become path segments — only slugs pass.
+    if not ar.is_slug(series) or not ar.is_slug(book_id):
+        raise HTTPException(404, "series not found")
     sd = ARCHIVE_ROOT / series
     if not sd.is_dir():
         raise HTTPException(404, "series not found")
@@ -80,7 +84,8 @@ def books_tree():
 def create_book(payload: BookCreate):
     meta = ar.ensure_book(payload.series, payload.title)
     db.upsert_book(meta["id"], meta["series"], meta["title"])
-    return _book_detail(meta["id"], payload.series)
+    # Series travels as its slug here — same form every other route expects.
+    return _book_detail(meta["id"], meta["series"])
 
 
 def _book_detail(book_id: str, series: str) -> dict:
@@ -144,12 +149,13 @@ def save_chapter(series: str, book_id: str, chapter_id: str, payload: ChapterUpd
     chapter = ar.get_chapter(bdir, chapter_id)
     if not chapter:
         raise HTTPException(404, "chapter not found")
-    title = ar._chapter_title(chapter)
+    existing_title = ar._chapter_title(chapter)
+    title = (payload.title or "").strip() or existing_title
     new_text = f"# {title}\n\n{payload.content}".rstrip() + "\n"
     chapter.write_text(new_text, encoding="utf-8")
     rev = ar.write_revision(chapter, payload.content, title)
     words = ar._count_words(payload.content)
-    db.record_revision(chapter.stem, rev, ar._mtime(chapter), words)
+    db.record_revision(bdir.name, chapter.stem, rev, ar._mtime(chapter), words)
     db.upsert_chapter({
         "id": chapter.stem,
         "book_id": bdir.name,
@@ -214,17 +220,29 @@ def reindex():
 from . import muse as muse_mod  # noqa: E402  (after app init — needs config)
 
 
+def _sse_escape(chunk: str) -> str:
+    """Single-pass SSE escaping. Sequential .replace() calls collide when
+    prose contains a literal backslash before 'n' — this maps each char
+    independently so encode/decode always round-trip."""
+    return "".join(
+        "\\n" if ch == "\n" else ("\\\\" if ch == "\\" else ch)
+        for ch in chunk
+    )
+
+
 async def _sse_from(async_iter) -> AsyncIterator[bytes]:
     """Wrap an async iterator of strings in SSE `data:` lines.
 
     Each chunk becomes one event: `data: <chunk>\n\n`. Stream ends with
-    `data: [DONE]\n\n` so the client can detect EOF without a timeout.
+    `data: [DONE]\n\n`; an upstream failure emits `data: [ERROR] …` first so
+    the client can surface a real message instead of a truncated stream.
     """
-    async for chunk in async_iter:
-        # SSE forbids raw newlines in `data:`. Newlines in the prose get
-        # escaped to '\n' literals — the client un-escapes.
-        safe = chunk.replace("\n", "\\n")
-        yield f"data: {safe}\n\n".encode("utf-8")
+    try:
+        async for chunk in async_iter:
+            yield f"data: {_sse_escape(chunk)}\n\n".encode("utf-8")
+    except Exception as e:
+        msg = " ".join(f"{type(e).__name__}: {e}".split())
+        yield f"data: [ERROR] {msg}\n\n".encode("utf-8")
     yield b"data: [DONE]\n\n"
 
 

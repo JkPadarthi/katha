@@ -78,7 +78,7 @@ function unescapeSse(s) {
   return s.replace(/\\n|\\\\/g, (m) => (m === '\\n' ? '\n' : '\\'))
 }
 
-async function streamSse(path, body, { onDelta, signal }) {
+async function streamSse(path, body, { onDelta, onStatus, signal }) {
   const res = await fetch(`/api${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -108,6 +108,10 @@ async function streamSse(path, body, { onDelta, signal }) {
         const payload = line.length > 5 && line[5] === ' '
           ? line.slice(6)
           : line.slice(5)
+        if (payload.startsWith('[STATUS]')) {
+          if (onStatus) onStatus(payload.slice(8).trim())
+          continue
+        }
         if (payload.startsWith('[ERROR]')) {
           throw new Error(payload.slice(7).trim() || 'Muse error')
         }
@@ -120,12 +124,12 @@ async function streamSse(path, body, { onDelta, signal }) {
   return acc
 }
 
-export function museChat({ messages, chapterId, chip, onDelta, signal }) {
+export function museChat({ messages, chapterId, chip, onDelta, onStatus, signal }) {
   return streamSse('/muse/chat', {
     messages,
     chapter_id: chapterId || null,
     chip: chip || null
-  }, { onDelta, signal })
+  }, { onDelta, onStatus, signal })
 }
 
 export function museRewrite({ text, style, chapterId, onDelta, signal }) {

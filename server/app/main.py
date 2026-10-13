@@ -1,4 +1,4 @@
-"""Katha Archive API — FastAPI entry point (1.0.0)."""
+"""Katha Archive API — FastAPI entry point (1.1.0)."""
 
 from __future__ import annotations
 
@@ -314,13 +314,18 @@ def _sse_escape(chunk: str) -> str:
 async def _sse_from(async_iter) -> AsyncIterator[bytes]:
     """Wrap an async iterator of strings in SSE `data:` lines.
 
-    Each chunk becomes one event: `data: <chunk>\n\n`. Stream ends with
-    `data: [DONE]\n\n`; an upstream failure emits `data: [ERROR] …` first so
+    Each chunk becomes one event: `data: <chunk>\\n\\n`. A `muse.Status` chunk
+    becomes `data: [STATUS] <msg>` (progress, never prose). Stream ends with
+    `data: [DONE]\\n\\n`; an upstream failure emits `data: [ERROR] …` first so
     the client can surface a real message instead of a truncated stream.
     """
     try:
         async for chunk in async_iter:
-            yield f"data: {_sse_escape(chunk)}\n\n".encode("utf-8")
+            if isinstance(chunk, muse_mod.Status):
+                msg = " ".join(chunk.text.split())
+                yield f"data: [STATUS] {_sse_escape(msg)}\n\n".encode("utf-8")
+            else:
+                yield f"data: {_sse_escape(chunk)}\n\n".encode("utf-8")
     except Exception as e:
         msg = " ".join(f"{type(e).__name__}: {e}".split())
         yield f"data: [ERROR] {msg}\n\n".encode("utf-8")

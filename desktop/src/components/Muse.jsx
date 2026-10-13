@@ -34,14 +34,19 @@ const CHIP_PROMPTS = {
   canon:    'Is the last thing I wrote consistent with the bible?'
 }
 
-export default function Muse() {
+export default function Muse({ series, chapter }) {
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [streaming, setStreaming] = useState('')
   const [error, setError] = useState('')
+  const [status, setStatus] = useState('')
   const abortRef = useRef(null)
   const threadRef = useRef(null)
+
+  // `series/book/ch-NN` — tells the server to inject canon context (current
+  // chapter + bible + style digest). Null when nothing is open.
+  const chapterId = series && chapter ? `${series.series}/${series.book}/${chapter.id}` : null
 
   useEffect(() => {
     // Let App (the proactive nudge) pre-fill the composer.
@@ -59,6 +64,7 @@ export default function Muse() {
   const send = async (text, chip) => {
     if (!text.trim() || busy) return
     setError('')
+    setStatus('')
     const userMsg = { role: 'user', text }
     setMessages((m) => [...m, userMsg])
     setDraft('')
@@ -76,9 +82,10 @@ export default function Muse() {
     try {
       const full = await api.museChat({
         messages: payloadMessages,
-        chapterId: null,
+        chapterId,
         chip: chip || null,
         onDelta: (acc) => setStreaming(acc),
+        onStatus: (s) => setStatus(s),
         signal: ac.signal
       })
       setMessages((m) => [...m, { role: 'assistant', text: full }])
@@ -90,6 +97,7 @@ export default function Muse() {
       }
     } finally {
       setBusy(false)
+      setStatus('')
       abortRef.current = null
     }
   }
@@ -101,6 +109,7 @@ export default function Muse() {
       setMessages((m) => [...m, { role: 'assistant', text: streaming + '…' }])
     }
     setStreaming('')
+    setStatus('')
     setBusy(false)
   }
 
@@ -173,7 +182,7 @@ export default function Muse() {
               {streaming || (
                 <span className="flex items-center gap-1.5">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-gold" />
-                  thinking
+                  {status || 'thinking'}
                 </span>
               )}
               {busy && streaming && (

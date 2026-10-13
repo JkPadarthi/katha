@@ -18,6 +18,10 @@ same FastAPI server as the API.
 - **1.0** — reading mode with margin-note annotations (`ch-NN.notes.md`
   sidecars); writing rituals (daily goal, streak, 14-day history); EPUB export
   (stdlib); optional proactive nudge.
+- **1.1** — agentic Muse chat: the model fetches story files on demand via tools
+  (`list_story_files` / `read_story_file` / `search_story`), scoped to the book +
+  series root and never `.katha/`; progress shown via `[STATUS]` SSE events.
+  Rewrite stays contextual (deepseek-r1 has no tools).
 
 ## Next
 - **2.0** — the PWA as the universal client (desktop + mobile). No Flutter.

@@ -31,6 +31,18 @@ continuity report, and (b) can propose rewrites of individual bible files that
 the author reviews in the same word-diff overlay as rewrites. Nothing is written
 until Accept. Implemented as `POST /api/muse/sweep` (SSE) + `PUT .../bible/{name}`.
 
+## 2026-10 — Muse chat is agentic (tools), rewrite stays contextual
+Instead of pre-injecting the current chapter, the chat model is given **tools**
+to fetch the story itself: `list_story_files`, `read_story_file`, `search_story`.
+It is handed the file index + the style digest, not the chapter. Scope is the
+current **book + series root**, `.md` only, never `.katha/` (Muse threads, style
+digests, stats) or app files — the tool path resolver is the security boundary.
+**Rewrite stays contextual** because the rewrite model (`deepseek-r1:14b`) has no
+tool support; it still gets the current chapter + bible + style digest. The agent
+model is a new `MUSE_AGENT_MODEL` (default `gemma4:12b`, which advertises tools).
+Long-running fetches surface as a `[STATUS]` SSE event so the UI can show
+"reading ch-03…".
+
 ## 2026-10 — Annotations are md sidecars
 Reading-mode annotations persist as `chapters/ch-NN.notes.md` — portable,
 git-able, and already excluded from chapter listings by the `ch-\d{2}\.md`

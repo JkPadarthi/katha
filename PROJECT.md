@@ -28,7 +28,8 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
   `DiffOverlay`, `Sweep`. `public/sw.js` caches the shell only.
 - **Server** (`server/app/`) — `main.py` (HTTP + SSE + static PWA),
   `schemas.py` (contracts), `archive.py` (files = truth), `db.py` (SQLite index
-  + FTS5), `muse.py` (Ollama proxy: chat, rewrite, canon sweep), `config.py`.
+  + FTS5), `muse.py` (Ollama proxy: agentic chat with story tools, rewrite,
+  canon sweep), `config.py`.
   `seed.py` bootstraps sample data; `tests/` cover archive + Muse + sweep.
 
 ## Storage (source of truth)
@@ -65,12 +66,13 @@ SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 | GET | `/api/search?q=&limit=` | FTS5 across chapters + bible |
 | POST | `/api/search/reindex` | rebuild the index from md |
 | GET | `/api/muse/models` | configured models |
-| POST | `/api/muse/chat` | SSE chat |
+| POST | `/api/muse/chat` | SSE chat — agentic; the model fetches story files via tools |
 | POST | `/api/muse/rewrite` | SSE rewrite proposal |
 | POST | `/api/muse/sweep` | SSE canon sweep (`report` \| `bible`) |
 | GET | `/api/stats` | writing rituals (1.0) |
 | GET | `/api/books/{series}/{book}/export.epub` | EPUB download (1.0) |
 
 SSE contract: each event is `data: <escaped chunk>\n\n`, terminated by
-`data: [DONE]\n\n`; an upstream failure emits `data: [ERROR] <msg>\n\n`. Escaping
-is single-pass (`\n` → literal, `\` → `\\`) and mirrored exactly on the client.
+`data: [DONE]\n\n`. A progress event is `data: [STATUS] <msg>\n\n` (never prose);
+an upstream failure emits `data: [ERROR] <msg>\n\n`. Escaping is single-pass
+(`\n` → literal, `\` → `\\`) and mirrored exactly on the client.

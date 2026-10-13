@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -130,30 +131,30 @@ def test_muse_models_endpoint():
 
 # --- rewrite streaming ----------------------------------------------------
 
-def _sse_payload(r) -> str:
-    """Concatenate just the data payload (no `data: ` prefix, no [DONE]).
+_SSE_TOKEN_RE = re.compile(r"\\n|\\\\")   # wire tokens: escaped newline | escaped backslash
 
-    SSE format is `data: <payload>` — the prefix is 6 chars (`data:` + 1 space).
-    Unescape uses the same single-pass token match as the client (api.js):
-    sequential .replace() calls corrupt prose containing literal backslashes.
-    """
-    import re
 
-    token_re = re.compile(r"\\n|\\\\")   # wire tokens: escaped newline | escaped backslash
+def _sse_un(m):
+    return "\n" if m.group(0) == "\\n" else "\\"
 
-    def _un(m):
-        return "\n" if m.group(0) == "\\n" else "\\"
 
+def _payload_from_lines(lines) -> str:
+    """Concatenate the data payloads from raw SSE lines (no prefix, no
+    [DONE]/[STATUS]; asserts no [ERROR])."""
     out = []
-    for line in r.iter_lines():
+    for line in lines:
         if not line.startswith("data:"):
             continue
-        payload = line[6:] if len(line) > 5 and line[5] == ' ' else line[5:]
-        if payload.strip() == "[DONE]":
+        payload = line[6:] if len(line) > 5 and line[5] == " " else line[5:]
+        if payload.strip() == "[DONE]" or payload.startswith("[STATUS]"):
             continue
         assert not payload.startswith("[ERROR]"), f"stream error event: {payload}"
-        out.append(token_re.sub(_un, payload))
+        out.append(_SSE_TOKEN_RE.sub(_sse_un, payload))
     return "".join(out)
+
+
+def _sse_payload(r) -> str:
+    return _payload_from_lines(r.iter_lines())
 
 
 def test_muse_rewrite_sse_roundtrips_backslashes_and_newlines(monkeypatch: pytest.MonkeyPatch):
@@ -610,3 +611,93 @@ def test_sweep_bible_rejects_bad_name(monkeypatch: pytest.MonkeyPatch):
         ) as r:
             payload = _sse_payload(r)
     assert "Invalid bible file name." in payload
+
+
+# --- agentic chat: the model fetches story files via tools (1.1) ----------
+
+def _agent_client(seen: list):
+    """MockTransport: returns a read_story_file tool call on the first request,
+    the final answer once a tool result is present."""
+    import httpx
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        seen.append(body)
+        has_tool = any(m.get("role") == "tool" for m in body.get("messages", []))
+        if has_tool:
+            chunk = {"model": "gemma4:12b",
+                     "message": {"role": "assistant", "content": "It opens at Crosswater."},
+                     "done": True}
+        else:
+            chunk = {"model": "gemma4:12b",
+                     "message": {"role": "assistant", "content": "", "tool_calls": [
+                         {"function": {"name": "read_story_file",
+                                       "arguments": {"path": "chapters/ch-01.md"}}}]},
+                     "done": True}
+        return httpx.Response(200, content=_ollama_chat_ndjson(chunk),
+                              headers={"content-type": "application/x-ndjson"})
+
+    from app import muse as muse_mod
+    return httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                             timeout=muse_mod._client.timeout)
+
+
+def test_chat_is_agentic_and_fetches_story(monkeypatch: pytest.MonkeyPatch):
+    """With a chapter_id, the Muse is handed tools; the model's tool_call runs
+    against the real archive and its result is fed back before the answer."""
+    from app import muse as muse_mod
+
+    seen: list = []
+    monkeypatch.setattr(muse_mod, "_client", _agent_client(seen))
+
+    chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01"
+    with TestClient(app) as client:
+        with client.stream(
+            "POST", "/api/muse/chat",
+            json={"messages": [{"role": "user", "content": "What happened first?"}],
+                  "chapter_id": chapter_id},
+        ) as r:
+            assert r.status_code == 200
+            lines = list(r.iter_lines())
+
+    # A [STATUS] progress event announced the fetch.
+    assert any("[STATUS]" in ln and "ch-01" in ln for ln in lines)
+    # The final payload is the model's answer.
+    assert "Crosswater" in _payload_from_lines(lines)
+
+    # The tool actually ran: a follow-up carried the chapter text back.
+    followups = [b for b in seen if any(m.get("role") == "tool" for m in b.get("messages", []))]
+    assert followups, "model did not receive a tool result"
+    tool_msgs = [m for m in followups[-1]["messages"] if m.get("role") == "tool"]
+    expected = (ar.book_dir("The Ember Throne", "The First Flame")
+                / "chapters" / "ch-01.md").read_text(encoding="utf-8")
+    assert tool_msgs[0]["content"] == expected
+
+
+def test_story_tools_refuse_path_escapes():
+    """The tools are the security boundary: no '.katha/', no '..', no absolute."""
+    from app import muse as muse_mod
+
+    ctx = muse_mod._tool_ctx(
+        f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01")
+    assert ctx is not None
+
+    for bad in (".katha/muse/ch-01.md", "../other-book/ch-01.md", "/etc/passwd"):
+        out = muse_mod._run_tool(ctx, "read_story_file", {"path": bad})
+        assert out.startswith("ERROR"), bad
+
+    ok = muse_mod._run_tool(ctx, "read_story_file", {"path": "chapters/ch-01.md"})
+    expected = (ar.book_dir("The Ember Throne", "The First Flame")
+                / "chapters" / "ch-01.md").read_text(encoding="utf-8")
+    assert ok == expected
+
+
+def test_story_tool_lists_files():
+    from app import muse as muse_mod
+
+    ctx = muse_mod._tool_ctx(
+        f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01")
+    listing = muse_mod._run_tool(ctx, "list_story_files", {})
+    assert "chapters/ch-01.md" in listing
+    assert "bible/characters.md" in listing
+    assert ".katha" not in listing

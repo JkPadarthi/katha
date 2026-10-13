@@ -27,7 +27,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # --- Muse upstream (0.3 Muse, D16/D19) ----------------------------------------
 # Friend's jenga box — direct Ollama, trusted LAN. No key needed.
@@ -39,6 +39,11 @@ MUSE_FALLBACK_MODEL = os.environ.get("MUSE_FALLBACK_MODEL", "gemma4:26b")
 # model because the planning genuinely improves output.
 MUSE_CHAT_MODEL = os.environ.get("MUSE_CHAT_MODEL", "gemma4:12b")
 MUSE_REWRITE_MODEL = os.environ.get("MUSE_REWRITE_MODEL", "deepseek-r1:14b")
+# Agentic chat: the model drives tool calls to fetch story files on demand.
+# Must be a tool-capable model (gemma4/qwen3/llama3.1/…); deepseek-r1 is not.
+MUSE_AGENT_MODEL = os.environ.get("MUSE_AGENT_MODEL", "gemma4:12b")
+# Upper bound on tool-call rounds in a single agentic reply (latency guard).
+MUSE_MAX_TOOL_ROUNDS = int(os.environ.get("KATHA_MUSE_MAX_TOOL_ROUNDS", "6"))
 # Token budgets. We're well under deepseek-r1's 131K context; cap conservatively.
 MUSECONTEXT_MAX_TOKENS = int(os.environ.get("MUSECONTEXT_MAX_TOKENS", "6000"))
 MUSE_NUM_PREDICT = int(os.environ.get("MUSE_NUM_PREDICT", "4096"))

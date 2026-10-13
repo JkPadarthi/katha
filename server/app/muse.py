@@ -37,8 +37,10 @@ from . import archive as ar_mod
 from . import db
 from .config import (
     ARCHIVE_ROOT,
+    MUSE_AGENT_MODEL,
     MUSE_CHAT_MODEL,
     MUSE_FALLBACK_MODEL,
+    MUSE_MAX_TOOL_ROUNDS,
     MUSE_MODEL,
     MUSE_NUM_PREDICT,
     MUSE_REWRITE_MODEL,
@@ -95,6 +97,189 @@ async def _post_chat(payload: dict) -> AsyncIterator[str]:
                 yield visible
 
 
+# --- agentic chat: the model fetches story files via tools (1.1) ----------
+# Instead of pre-injecting the chapter, the chat model gets tools to read the
+# story on demand. Scope: the current book + the series root, .md only, never
+# hidden dirs (.katha/) or anything outside the story archive.
+
+class Status:
+    """Marker yielded from a Muse generator to emit an SSE `[STATUS]` event
+    (progress, e.g. 'reading ch-03…') rather than prose."""
+    __slots__ = ("text",)
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _ToolCtx:
+    __slots__ = ("series_dir", "book_dir")
+
+    def __init__(self, series_dir: Path, book_dir: Path):
+        self.series_dir = series_dir
+        self.book_dir = book_dir
+
+
+def _tool_ctx(chapter_id: str | None) -> _ToolCtx | None:
+    parsed = _parse_chapter_id(chapter_id) if chapter_id else None
+    if not parsed:
+        return None
+    series_slug, book_slug, _cid = parsed
+    bdir = _resolve_bdir(series_slug, book_slug)
+    if bdir is None:
+        return None
+    return _ToolCtx(bdir.parent, bdir)
+
+
+_SNAPSHOT_RE = re.compile(r"ch-\d{2}\.\d+\.md")
+
+
+def _safe_story_path(ctx: _ToolCtx, rel: str) -> Path | None:
+    """Resolve a tool path to a readable story .md, or None.
+
+    Allowed: a .md inside the book dir, or a direct .md child of the series dir
+    (addressed as 'series/<name>.md'). Never absolute, never '..', never a
+    hidden segment (.katha/, dotfiles), never non-.md. This is the security
+    boundary — the model chooses the path, so it must not escape the story.
+    """
+    if not rel or rel.startswith("/") or "\\" in rel:
+        return None
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." or p.startswith(".") for p in parts):
+        return None
+    if not parts[-1].endswith(".md"):
+        return None
+    if parts[0] == "series":
+        if len(parts) != 2:
+            return None
+        cand = ctx.series_dir / parts[1]
+    else:
+        cand = ctx.book_dir.joinpath(*parts)
+    try:
+        cand = cand.resolve()
+    except OSError:
+        return None
+    try:
+        cand.relative_to(ctx.book_dir.resolve())
+        return cand if cand.is_file() else None
+    except ValueError:
+        pass
+    if cand.parent == ctx.series_dir.resolve() and cand.is_file():
+        return cand
+    return None
+
+
+def _list_story_files(ctx: _ToolCtx) -> str:
+    out: list[str] = []
+    for sub in ("chapters", "bible"):
+        d = ctx.book_dir / sub
+        if d.is_dir():
+            for f in sorted(d.glob("*.md")):
+                if _SNAPSHOT_RE.fullmatch(f.name):
+                    continue
+                out.append(f"{sub}/{f.name}")
+    for f in sorted(ctx.book_dir.glob("*.md")):
+        out.append(f.name)
+    for f in sorted(ctx.series_dir.glob("*.md")):
+        out.append(f"series/{f.name}")
+    return "\n".join(out) if out else "(no files)"
+
+
+def _read_story_file(ctx: _ToolCtx, rel: str) -> str:
+    p = _safe_story_path(ctx, rel)
+    if p is None:
+        return "ERROR: path not allowed — only story .md files in this book or the series root."
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"ERROR: {e}"
+
+
+def _search_story(ctx: _ToolCtx, query: str) -> str:
+    q = (query or "").strip()
+    if not q:
+        return "ERROR: empty query"
+    try:
+        hits = [h for h in db.search(q, limit=12) if h.get("book_id") == ctx.book_dir.name]
+    except Exception:
+        return "(no results)"
+    if not hits:
+        return "(no results)"
+    return "\n".join(
+        f"{h.get('kind')} {h.get('doc_id')} — {h.get('title')}: {h.get('snippet', '')}"
+        for h in hits[:6]
+    )
+
+
+def _run_tool(ctx: _ToolCtx, name: str, args: dict) -> str:
+    args = args or {}
+    if name == "list_story_files":
+        return _list_story_files(ctx)
+    if name == "read_story_file":
+        return _read_story_file(ctx, str(args.get("path", "")))
+    if name == "search_story":
+        return _search_story(ctx, str(args.get("query", "")))
+    return f"ERROR: unknown tool {name}"
+
+
+_TOOLS = [
+    {"type": "function", "function": {
+        "name": "list_story_files",
+        "description": "List every readable story file for the current book (chapters, bible, notes) plus the series root.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "read_story_file",
+        "description": "Read one story file by its exact path as returned by list_story_files.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string",
+                                    "description": "e.g. chapters/ch-03.md, bible/characters.md, or series/<name>.md"}},
+            "required": ["path"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "search_story",
+        "description": "Full-text search across this book's chapters and bible.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    }},
+]
+
+AGENT_SYSTEM = (
+    "You are the Muse, a story-writing companion working inside the author's "
+    "story archive. Use the provided tools to read the story files (chapters, "
+    "bible, notes) whenever you need detail — never invent plot, characters, or "
+    "facts you have not read. Discuss only this story. When you have what you "
+    "need, answer the author directly and concisely."
+)
+
+
+async def _stream_turn(payload: dict, holder: dict) -> AsyncIterator[str]:
+    """Stream one assistant turn. Yields visible text; collects any tool calls
+    into holder['tool_calls']."""
+    payload = {**payload, "stream": True}
+    holder["tool_calls"] = []
+    url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
+    async with _client.stream("POST", url, json=payload) as r:
+        r.raise_for_status()
+        async for line in r.aiter_lines():
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = obj.get("message", {}) or {}
+            for tc in msg.get("tool_calls") or []:
+                holder["tool_calls"].append(tc)
+            visible = strip_think(msg.get("content", "") or "")
+            if visible:
+                yield visible
+
+
 # --- public: chat ---------------------------------------------------------
 
 CHIP_PROMPTS: dict[str, str] = {
@@ -109,31 +294,71 @@ async def chat(
     messages: list[dict],
     chapter_id: str | None = None,
     chip: str | None = None,
-) -> AsyncIterator[str]:
-    """Stream a chat reply from the Muse.
+) -> AsyncIterator:
+    """Stream an agentic chat reply from the Muse.
 
     `messages` is the full OpenAI-style thread (last item is the user turn).
-    If `chip` is set, it's prepended as a system hint so the model knows the
-    intent (rewrite/continue/scene/canon).
+    When `chapter_id` resolves, the model is given tools to fetch the story on
+    demand — we hand it the file index + style digest, NOT the chapter itself.
+    `chip` (rewrite/continue/scene/canon) rides along as a system hint.
     """
-    sys_parts: list[dict] = []
+    ctx = _tool_ctx(chapter_id)
+    sys_parts: list[dict] = [{"role": "system", "content": AGENT_SYSTEM}]
     if chip and chip in CHIP_PROMPTS:
         sys_parts.append({"role": "system", "content": CHIP_PROMPTS[chip]})
-    if chapter_id:
-        canon = await _load_canon_context(chapter_id, user_prompt=messages[-1]["content"] if messages else "")
-        if canon:
-            sys_parts.append({"role": "system", "content": canon})
-    full_messages = [*sys_parts, *messages]
+    if ctx is not None:
+        index = _list_story_files(ctx)
+        if index and index != "(no files)":
+            sys_parts.append({"role": "system", "content": "FILES IN THIS STORY:\n" + index})
+        digest = await _load_style_summary(ctx.book_dir.name, ctx.book_dir)
+        if digest:
+            sys_parts.append({"role": "system", "content": "## STORY STYLE (keep this voice)\n\n" + digest})
 
-    payload = {
-        "model": MUSE_CHAT_MODEL,
-        "messages": full_messages,
+    payload: dict = {
+        "model": MUSE_AGENT_MODEL,
+        "messages": [*sys_parts, *messages],
         "options": {"num_predict": MUSE_NUM_PREDICT, "temperature": 0.8},
     }
+    if ctx is not None:
+        payload["tools"] = _TOOLS
+
     full_text_parts: list[str] = []
-    async for delta in _post_chat(payload):
-        full_text_parts.append(delta)
-        yield delta
+    hit_limit = False
+    for _round in range(MUSE_MAX_TOOL_ROUNDS):
+        holder: dict = {}
+        async for delta in _stream_turn(payload, holder):
+            full_text_parts.append(delta)
+            yield delta
+        calls = holder.get("tool_calls") or []
+        if not calls or ctx is None:
+            hit_limit = False
+            break
+        hit_limit = True
+        # Echo the assistant's tool-call turn, then answer each call.
+        payload["messages"].append({"role": "assistant", "content": "", "tool_calls": calls})
+        for tc in calls:
+            fn = tc.get("function") or {}
+            name = fn.get("name") or ""
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            args = args or {}
+            label = args.get("path") or args.get("query") or name
+            yield Status(f"reading {label}…")
+            result = _run_tool(ctx, name, args)
+            payload["messages"].append({"role": "tool", "tool_name": name, "content": result})
+
+    if hit_limit:
+        # Ran out of rounds mid-fetch: force a final answer with no tools.
+        payload.pop("tools", None)
+        holder = {}
+        async for delta in _stream_turn(payload, holder):
+            full_text_parts.append(delta)
+            yield delta
+
     # Persist the exchange AFTER the stream finishes.
     if chapter_id and messages:
         _persist_thread(chapter_id, messages, "".join(full_text_parts))
@@ -183,6 +408,7 @@ def models_info() -> dict:
     return {
         "default_model": MUSE_MODEL,
         "chat_model": MUSE_CHAT_MODEL,
+        "agent_model": MUSE_AGENT_MODEL,
         "rewrite_model": MUSE_REWRITE_MODEL,
         "fallback_model": MUSE_FALLBACK_MODEL,
         "ollama_base": OLLAMA_BASE,

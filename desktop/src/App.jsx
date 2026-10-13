@@ -124,6 +124,8 @@ export default function App() {
     () => book?.chapters?.find((c) => c.id === activeChapter) || null,
     [book, activeChapter]
   )
+  // `series/book/ch-NN` for the Muse server-side canon context.
+  const activeChapterId = series && chapter ? `${series.series}/${series.book}/${chapter.id}` : null
 
   // --- Rewrite flow ------------------------------------------------------
 
@@ -136,7 +138,7 @@ export default function App() {
       const full = await api.museRewrite({
         text: sel.text,
         style,
-        chapterId: null,
+        chapterId: activeChapterId,
         onDelta: (acc) => setProposed(acc)
       })
       setProposed(full)
@@ -270,7 +272,7 @@ export default function App() {
                 </div>
               )}
             </div>
-            {!focusMode && <Muse />}
+            {!focusMode && <Muse series={series} chapter={chapter} />}
           </>
         ) : loadError ? (
           <div className="flex flex-col items-center justify-center gap-2 text-center text-mute">

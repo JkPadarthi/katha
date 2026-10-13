@@ -1,4 +1,4 @@
-"""Katha Archive API — FastAPI entry point (1.1.1)."""
+"""Katha Archive API — FastAPI entry point (1.1.2)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import TitleBar from './components/TitleBar.jsx'
 import Rail from './components/Rail.jsx'
 import Page, { pageApi } from './components/Page.jsx'
@@ -67,6 +67,16 @@ export default function App() {
         }
       })
     return () => { alive = false }
+  }, [])
+
+  // Re-fetch the archive tree WITHOUT touching the current series/chapter
+  // selection — used after adding a bible file so the rail list updates.
+  const refreshArchive = useCallback(async () => {
+    try {
+      setArchive(await api.loadArchive())
+    } catch {
+      /* keep the existing tree if the refetch fails */
+    }
   }, [])
 
   // Cmd+K / Ctrl+K opens the palette; Ctrl+Shift+F toggles focus — the IDE
@@ -317,7 +327,12 @@ export default function App() {
         <Sweep series={series} onClose={() => setSweepOpen(false)} />
       )}
       {bibleName !== null && series && (
-        <Bible series={series} initial={bibleName} onClose={() => setBibleName(null)} />
+        <Bible
+          series={series}
+          initial={bibleName}
+          onClose={() => setBibleName(null)}
+          onChanged={refreshArchive}
+        />
       )}
       {settingsOpen && (
         <Settings

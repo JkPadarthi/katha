@@ -5,7 +5,7 @@ import * as api from '../api.js'
 // markdown. Files live at `bible/<name>.md` in the archive; this is the
 // read/write surface for them. A left list of files, a markdown editor on the
 // right. Save writes the md (source of truth) via PUT /bible/{name}.
-export default function Bible({ series, initial, onClose }) {
+export default function Bible({ series, initial, onClose, onChanged }) {
   const [files, setFiles] = useState({})       // name → content
   const [active, setActive] = useState(null)
   const [draft, setDraft] = useState('')
@@ -80,6 +80,7 @@ export default function Bible({ series, initial, onClose }) {
       setCreating(false)
       setNewName('')
       setDirty(false)
+      if (onChanged) onChanged()   // refresh the rail's bible list
     } catch (e) {
       setError(e.message || 'create failed')
     } finally {

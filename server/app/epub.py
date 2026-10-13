@@ -77,8 +77,9 @@ def _docs(bdir: Path) -> list[tuple[str, str, str]]:
                 continue
             docs.append((f"{f.stem}.xhtml", ar._chapter_title(f), _md_to_html(f.read_text(encoding="utf-8"))))
     for name, text in sorted(ar.read_bible(bdir).items()):
-        stem = Path(name).stem
-        docs.append((f"bible-{stem}.xhtml", stem.title(), _md_to_html(text)))
+        base = name.split("/")[-1].rsplit(".", 1)[0]
+        slug = name.rsplit(".", 1)[0].replace("/", "-")
+        docs.append((f"bible-{slug}.xhtml", base.replace("-", " ").title(), _md_to_html(text)))
     return docs
 
 

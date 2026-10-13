@@ -27,7 +27,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "1.1.2"
+VERSION = "1.2.0"
 
 # --- Muse upstream (0.3 Muse, D16/D19) ----------------------------------------
 # Friend's jenga box — direct Ollama, trusted LAN. No key needed.

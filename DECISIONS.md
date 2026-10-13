@@ -31,6 +31,17 @@ continuity report, and (b) can propose rewrites of individual bible files that
 the author reviews in the same word-diff overlay as rewrites. Nothing is written
 until Accept. Implemented as `POST /api/muse/sweep` (SSE) + `PUT .../bible/{name}`.
 
+## 2026-10 — The bible is a tree; characters split per file
+`bible/` is a recursive folder tree: `bible/characters/kael.md`,
+`bible/characters/mira.md`, `bible/places/crosswater.md`, while loose
+`bible/timeline.md` still works. Every bible walk (`read_bible`,
+`iter_searchable_docs`, the Muse's `list_story_files` / sweep context, EPUB)
+is recursive and skips hidden segments. `PUT .../bible/{name:path}` accepts
+nested paths, guarded by `archive.safe_bible_path` (no `..`, absolute, hidden,
+or non-.md). A one-time migration `split_characters_bible` splits a legacy flat
+`bible/characters.md` by its `##` headings into `bible/characters/<slug>.md`,
+renaming the original to `characters.md.orig` (never listed) so nothing is lost.
+
 ## 2026-10 — Muse chat is agentic (tools), rewrite stays contextual
 Instead of pre-injecting the current chapter, the chat model is given **tools**
 to fetch the story itself: `list_story_files`, `read_story_file`, `search_story`.

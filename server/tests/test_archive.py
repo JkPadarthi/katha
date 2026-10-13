@@ -41,7 +41,7 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.1.2"
+    assert body["version"] == "1.2.0"
     assert body["db_ok"] is True
 
 
@@ -120,8 +120,8 @@ def test_bible_readable():
     r = client.get(f"/api/books/{series}/{book}/bible")
     assert r.status_code == 200
     files = r.json()["files"]
-    assert "characters.md" in files
-    assert "Kael" in files["characters.md"]
+    assert "characters/kael.md" in files
+    assert "Kael" in files["characters/kael.md"]
 
 
 def test_404_on_missing_chapter():
@@ -195,10 +195,10 @@ def test_search_excludes_revision_snapshots():
 
 # --- bible write (0.4 canon sweep approval) -------------------------------
 
-def test_bible_put_writes_and_indexes():
-    """PUT a bible file → written to disk (md is the truth) + searchable."""
-    name = "sweep-note.md"
-    content = "# Sweep Note\n\nThe Ember Throne's herald is named Borel."
+def test_bible_put_writes_nested_and_indexes():
+    """PUT a nested bible file → written to disk (md is the truth) + searchable."""
+    name = "characters/mira.md"
+    content = "# Mira\n\nThe Ember Throne's herald is named Borel."
     r = client.put(
         f"/api/books/{ar.slugify(SERIES)}/{ar.slugify(BOOK)}/bible/{name}",
         json={"content": content},
@@ -207,7 +207,7 @@ def test_bible_put_writes_and_indexes():
     assert r.json()["files"][name] == content
 
     bd = ar.bible_dir(ar.book_dir(SERIES, BOOK))
-    assert (bd / name).read_text(encoding="utf-8") == content
+    assert (bd / "characters" / "mira.md").read_text(encoding="utf-8") == content
 
     hits = client.get("/api/search", params={"q": "Borel"}).json()["hits"]
     assert any(h["doc_id"] == name for h in hits)
@@ -219,6 +219,33 @@ def test_bible_put_rejects_non_md_name():
         json={"content": "x"},
     )
     assert r.status_code == 400
+
+
+def test_bible_path_guard():
+    book = ar.book_dir(SERIES, BOOK)
+    assert ar.safe_bible_path(book, "characters/mira.md") is not None
+    for bad in ("../evil.md", "/etc/passwd", ".hidden/x.md", "characters/x.txt", "a\\b.md"):
+        assert ar.safe_bible_path(book, bad) is None, bad
+
+
+def test_bible_split_migration():
+    """A legacy flat characters.md is split per `##` heading; the original is
+    kept as characters.md.orig."""
+    book = ar.book_dir(SERIES, BOOK)
+    bd = ar.bible_dir(book)
+    src = bd / "characters.md"
+    src.write_text("# Characters\n\n## Mira\n- Scout, quick.\n\n## Borel\n- The herald.\n",
+                   encoding="utf-8")
+    written = ar.split_characters_bible(book)
+
+    assert (bd / "characters" / "mira.md").is_file()
+    assert (bd / "characters" / "borel.md").is_file()
+    assert "Scout" in (bd / "characters" / "mira.md").read_text(encoding="utf-8")
+    assert not src.exists()
+    assert (bd / "characters.md.orig").is_file()
+    assert written
+    # .orig must never be listed as a bible file
+    assert not any(k.endswith(".orig") for k in ar.read_bible(book))
 
 
 # --- reading-mode notes (1.0) ---------------------------------------------

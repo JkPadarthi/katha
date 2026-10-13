@@ -170,13 +170,15 @@ def _safe_story_path(ctx: _ToolCtx, rel: str) -> Path | None:
 
 def _list_story_files(ctx: _ToolCtx) -> str:
     out: list[str] = []
-    for sub in ("chapters", "bible"):
-        d = ctx.book_dir / sub
-        if d.is_dir():
-            for f in sorted(d.glob("*.md")):
-                if _SNAPSHOT_RE.fullmatch(f.name):
-                    continue
-                out.append(f"{sub}/{f.name}")
+    cd = ctx.book_dir / "chapters"
+    if cd.is_dir():
+        for f in sorted(cd.glob("ch-*.md")):
+            if _SNAPSHOT_RE.fullmatch(f.name):
+                continue
+            out.append(f"chapters/{f.name}")
+    bd = ctx.book_dir / "bible"
+    for f in ar_mod._iter_bible_files(bd):  # type: ignore[attr-defined]
+        out.append(f"bible/{f.relative_to(bd).as_posix()}")
     for f in sorted(ctx.book_dir.glob("*.md")):
         out.append(f.name)
     for f in sorted(ctx.series_dir.glob("*.md")):
@@ -233,7 +235,7 @@ _TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string",
-                                    "description": "e.g. chapters/ch-03.md, bible/characters.md, or series/<name>.md"}},
+                                    "description": "e.g. chapters/ch-03.md, bible/characters/kael.md, or series/<name>.md"}},
             "required": ["path"],
         },
     }},
@@ -655,9 +657,9 @@ def _load_full_book_context(bdir: Path) -> str:
                 continue
             parts.append(f.read_text(encoding="utf-8").strip())
     bd = bdir / "bible"
-    if bd.is_dir():
-        for f in sorted(bd.glob("*.md")):
-            parts.append(f"### BIBLE: {f.name}\n\n{f.read_text(encoding='utf-8').strip()}")
+    for f in ar_mod._iter_bible_files(bd):  # type: ignore[attr-defined]
+        rel = f.relative_to(bd).as_posix()
+        parts.append(f"### BIBLE: {rel}\n\n{f.read_text(encoding='utf-8').strip()}")
     block = "\n\n---\n\n".join(parts)
     if len(block) > _SWEEP_CHAR_CAP:
         block = block[:_SWEEP_CHAR_CAP] + "\n\n[…truncated…]"

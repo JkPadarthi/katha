@@ -22,6 +22,9 @@ same FastAPI server as the API.
   (`list_story_files` / `read_story_file` / `search_story`), scoped to the book +
   series root and never `.katha/`; progress shown via `[STATUS]` SSE events.
   Rewrite stays contextual (deepseek-r1 has no tools).
+- **1.2** — the bible is a recursive tree (`bible/characters/kael.md`); a legacy
+  flat `characters.md` is auto-split per `##` heading on boot (original kept as
+  `.orig`). Bible overlay renders the tree; nested PUT paths.
 
 ## Next
 - **2.0** — the PWA as the universal client (desktop + mobile). No Flutter.

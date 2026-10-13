@@ -41,8 +41,8 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
       chapters/ch-01.md          # "# Title\n\n<body>"
       chapters/ch-01.1.md        # revision snapshot (D9)
       chapters/ch-01.notes.md    # reading-mode annotations (1.0)
-      bible/characters.md
-      bible/places.md
+      bible/characters/kael.md   # the bible is a TREE (1.2)
+      bible/places.md            # loose files still allowed
   .katha/muse/<chapter>.md       # Muse threads
   .katha/muse/style-<book>.md    # style digest
   .katha/stats/writing.jsonl     # writing-ritual log (1.0)
@@ -62,7 +62,7 @@ SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 | POST | `/api/books/{series}/{book}/chapters` | create chapter |
 | GET/PUT | `/api/books/{series}/{book}/chapters/{id}` | read / autosave (+revision) |
 | GET | `…/chapters/{id}/revisions[/{n}]` | revision history |
-| GET/PUT | `/api/books/{series}/{book}/bible[/{name}]` | read / write canon |
+| GET/PUT | `/api/books/{series}/{book}/bible[/{name:path}]` | read / write canon (nested paths ok) |
 | GET | `/api/search?q=&limit=` | FTS5 across chapters + bible |
 | POST | `/api/search/reindex` | rebuild the index from md |
 | GET | `/api/muse/models` | configured models |

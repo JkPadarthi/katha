@@ -1,9 +1,9 @@
-"""Katha Archive API — FastAPI entry point (1.1.2)."""
+"""Katha Archive API — FastAPI entry point (1.2.0)."""
 
 from __future__ import annotations
 
 import mimetypes
-import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -40,7 +40,16 @@ from .schemas import (
     SearchOut,
 )
 
-app = FastAPI(title="Katha Archive", version=VERSION)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Migrate any legacy archive layout (e.g. a flat characters.md), then
+    rebuild the search index from disk."""
+    ar.migrate_archive()
+    reindex_search()
+    yield
+
+
+app = FastAPI(title="Katha Archive", version=VERSION, lifespan=lifespan)
 
 # Browser origins allowed to call the API (KATHA_CORS_ORIGINS env). Never
 # wildcard: with no auth, * lets any visited webpage rewrite the archive.
@@ -241,18 +250,18 @@ def read_bible(series: str, book_id: str):
     return BibleOut(book_id=bdir.name, files=ar.read_bible(bdir))
 
 
-@app.put("/api/books/{series}/{book_id}/bible/{name}", response_model=BibleOut,
+@app.put("/api/books/{series}/{book_id}/bible/{name:path}", response_model=BibleOut,
          tags=["bible"])
 def save_bible(series: str, book_id: str, name: str, payload: BibleUpdate):
-    """Write a bible file (md is the truth) and reindex it. Used by the canon
-    sweep's approval step."""
+    """Write a bible file (md is the truth) and reindex it. `name` may be a
+    nested path (e.g. characters/kael.md). Used by the editor + canon sweep."""
     bdir = _resolve_book_path(series, book_id)
-    if not re.fullmatch(r"[A-Za-z0-9._-]+\.md", name):
+    dest = ar.safe_bible_path(bdir, name)
+    if dest is None:
         raise HTTPException(400, "invalid bible file name")
-    bd = ar.bible_dir(bdir)
-    bd.mkdir(parents=True, exist_ok=True)
-    (bd / name).write_text(payload.content, encoding="utf-8")
-    db.index_doc("bible", series, bdir.name, name, name.rsplit(".", 1)[0], payload.content)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(payload.content, encoding="utf-8")
+    db.index_doc("bible", series, bdir.name, name, Path(name).stem, payload.content)
     return BibleOut(book_id=bdir.name, files=ar.read_bible(bdir))
 
 

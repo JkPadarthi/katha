@@ -38,6 +38,22 @@ export default function Bible({ series, initial, onClose, onChanged }) {
   }, [onClose])
 
   const names = Object.keys(files).sort()
+  // The bible is a tree — group nested files (characters/kael.md) by folder.
+  const loose = names.filter((n) => !n.includes('/'))
+  const groups = {}
+  for (const n of names) {
+    const i = n.indexOf('/')
+    if (i === -1) continue
+    const folder = n.slice(0, i)
+    if (!groups[folder]) groups[folder] = []
+    groups[folder].push(n)
+  }
+  const rowClass = (n, indent) =>
+    'w-full truncate rounded-md py-1.5 text-left text-[12px] ' +
+    (indent ? 'pl-5 pr-2 ' : 'px-2 ') +
+    (n === active
+      ? 'bg-panel-2 text-ink ring-1 ring-gold/40'
+      : 'text-mute hover:bg-panel-2/60 hover:text-ink')
 
   const select = (name) => {
     if (dirty && !window.confirm('Discard unsaved changes?')) return
@@ -110,24 +126,34 @@ export default function Bible({ series, initial, onClose, onChanged }) {
             </button>
           </div>
           <ul className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-            {names.map((n) => (
+            {names.length === 0 && (
+              <li className="px-2 py-2 text-[11px] text-mute/60">No bible files yet.</li>
+            )}
+            {loose.map((n) => (
               <li key={n}>
-                <button
-                  onClick={() => select(n)}
-                  className={
-                    'w-full truncate rounded-md px-2 py-1.5 text-left text-[12px] ' +
-                    (n === active
-                      ? 'bg-panel-2 text-ink ring-1 ring-gold/40'
-                      : 'text-mute hover:bg-panel-2/60 hover:text-ink')
-                  }
-                >
+                <button onClick={() => select(n)} className={rowClass(n, false)}>
                   {n}
                 </button>
               </li>
             ))}
-            {names.length === 0 && (
-              <li className="px-2 py-2 text-[11px] text-mute/60">No bible files yet.</li>
-            )}
+            {Object.entries(groups)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([folder, items]) => (
+                <li key={folder} className="mt-1">
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-mute/50">
+                    {folder}/
+                  </div>
+                  <ul className="space-y-0.5">
+                    {items.map((n) => (
+                      <li key={n}>
+                        <button onClick={() => select(n)} className={rowClass(n, true)}>
+                          {n.split('/').slice(1).join('/')}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
           </ul>
           {creating && (
             <div className="border-t hairline p-2">
@@ -136,7 +162,7 @@ export default function Bible({ series, initial, onClose, onChanged }) {
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') create() }}
-                placeholder="characters.md"
+                placeholder="characters/mira.md"
                 className="w-full rounded border hairline bg-base px-2 py-1 text-[11.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-gold/50"
               />
               <div className="mt-1 flex justify-end gap-1">

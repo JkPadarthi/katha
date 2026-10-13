@@ -699,5 +699,9 @@ def test_story_tool_lists_files():
         f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01")
     listing = muse_mod._run_tool(ctx, "list_story_files", {})
     assert "chapters/ch-01.md" in listing
-    assert "bible/characters.md" in listing
+    assert "bible/characters/kael.md" in listing
     assert ".katha" not in listing
+
+    # a nested bible file is readable by the tool
+    ok = muse_mod._run_tool(ctx, "read_story_file", {"path": "bible/characters/kael.md"})
+    assert "Kael" in ok

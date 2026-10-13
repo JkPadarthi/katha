@@ -279,14 +279,104 @@ def _mtime(p: Path) -> str:
 
 
 # ---------- bible ----------
+# The bible is a TREE: bible/<anything>.md, e.g. bible/characters/kael.md or a
+# loose bible/timeline.md. Every walk is recursive and skips hidden segments
+# (so characters.md.orig and .katha/ never show up).
+
+def _iter_bible_files(bd: Path) -> list[Path]:
+    """Every bible .md, recursively, skipping hidden segments."""
+    if not bd.exists():
+        return []
+    out = []
+    for f in sorted(bd.rglob("*.md")):
+        if any(part.startswith(".") for part in f.relative_to(bd).parts):
+            continue
+        if f.is_file():
+            out.append(f)
+    return out
+
 
 def read_bible(book: Path) -> dict[str, str]:
+    """Map bible-relative posix paths → content (e.g. 'characters/kael.md')."""
     bd = bible_dir(book)
-    out = {}
-    if bd.exists():
-        for f in sorted(bd.glob("*.md")):
-            out[f.name] = f.read_text(encoding="utf-8")
+    out: dict[str, str] = {}
+    for f in _iter_bible_files(bd):
+        out[f.relative_to(bd).as_posix()] = f.read_text(encoding="utf-8")
     return out
+
+
+def safe_bible_path(book: Path, rel: str) -> Path | None:
+    """Resolve a bible-relative path to a writable .md inside bible/, or None.
+
+    Rejects absolute paths, '..', backslashes, hidden segments, and non-.md —
+    the write-side guard for the nested PUT route.
+    """
+    if not rel or rel.startswith("/") or "\\" in rel:
+        return None
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." or p.startswith(".") for p in parts):
+        return None
+    if not parts[-1].endswith(".md"):
+        return None
+    bd = bible_dir(book).resolve()
+    try:
+        cand = bd.joinpath(*parts).resolve()
+    except OSError:
+        return None
+    try:
+        cand.relative_to(bd)
+    except ValueError:
+        return None
+    return cand
+
+
+def split_characters_bible(book: Path) -> list[str]:
+    """One-time migration: split `bible/characters.md` into
+    `bible/characters/<slug>.md` (one per `## ` heading). The original is
+    renamed to `characters.md.orig` so nothing is lost. Idempotent."""
+    bd = bible_dir(book)
+    src = bd / "characters.md"
+    if not src.is_file():
+        return []
+    text = src.read_text(encoding="utf-8")
+    dest_dir = bd / "characters"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[str] = []
+    seen: dict[str, int] = {}
+    for chunk in re.split(r"(?m)^##\s+", text)[1:]:   # [0] is the preamble
+        lines = chunk.splitlines()
+        if not lines:
+            continue
+        name = lines[0].strip()
+        if not name:
+            continue
+        body = "\n".join(lines[1:]).strip()
+        slug = slugify(name) or "unnamed"
+        n = seen.get(slug, 0)
+        seen[slug] = n + 1
+        fname = f"{slug}.md" if n == 0 else f"{slug}-{n + 1}.md"
+        dest = dest_dir / fname
+        dest.write_text(f"# {name}\n\n{body}".rstrip() + "\n", encoding="utf-8")
+        written.append(dest.relative_to(ARCHIVE_ROOT).as_posix())
+
+    src.rename(bd / "characters.md.orig")
+    return written
+
+
+def migrate_archive() -> list[str]:
+    """Run idempotent archive migrations across every book."""
+    written: list[str] = []
+    if not ARCHIVE_ROOT.is_dir():
+        return written
+    for series_dir in sorted(ARCHIVE_ROOT.iterdir()):
+        if not series_dir.is_dir() or _is_hidden(series_dir):
+            continue
+        for b in sorted(series_dir.iterdir()):
+            if not b.is_dir() or _is_hidden(b):
+                continue
+            written.extend(split_characters_bible(b))
+    return written
 
 
 # ---------- reading-mode notes (1.0) ----------
@@ -392,7 +482,7 @@ def iter_searchable_docs():
                     yield ("chapter", series_slug, book_id, f.stem,
                            _chapter_title(f), f.read_text(encoding="utf-8"))
             bd = b / "bible"
-            if bd.exists():
-                for f in sorted(bd.glob("*.md")):
-                    yield ("bible", series_slug, book_id, f.name,
-                           f.stem, f.read_text(encoding="utf-8"))
+            for f in _iter_bible_files(bd):
+                rel = f.relative_to(bd).as_posix()
+                yield ("bible", series_slug, book_id, rel,
+                       f.stem, f.read_text(encoding="utf-8"))

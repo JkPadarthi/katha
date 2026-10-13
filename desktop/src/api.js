@@ -34,7 +34,10 @@ export async function loadArchive() {
       let bible = {}
       try {
         bible = await req(`/books/${s.series}/${b.id}/bible`).then((x) => x.files)
-        bible = Object.entries(bible).map(([title, _]) => ({ id: title, title }))
+        bible = Object.entries(bible).map(([path]) => ({
+          id: path,                       // bible-relative path, e.g. characters/kael.md
+          title: path.split('/').pop()    // basename for display
+        }))
       } catch { /* bible optional */ }
       series.books.push({
         id: b.id,
@@ -151,7 +154,8 @@ export function getBible(series, bookId) {
 }
 
 export function saveBible(series, bookId, name, content) {
-  return req(`/books/${series}/${bookId}/bible/${name}`, {
+  // `name` may be a nested path (characters/kael.md) — encodeURI keeps '/'.
+  return req(`/books/${series}/${bookId}/bible/${encodeURI(name)}`, {
     method: 'PUT',
     body: JSON.stringify({ content })
   })

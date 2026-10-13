@@ -25,7 +25,8 @@ ARCHIVE = [
             ("Kael's Bargain", 2110),
         ],
         "bible": {
-            "characters.md": "# Characters\n\n## Kael\n- Mute-eyed, carries a debt.\n- Speaks in clipped, low-register lines.\n\n## The Innkeeper\n- Hems and haws; doesn't want trouble.\n",
+            "characters/kael.md": "# Kael\n- Mute-eyed, carries a debt.\n- Speaks in clipped, low-register lines.\n",
+            "characters/the-innkeeper.md": "# The Innkeeper\n- Hems and haws; doesn't want trouble.\n",
             "places.md": "# Places\n\n## Crosswater\n- A wayside inn where the roads meet.\n\n## Varna\n- A city downhill; where debts get paid.\n",
             "timeline.md": "# Timeline\n\n- The fire burned low at Crosswater.\n- A stranger arrived with a doubled price on Kael's head.\n",
         },
@@ -65,6 +66,7 @@ def seed(force: bool = False, quiet: bool = False) -> list[str]:
         bd.mkdir(parents=True, exist_ok=True)
         for name, content in entry["bible"].items():
             p = bd / name
+            p.parent.mkdir(parents=True, exist_ok=True)
             if force or not p.exists():
                 p.write_text(content, encoding="utf-8")
                 written.append(p.relative_to(ARCHIVE_ROOT).as_posix())

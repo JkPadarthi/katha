@@ -7,6 +7,7 @@ import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
 import Sweep from './components/Sweep.jsx'
 import Settings from './components/Settings.jsx'
+import Bible from './components/Bible.jsx'
 import * as api from './api.js'
 import { getSetting, setSetting } from './settings.js'
 
@@ -22,6 +23,8 @@ export default function App() {
   const [sweepOpen, setSweepOpen] = useState(false)
   // Settings + writing rituals + proactive nudge (1.0)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Bible viewer/editor: null = closed, otherwise the file to open first.
+  const [bibleName, setBibleName] = useState(null)
   const [goal, setGoal] = useState(() => getSetting('goal', '') ?? '')
   const [nudgeOn, setNudgeOn] = useState(() => getSetting('nudge', false))
   const [nudge, setNudge] = useState(false)
@@ -235,6 +238,7 @@ export default function App() {
                 active={activeChapter}
                 onSelect={jumpTo}
                 archive={archive}
+                onOpenBible={(name) => setBibleName(name || '')}
               />
             )}
             <div className="relative min-h-0">
@@ -311,6 +315,9 @@ export default function App() {
       )}
       {sweepOpen && series && (
         <Sweep series={series} onClose={() => setSweepOpen(false)} />
+      )}
+      {bibleName !== null && series && (
+        <Bible series={series} initial={bibleName} onClose={() => setBibleName(null)} />
       )}
       {settingsOpen && (
         <Settings

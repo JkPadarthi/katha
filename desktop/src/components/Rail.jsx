@@ -3,7 +3,7 @@ import Rituals from './Rituals.jsx'
 
 // The CHAPTERS pane — the session-rail analog. Collapses to icons like a
 // proper IDE. Active chapter glows gold.
-export default function Rail({ collapsed, onToggle, active, onSelect, archive }) {
+export default function Rail({ collapsed, onToggle, active, onSelect, archive, onOpenBible }) {
   const series = archive[0]
 
   return (
@@ -90,7 +90,10 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive })
             <ul className="space-y-0.5">
               {series.books[0].bible.map((b) => (
                 <li key={b.id}>
-                  <button className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-mute hover:bg-panel-2/60 hover:text-ink">
+                  <button
+                    onClick={() => onOpenBible && onOpenBible(b.id)}
+                    className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-mute hover:bg-panel-2/60 hover:text-ink"
+                  >
                     <span className="w-7 shrink-0 text-right text-[10px] text-dim">✎</span>
                     <span className="min-w-0 flex-1 truncate">{b.title}</span>
                   </button>

@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
-import * as api from '../api.js'
-import { pageApi } from './Page.jsx'
+import * as api from '../lib/api.js'
+import { editorApi } from './Editor.jsx'
 
 // Imperative bridge so App can pre-fill the composer (proactive nudge).
 export const museApi = { setDraft: null }
 
-// THE MUSE — Zed-style chat panel. 0.3 wires the streaming chat via the
-// FastAPI Muse proxy (server/app/muse.py). The thread lives in component
-// state; persistent per-chapter history ships in 0.3.4.
+// THE MUSE — streaming chat. The server is agentic: given a chapter id, it can
+// fetch the story files itself (see server/app/muse.py). The thread lives in
+// component state.
 
 const CHIPS = [
   { id: 'rewrite',  label: '✎ rewrite' },
@@ -16,22 +16,20 @@ const CHIPS = [
   { id: 'canon',    label: '⚑ canon?' }
 ]
 
-const APPLY = ['insert at cursor', 'replace selection', 'append to chapter']
-
-// Latest assistant message text — what the apply buttons push to the Page.
-function _latestAssistant(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant' && messages[i].text) return messages[i].text
-  }
-  return ''
-}
-
-// Quick prompts — what fills the composer when a chip is clicked.
 const CHIP_PROMPTS = {
   rewrite:  'Rewrite my last sentence as proper novel English.',
   continue: 'Continue the scene from where I left off.',
   scene:    'Write a new scene that follows the current chapter.',
   canon:    'Is the last thing I wrote consistent with the bible?'
+}
+
+const APPLY = ['insert at cursor', 'replace selection', 'append to chapter']
+
+function latestAssistant(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && messages[i].text) return messages[i].text
+  }
+  return ''
 }
 
 export default function Muse({ series, chapter }) {
@@ -44,34 +42,28 @@ export default function Muse({ series, chapter }) {
   const abortRef = useRef(null)
   const threadRef = useRef(null)
 
-  // `series/book/ch-NN` — tells the server to inject canon context (current
-  // chapter + bible + style digest). Null when nothing is open.
+  // `series/book/ch-NN` — tells the server which story to read (canon context
+  // + the agentic tools). Null when nothing is open.
   const chapterId = series && chapter ? `${series.series}/${series.book}/${chapter.id}` : null
 
   useEffect(() => {
-    // Let App (the proactive nudge) pre-fill the composer.
     museApi.setDraft = (t) => setDraft(t)
     return () => { museApi.setDraft = null }
   }, [])
 
-  // Autoscroll the thread as the assistant streams.
   useEffect(() => {
-    if (threadRef.current) {
-      threadRef.current.scrollTop = threadRef.current.scrollHeight
-    }
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
   }, [messages, streaming])
 
   const send = async (text, chip) => {
     if (!text.trim() || busy) return
     setError('')
     setStatus('')
-    const userMsg = { role: 'user', text }
-    setMessages((m) => [...m, userMsg])
+    setMessages((m) => [...m, { role: 'user', text }])
     setDraft('')
     setBusy(true)
     setStreaming('')
 
-    // Build the messages payload for the server (just role+content).
     const payloadMessages = [
       ...messages.map((m) => ({ role: m.role, content: m.text })),
       { role: 'user', content: text }
@@ -104,49 +96,51 @@ export default function Muse({ series, chapter }) {
 
   const stop = () => {
     abortRef.current?.abort()
-    // Snapshot whatever streamed in so far as a partial assistant turn.
-    if (streaming) {
-      setMessages((m) => [...m, { role: 'assistant', text: streaming + '…' }])
-    }
+    if (streaming) setMessages((m) => [...m, { role: 'assistant', text: streaming + '…' }])
     setStreaming('')
     setStatus('')
     setBusy(false)
   }
 
-  const onChip = (chipId) => {
-    setDraft(CHIP_PROMPTS[chipId] || '')
+  const applyAvailable = (mode) =>
+    mode === 'insert' ? !!editorApi.insertAtCursor
+      : mode === 'replace' ? !!editorApi.replaceSelection
+      : !!editorApi.appendToChapter
+
+  const applyTo = (mode, text) => {
+    if (!text || busy) return
+    if (mode === 'insert' && editorApi.insertAtCursor) editorApi.insertAtCursor(text)
+    if (mode === 'replace' && editorApi.replaceSelection) editorApi.replaceSelection(text)
+    if (mode === 'append' && editorApi.appendToChapter) editorApi.appendToChapter(text)
   }
 
-  // Latest assistant text — drives the apply buttons.
-  const latestAssistantText = _latestAssistant(messages) || streaming
+  const latest = latestAssistant(messages) || streaming
 
   return (
     <aside className="flex min-h-0 flex-col border-l hairline bg-panel">
       <div className="flex items-center justify-between px-3 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-gold">✦</span>
+          <span className="text-[10px] text-accent">✦</span>
           <span className="text-[11.5px] font-medium text-ink">The Muse</span>
         </div>
         <span className="text-[10px] text-mute/60">
           {busy ? (
             <span className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-gold" />
-              streaming
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+              working
             </span>
-          ) : (
-            '0.3 · live'
-          )}
+          ) : 'live'}
         </span>
       </div>
 
-      {/* Quick chips — pre-written chat (D7) */}
+      {/* Quick chips (D7) */}
       <div className="flex gap-1.5 overflow-x-auto px-3 pb-2">
         {CHIPS.map((c) => (
           <button
             key={c.id}
             disabled={busy}
-            onClick={() => onChip(c.id)}
-            className="shrink-0 rounded-full border hairline px-2.5 py-1 text-[11px] text-mute transition-colors hover:border-gold/50 hover:text-gold disabled:opacity-50"
+            onClick={() => setDraft(CHIP_PROMPTS[c.id] || '')}
+            className="shrink-0 rounded-full border hairline px-2.5 py-1 text-[11px] text-mute transition-colors hover:border-accent/50 hover:text-accent disabled:opacity-50"
             title={`Pre-fill the composer with: ${CHIP_PROMPTS[c.id]}`}
           >
             {c.label}
@@ -161,38 +155,38 @@ export default function Muse({ series, chapter }) {
             Tell the Muse what to write.
           </div>
         )}
+
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
             <div
               className={
-                'max-w-[92%] rounded-lg px-3 py-2 text-[12px] leading-relaxed whitespace-pre-wrap ' +
-                (m.role === 'user'
-                  ? 'bg-panel-2 text-ink'
-                  : 'border hairline bg-base text-mute')
+                'max-w-[92%] whitespace-pre-wrap rounded-lg px-3 py-2 text-[12px] leading-relaxed ' +
+                (m.role === 'user' ? 'bg-panel-2 text-ink' : 'border hairline bg-base text-mute')
               }
             >
               {m.text}
             </div>
           </div>
         ))}
-        {/* Live streaming bubble — appears during a Muse turn */}
+
         {(streaming || busy) && (
           <div className="flex justify-start">
-            <div className="max-w-[92%] rounded-lg border hairline bg-base px-3 py-2 text-[12px] leading-relaxed whitespace-pre-wrap text-mute">
+            <div className="max-w-[92%] whitespace-pre-wrap rounded-lg border hairline bg-base px-3 py-2 text-[12px] leading-relaxed text-mute">
               {streaming || (
                 <span className="flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-gold" />
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
                   {status || 'thinking'}
                 </span>
               )}
               {busy && streaming && (
-                <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-gold/70 align-middle" />
+                <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-accent/70 align-middle" />
               )}
             </div>
           </div>
         )}
+
         {error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-[10.5px] text-red-300">
+          <div className="rounded-md border border-err/30 bg-err/10 px-2.5 py-1.5 text-[10.5px] text-err">
             {error}
           </div>
         )}
@@ -211,7 +205,7 @@ export default function Muse({ series, chapter }) {
           }}
           rows={2}
           disabled={busy}
-          className="w-full resize-none rounded-md border hairline bg-base px-2.5 py-2 text-[12.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-gold/50 disabled:opacity-60"
+          className="w-full resize-none rounded-md border hairline bg-base px-2.5 py-2 text-[12.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-60"
           placeholder="Tell the Muse what to write…"
         />
         <div className="mt-2 flex items-center justify-between">
@@ -220,16 +214,16 @@ export default function Muse({ series, chapter }) {
               const mode = a === 'insert at cursor' ? 'insert'
                 : a === 'replace selection' ? 'replace'
                 : 'append'
-              const disabled = !latestAssistantText || !_applyAvailable(mode)
+              const disabled = !latest || !applyAvailable(mode)
               return (
                 <button
                   key={a}
                   disabled={disabled}
-                  onClick={() => applyTo(mode, latestAssistantText)}
-                  className="rounded border hairline px-2 py-1 text-[10px] text-mute/70 transition-colors hover:border-gold/50 hover:text-gold disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-mute/70"
+                  onClick={() => applyTo(mode, latest)}
+                  className="rounded border hairline px-2 py-1 text-[10px] text-mute/70 transition-colors hover:border-accent/50 hover:text-accent disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-mute/70"
                   title={
-                    !latestAssistantText ? 'Wait for the Muse to finish a reply'
-                      : !_applyAvailable(mode) ? `Apply "${mode}" is not available right now`
+                    !latest ? 'Wait for the Muse to finish a reply'
+                      : !applyAvailable(mode) ? `Apply "${mode}" is not available right now`
                       : `Apply the latest Muse reply: ${mode}`
                   }
                 >
@@ -241,7 +235,7 @@ export default function Muse({ series, chapter }) {
           {busy ? (
             <button
               onClick={stop}
-              className="rounded-md border border-red-500/40 px-3 py-1 text-[11px] font-semibold text-red-300 hover:bg-red-500/10"
+              className="rounded-md border border-err/40 px-3 py-1 text-[11px] font-semibold text-err hover:bg-err/10"
             >
               Stop
             </button>
@@ -249,7 +243,7 @@ export default function Muse({ series, chapter }) {
             <button
               onClick={() => send(draft)}
               disabled={!draft.trim()}
-              className="rounded-md bg-gold px-3 py-1 text-[11px] font-semibold text-base hover:brightness-110 disabled:opacity-40"
+              className="rounded-md bg-accent px-3 py-1 text-[11px] font-semibold text-onaccent hover:brightness-110 disabled:opacity-40"
             >
               Send
             </button>
@@ -258,20 +252,4 @@ export default function Muse({ series, chapter }) {
       </div>
     </aside>
   )
-
-  // --- apply helpers -----------------------------------------------------
-
-  function _applyAvailable(mode) {
-    if (mode === 'insert') return !!pageApi.insertAtCursor
-    if (mode === 'replace') return !!pageApi.replaceSelection
-    if (mode === 'append') return !!pageApi.appendToChapter
-    return false
-  }
-
-  function applyTo(mode, text) {
-    if (!text || busy) return
-    if (mode === 'insert' && pageApi.insertAtCursor) pageApi.insertAtCursor(text)
-    if (mode === 'replace' && pageApi.replaceSelection) pageApi.replaceSelection(text)
-    if (mode === 'append' && pageApi.appendToChapter) pageApi.appendToChapter(text)
-  }
 }

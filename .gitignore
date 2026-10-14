@@ -12,3 +12,7 @@ __pycache__/
 *.pyc
 .DS_Store
 *.log
+
+# local tooling artifacts (agent session scratch, code-graph cache)
+.omo/
+.codegraph/

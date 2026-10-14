@@ -21,11 +21,14 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
 
 ## Components
 
-- **Client** (`desktop/`) — React + Vite + Tailwind, no router, state in
-  `App.jsx`. `src/api.js` is the entire backend boundary (same-origin `/api` +
-  SSE streaming). `src/settings.js` holds per-machine prefs in `localStorage`.
-  Components: `TitleBar`, `Rail`, `Page`, `Muse`, `CommandPalette`,
-  `DiffOverlay`, `Sweep`. `public/sw.js` caches the shell only.
+- **Client** (`desktop/src/`) — React + Vite + Tailwind, no router, state in
+  `App.jsx`. `lib/api.js` is the entire backend boundary (same-origin `/api` +
+  SSE streaming); `lib/useTheme.js` drives the theme system (Hermes/Paper/Slate,
+  OS-follow default); `lib/settings.js` holds per-machine prefs. `ui/` holds the
+  shared primitives (`Overlay`, `Button`, `Field`). Components: `TitleBar`,
+  `ThemePicker`, `Rail`, `Editor`, `ReadingView`, `Muse`, `CommandPalette`,
+  `DiffOverlay`, `SweepPanel`, `BiblePanel`, `RitualsCard`, `SettingsPanel`.
+  `public/sw.js` caches the shell only.
 - **Server** (`server/app/`) — `main.py` (HTTP + SSE + static PWA),
   `schemas.py` (contracts), `archive.py` (files = truth), `db.py` (SQLite index
   + FTS5), `muse.py` (Ollama proxy: agentic chat with story tools, rewrite,

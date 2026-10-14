@@ -1,49 +1,49 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import TitleBar from './components/TitleBar.jsx'
 import Rail from './components/Rail.jsx'
-import Page, { pageApi } from './components/Page.jsx'
+import Editor, { editorApi } from './components/Editor.jsx'
 import Muse, { museApi } from './components/Muse.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
-import Sweep from './components/Sweep.jsx'
-import Settings from './components/Settings.jsx'
-import Bible from './components/Bible.jsx'
-import * as api from './api.js'
-import { getSetting, setSetting } from './settings.js'
-import { useMediaQuery } from './useMediaQuery.js'
+import SweepPanel from './components/SweepPanel.jsx'
+import BiblePanel from './components/BiblePanel.jsx'
+import SettingsPanel from './components/SettingsPanel.jsx'
+import * as api from './lib/api.js'
+import { getSetting, setSetting } from './lib/settings.js'
+import { useMediaQuery } from './lib/useMediaQuery.js'
+import { useTheme } from './lib/useTheme.js'
 
 export default function App() {
+  const { theme, choose } = useTheme()
+
   const [archive, setArchive] = useState(null)
   const [series, setSeries] = useState(null)
   const [activeChapter, setActiveChapter] = useState(null)
   const [railCollapsed, setRailCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  // Focus mode — hide the rails, center the page on the writing. Persisted.
   const [focusMode, setFocusMode] = useState(() => getSetting('focus', false))
-  // Canon sweep overlay (0.4)
+  const [loadError, setLoadError] = useState('')
+
   const [sweepOpen, setSweepOpen] = useState(false)
-  // Settings + writing rituals + proactive nudge (1.0)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  // Bible viewer/editor: null = closed, otherwise the file to open first.
-  const [bibleName, setBibleName] = useState(null)
+  const [bibleName, setBibleName] = useState(null)   // null = closed
   const [goal, setGoal] = useState(() => getSetting('goal', '') ?? '')
   const [nudgeOn, setNudgeOn] = useState(() => getSetting('nudge', false))
   const [nudge, setNudge] = useState(false)
-  // Mobile: one pane at a time — bottom tabs + horizontal swipe.
-  const isMobile = useMediaQuery('(max-width: 767px)')
-  const [pane, setPane] = useState(1)          // 0=Chapters 1=Page 2=Muse
-  const touchRef = useRef({ x0: 0, dx: 0, active: false })
-  // Surface archive-load errors so the user sees what went wrong (instead
-  // of a silent "Loading archive…" forever).
-  const [loadError, setLoadError] = useState('')
-  // Rewrite flow (0.3.3)
+
+  // Rewrite flow
   const [selection, setSelection] = useState(null)
   const [rewriteOpen, setRewriteOpen] = useState(false)
   const [proposed, setProposed] = useState('')
   const [rewriteBusy, setRewriteBusy] = useState(false)
   const [rewriteStyle, setRewriteStyle] = useState('novel')
 
-  // Load the live archive from the FastAPI backend.
+  // Mobile: one pane at a time — bottom tabs + horizontal swipe.
+  const isMobile = useMediaQuery('(max-width: 767px)')
+  const [pane, setPane] = useState(1)                 // 0=Chapters 1=Page 2=Muse
+  const touchRef = useRef({ x0: 0, dx: 0, active: false })
+
+  // Load the archive.
   useEffect(() => {
     let alive = true
     setLoadError('')
@@ -52,40 +52,29 @@ export default function App() {
       .then((a) => {
         if (!alive) return
         setArchive(a)
-        // Pick the first book that actually has chapters. Defensive — even
-        // with the hidden-dir fix, a future empty seeded series shouldn't
-        // leave us stuck on an empty book.
         const firstWithChapters = a.find((s) => s.books?.some((b) => b.chapters?.length))
-        const series0 = firstWithChapters || a[0]
-        if (series0 && series0.books[0]) {
-          const b = series0.books[0]
-          setSeries({ series: series0.name, book: b.id })
+        const s0 = firstWithChapters || a[0]
+        if (s0 && s0.books[0]) {
+          const b = s0.books[0]
+          setSeries({ series: s0.name, book: b.id })
           setActiveChapter(b.chapters[0]?.id || null)
         } else if (a.length === 0) {
           setLoadError('Server returned an empty archive.')
         }
       })
       .catch((err) => {
-        if (alive) {
-          console.error('Archive load failed:', err.message)
-          setLoadError(`${err.message || err}`)
-        }
+        if (alive) setLoadError(`${err.message || err}`)
       })
     return () => { alive = false }
   }, [])
 
-  // Re-fetch the archive tree WITHOUT touching the current series/chapter
-  // selection — used after adding a bible file so the rail list updates.
+  // Re-fetch the tree without disturbing the current selection.
   const refreshArchive = useCallback(async () => {
     try {
       setArchive(await api.loadArchive())
-    } catch {
-      /* keep the existing tree if the refetch fails */
-    }
+    } catch { /* keep the existing tree */ }
   }, [])
 
-  // Cmd+K / Ctrl+K opens the palette; Ctrl+Shift+F toggles focus — the IDE
-  // muscle memory.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -108,8 +97,7 @@ export default function App() {
 
   useEffect(() => { setSetting('focus', focusMode) }, [focusMode])
 
-  // Proactive nudge (D11): when enabled, after a few quiet minutes offer to
-  // have the Muse continue. Off by default — quiet, never nagging.
+  // Proactive nudge (D11): off by default.
   useEffect(() => {
     if (!nudgeOn) { setNudge(false); return }
     let timer
@@ -142,11 +130,19 @@ export default function App() {
     () => book?.chapters?.find((c) => c.id === activeChapter) || null,
     [book, activeChapter]
   )
-  // `series/book/ch-NN` for the Muse server-side canon context.
   const activeChapterId = series && chapter ? `${series.series}/${series.book}/${chapter.id}` : null
 
-  // --- Rewrite flow ------------------------------------------------------
+  const newChapter = async () => {
+    if (!series) return
+    try {
+      const c = await api.createChapter(series.series, series.book, 'Untitled')
+      await refreshArchive()
+      setActiveChapter(c.id)
+      if (isMobile) setPane(1)
+    } catch { /* the archive refresh will surface any failure */ }
+  }
 
+  // --- rewrite flow ------------------------------------------------------
   const runRewrite = async (sel, style) => {
     if (!sel || !sel.text) return
     setProposed('')
@@ -167,41 +163,21 @@ export default function App() {
     }
   }
 
-  // Triggered when the Page reports a non-empty selection — debounced by
-  // the textarea's selection events; we just stash the latest.
   const onSelection = (sel) => setSelection(sel)
-
-  const onRewriteClick = () => {
-    if (!selection || !selection.text) return
-    runRewrite(selection, rewriteStyle)
-  }
-
+  const onRewriteClick = () => { if (selection?.text) runRewrite(selection, rewriteStyle) }
   const onAccept = () => {
-    if (pageApi.replaceSelection && proposed) {
-      pageApi.replaceSelection(proposed)
-    }
+    if (editorApi.replaceSelection && proposed) editorApi.replaceSelection(proposed)
     setRewriteOpen(false)
     setProposed('')
   }
-
-  const onRetry = () => {
-    if (!selection) return
-    runRewrite(selection, rewriteStyle)
-  }
-
+  const onRetry = () => { if (selection) runRewrite(selection, rewriteStyle) }
   const onStyleChange = (s) => {
     setRewriteStyle(s)
     if (rewriteOpen && selection) runRewrite(selection, s)
   }
-
-  const onCloseRewrite = () => {
-    setRewriteOpen(false)
-    setProposed('')
-  }
+  const onCloseRewrite = () => { setRewriteOpen(false); setProposed('') }
 
   // --- mobile swipe ------------------------------------------------------
-  // Ignore gestures that start in an editable field so text selection in the
-  // editor never turns into a pane swipe.
   const onTouchStart = (e) => {
     const t = e.target
     if (t && t.closest && t.closest('textarea,input,[contenteditable]')) {
@@ -224,19 +200,11 @@ export default function App() {
 
   const pageNode = (
     <div className="relative h-full min-h-0">
-      <Page
-        chapter={chapter}
-        series={series}
-        focus={focusMode}
-        onSaved={() => {}}
-        onSelection={onSelection}
-        onReplaceRequested={true}
-      />
-      {/* Floating ✎ button — appears when the user has a non-empty selection */}
+      <Editor chapter={chapter} series={series} focus={focusMode} onSelection={onSelection} />
       {selection && selection.text && !rewriteOpen && (
         <button
           onClick={onRewriteClick}
-          className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-gold/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-gold shadow-lg shadow-black/40 hover:bg-gold/10"
+          className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-accent/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-accent shadow-lg shadow-black/40 hover:bg-accent/10"
           title="Rewrite the selected text with the Muse"
         >
           ✎ Rewrite selection
@@ -250,7 +218,7 @@ export default function App() {
               if (museApi.setDraft) museApi.setDraft('Continue the scene from where I left off.')
               setNudge(false)
             }}
-            className="rounded-full border border-gold/40 px-2 py-0.5 text-[10.5px] font-medium text-gold hover:bg-gold/10"
+            className="rounded-full border border-accent/40 px-2 py-0.5 text-[10.5px] font-medium text-accent hover:bg-accent/10"
           >
             Ask the Muse
           </button>
@@ -267,12 +235,8 @@ export default function App() {
       hint: 'Ctrl+Shift+F',
       run: () => setFocusMode((v) => !v)
     },
-    {
-      id: 'sweep',
-      label: 'Canon sweep',
-      hint: 'Muse',
-      run: () => setSweepOpen(true)
-    },
+    { id: 'new-chapter', label: 'New chapter', hint: 'Write', run: newChapter },
+    { id: 'sweep', label: 'Canon sweep', hint: 'Muse', run: () => setSweepOpen(true) },
     ...(series
       ? [{
           id: 'export',
@@ -281,12 +245,7 @@ export default function App() {
           run: () => api.exportEpub(series.series, series.book, `${series.book}.epub`).catch(() => {})
         }]
       : []),
-    {
-      id: 'settings',
-      label: 'Settings',
-      hint: '',
-      run: () => setSettingsOpen(true)
-    }
+    { id: 'settings', label: 'Settings', hint: '', run: () => setSettingsOpen(true) }
   ]
 
   return (
@@ -295,7 +254,10 @@ export default function App() {
         focus={focusMode}
         onToggleFocus={() => setFocusMode((v) => !v)}
         onOpenSettings={() => setSettingsOpen(true)}
+        theme={theme}
+        onChooseTheme={choose}
       />
+
       {archive && series ? (
         isMobile ? (
           <div className="flex min-h-0 flex-1 flex-col">
@@ -320,6 +282,7 @@ export default function App() {
                     onSelect={(id) => { jumpTo(id); setPane(1) }}
                     archive={archive}
                     onOpenBible={(name) => setBibleName(name || '')}
+                    onNewChapter={newChapter}
                   />
                 </div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
@@ -336,7 +299,7 @@ export default function App() {
                 <button
                   key={label}
                   onClick={() => setPane(i)}
-                  className={'flex-1 py-2.5 text-[11.5px] ' + (pane === i ? 'text-gold' : 'text-mute')}
+                  className={'flex-1 py-2.5 text-[11.5px] ' + (pane === i ? 'text-accent' : 'text-mute')}
                 >
                   {label}
                 </button>
@@ -361,6 +324,7 @@ export default function App() {
                 onSelect={jumpTo}
                 archive={archive}
                 onOpenBible={(name) => setBibleName(name || '')}
+                onNewChapter={newChapter}
               />
             )}
             {pageNode}
@@ -369,7 +333,7 @@ export default function App() {
         )
       ) : loadError ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center text-mute">
-          <div className="text-[12px] text-red-300">Failed to load archive</div>
+          <div className="text-[12px] text-err">Failed to load archive</div>
           <div className="text-[10.5px] text-mute/70">{loadError}</div>
           <div className="text-[10px] text-mute/50">
             Server at <code className="text-ink">{window.location.origin}</code> didn't respond.
@@ -377,17 +341,11 @@ export default function App() {
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center text-mute">
-          Loading archive…
-        </div>
+        <div className="flex min-h-0 flex-1 items-center justify-center text-mute">Loading archive…</div>
       )}
+
       {paletteOpen && archive && (
-        <CommandPalette
-          onClose={() => setPaletteOpen(false)}
-          onJump={jumpTo}
-          archive={archive}
-          commands={commands}
-        />
+        <CommandPalette onClose={() => setPaletteOpen(false)} onJump={jumpTo} archive={archive} commands={commands} />
       )}
       {rewriteOpen && selection && (
         <DiffOverlay
@@ -402,10 +360,10 @@ export default function App() {
         />
       )}
       {sweepOpen && series && (
-        <Sweep series={series} onClose={() => setSweepOpen(false)} />
+        <SweepPanel series={series} onClose={() => setSweepOpen(false)} />
       )}
       {bibleName !== null && series && (
-        <Bible
+        <BiblePanel
           series={series}
           initial={bibleName}
           onClose={() => setBibleName(null)}
@@ -413,7 +371,7 @@ export default function App() {
         />
       )}
       {settingsOpen && (
-        <Settings
+        <SettingsPanel
           goal={goal}
           onGoal={(v) => { setGoal(v); setSetting('goal', v === '' ? null : Number(v)) }}
           nudge={nudgeOn}

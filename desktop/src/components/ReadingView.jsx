@@ -3,7 +3,7 @@ import React, { useMemo, useState } from 'react'
 // READING MODE — the page as book. Renders the chapter's markdown as prose
 // (headings, blockquotes, paragraphs), lets the reader select a passage to
 // annotate, and lists the chapter's margin notes underneath. Annotations are
-// persisted by the parent (Page) to a ch-NN.notes.md sidecar on the Pi.
+// persisted by the parent (Editor) to a ch-NN.notes.md sidecar on the Pi.
 
 function Blocks({ text }) {
   const blocks = useMemo(() => (text || '').split(/\n\s*\n/), [text])
@@ -18,7 +18,7 @@ function Blocks({ text }) {
     }
     if (t.startsWith('>')) {
       return (
-        <blockquote key={i} className="my-3 border-l-2 border-gold/40 pl-3 font-serif text-[16px] italic text-mute">
+        <blockquote key={i} className="my-3 border-l-2 border-accent/40 pl-3 font-serif text-[16px] italic text-mute">
           {t.replace(/^>\s?/gm, '')}
         </blockquote>
       )
@@ -59,7 +59,7 @@ export default function ReadingView({ body, notes, onAddNote, onNoteBody, onDele
           onMouseDown={(e) => e.preventDefault()}
           onClick={add}
           style={{ position: 'fixed', left: sel.x, top: Math.max(8, sel.y - 36), transform: 'translateX(-50%)' }}
-          className="z-50 rounded-md border border-gold/40 bg-panel px-2.5 py-1 text-[10.5px] font-medium text-gold shadow-lg shadow-black/40 hover:bg-gold/10"
+          className="z-50 rounded-md border border-accent/40 bg-panel px-2.5 py-1 text-[10.5px] font-medium text-accent shadow-lg shadow-black/40 hover:bg-accent/10"
         >
           ✎ Add note
         </button>
@@ -74,7 +74,7 @@ export default function ReadingView({ body, notes, onAddNote, onNoteBody, onDele
             {notes.map((n, i) => (
               <li key={i} className="rounded-md border hairline bg-panel-2/40 px-3 py-2">
                 {n.quote && (
-                  <div className="mb-1 border-l-2 border-gold/40 pl-2 font-serif text-[12px] italic text-mute whitespace-pre-wrap">
+                  <div className="mb-1 whitespace-pre-wrap border-l-2 border-accent/40 pl-2 font-serif text-[12px] italic text-mute">
                     {n.quote}
                   </div>
                 )}
@@ -84,11 +84,11 @@ export default function ReadingView({ body, notes, onAddNote, onNoteBody, onDele
                   onBlur={onCommitNotes}
                   rows={2}
                   placeholder="Your note…"
-                  className="w-full resize-none rounded border hairline bg-base px-2 py-1 text-[12.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-gold/50"
+                  className="w-full resize-none rounded border hairline bg-base px-2 py-1 text-[12.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 />
                 <button
                   onClick={() => onDeleteNote(i)}
-                  className="mt-1 text-[10px] text-mute hover:text-red-300"
+                  className="mt-1 text-[10px] text-mute hover:text-err"
                 >
                   delete
                 </button>

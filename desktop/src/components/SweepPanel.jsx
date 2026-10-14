@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react'
-import * as api from '../api.js'
+import * as api from '../lib/api.js'
+import Overlay, { OverlayHeader } from '../ui/Overlay.jsx'
+import { Button } from '../ui/Button.jsx'
 import DiffOverlay from './DiffOverlay.jsx'
 
-// The CANON SWEEP — a whole-book continuity pass. It streams a read-only
-// audit (contradictions, timeline drift, character inconsistencies), and can
-// separately propose rewrites of individual bible files, which the author
-// reviews in the same word-diff overlay used for rewrites — nothing is
-// written until Accept.
-export default function Sweep({ series, onClose }) {
+// The CANON SWEEP — a whole-book continuity pass. Streams a read-only audit,
+// and can separately propose rewrites of individual bible files, reviewed in
+// the same diff overlay as rewrites. Nothing is written until Accept.
+export default function SweepPanel({ series, onClose }) {
   const [report, setReport] = useState('')
   const [reportBusy, setReportBusy] = useState(false)
   const [error, setError] = useState('')
@@ -23,12 +23,6 @@ export default function Sweep({ series, onClose }) {
       .catch(() => {})
     return () => { alive = false }
   }, [series.series, series.book])
-
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape' && !proposal) onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, proposal])
 
   const runReport = async () => {
     setError('')
@@ -81,47 +75,31 @@ export default function Sweep({ series, onClose }) {
     setProposal(null)
   }
 
-  const bibleNames = Object.keys(bible)
+  const bibleNames = Object.keys(bible).sort()
 
   return (
     <>
-      <div
-        className="absolute inset-0 z-40 flex items-start justify-center bg-black/60 pt-[8vh]"
-        onClick={onClose}
-      >
-        <div
-          onClick={(e) => e.stopPropagation()}
-          className="w-[760px] max-w-[92vw] overflow-hidden rounded-lg border hairline bg-panel shadow-2xl shadow-black/60"
-        >
-          <div className="flex items-center justify-between border-b hairline px-4 py-2.5">
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-gold">⚑</span>
-              <span className="text-[12px] font-medium text-ink">Canon sweep</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={runReport}
-                disabled={reportBusy}
-                className="rounded-md border border-gold/40 px-2.5 py-1 text-[10.5px] font-medium text-gold hover:bg-gold/10 disabled:opacity-40"
-              >
+      <Overlay onClose={onClose} width={760} height="70vh" padTop="8vh" dismissable={!proposal}>
+        <div className="flex h-full flex-col">
+          <OverlayHeader
+            icon="⚑"
+            title="Canon sweep"
+            onClose={onClose}
+            extra={
+              <Button variant="accent" size="sm" onClick={runReport} disabled={reportBusy}>
                 {reportBusy ? 'sweeping…' : 'Run sweep'}
-              </button>
-              <button onClick={onClose} className="text-[14px] text-mute hover:text-ink" title="Close (Esc)">
-                ×
-              </button>
-            </div>
-          </div>
+              </Button>
+            }
+          />
 
-          <div className="max-h-[62vh] overflow-y-auto px-4 py-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
             {error && (
-              <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+              <div className="mb-3 rounded-md border border-err/30 bg-err/10 px-3 py-2 text-[11px] text-err">
                 {error}
               </div>
             )}
 
-            <div className="mb-2 text-[9.5px] uppercase tracking-wider text-mute/70">
-              Continuity report
-            </div>
+            <div className="mb-2 text-[9.5px] uppercase tracking-wider text-mute/70">Continuity report</div>
             {report ? (
               <pre className="whitespace-pre-wrap font-sans text-[12.5px] leading-relaxed text-ink/95">{report}</pre>
             ) : (
@@ -132,23 +110,14 @@ export default function Sweep({ series, onClose }) {
               </div>
             )}
 
-            <div className="mb-2 mt-5 text-[9.5px] uppercase tracking-wider text-mute/70">
-              Bible updates
-            </div>
+            <div className="mb-2 mt-5 text-[9.5px] uppercase tracking-wider text-mute/70">Bible updates</div>
             <ul className="space-y-1">
               {bibleNames.map((name) => (
-                <li
-                  key={name}
-                  className="flex items-center justify-between rounded-md border hairline px-2.5 py-1.5"
-                >
-                  <span className="text-[12px] text-ink">{name}</span>
-                  <button
-                    onClick={() => propose(name)}
-                    disabled={propBusy}
-                    className="rounded border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-gold disabled:opacity-40"
-                  >
+                <li key={name} className="flex items-center justify-between rounded-md border hairline px-2.5 py-1.5">
+                  <span className="truncate text-[12px] text-ink">{name}</span>
+                  <Button size="sm" onClick={() => propose(name)} disabled={propBusy}>
                     Propose update
-                  </button>
+                  </Button>
                 </li>
               ))}
               {bibleNames.length === 0 && (
@@ -157,7 +126,7 @@ export default function Sweep({ series, onClose }) {
             </ul>
           </div>
         </div>
-      </div>
+      </Overlay>
 
       {proposal && (
         <DiffOverlay

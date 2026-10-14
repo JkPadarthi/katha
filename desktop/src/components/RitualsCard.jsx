@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import * as api from '../api.js'
-import { getSetting } from '../settings.js'
+import * as api from '../lib/api.js'
+import { getSetting } from '../lib/settings.js'
 
 // Writing rituals — a quiet "today" stat. Discipline, not motivation: words
 // against a daily goal, a streak, and a 14-day sparkline. No confetti.
-export default function Rituals() {
+export default function RitualsCard() {
   const [stats, setStats] = useState(null)
 
   useEffect(() => {
@@ -35,7 +35,7 @@ export default function Rituals() {
         <span>{stats.today} / {stats.goal}</span>
       </div>
       <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-panel-2">
-        <div className="h-full rounded-full bg-gold/70" style={{ width: pct + '%' }} />
+        <div className="h-full rounded-full bg-accent/70" style={{ width: pct + '%' }} />
       </div>
       <div className="mt-1.5 flex items-end justify-between">
         <span className="text-[10px] text-mute/60">{stats.streak}-day streak</span>
@@ -43,7 +43,7 @@ export default function Rituals() {
           {stats.history.map((h, i) => (
             <span
               key={i}
-              className="w-[3px] rounded-sm bg-gold/40"
+              className="w-[3px] rounded-sm bg-accent/40"
               style={{ height: Math.max(2, Math.round((h.words / max) * 14)) + 'px' }}
               title={`${h.date}: ${h.words} words`}
             />

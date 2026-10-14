@@ -1,4 +1,4 @@
-// Katha API client — talks to the FastAPI archive.
+// Katha API client — the ONLY boundary to the FastAPI archive.
 // The server serves this app AND the API from the same origin (the Pi, one
 // port), so every request is a same-origin `/api/...`. In dev, Vite proxies
 // `/api` to the local server (see vite.config.js). No base-URL juggling.
@@ -22,8 +22,7 @@ export function health() {
   return req('/health')
 }
 
-// Returns the archive in the shape the Rail already expects:
-//   [{ series, books: [{ id, title, chapters: [{id,title,words}], bible }] }]
+// The archive tree: [{ series, title, books: [{ id, title, chapters, bible }] }]
 export async function loadArchive() {
   const tree = await req('/books')          // [{series, title, books:[{id,title,chapter_count}]}]
   const archive = []
@@ -55,6 +54,8 @@ export async function loadArchive() {
   return archive
 }
 
+// --- chapters -------------------------------------------------------------
+
 export function getChapter(series, bookId, chapterId) {
   return req(`/books/${series}/${bookId}/chapters/${chapterId}`)
 }
@@ -66,16 +67,30 @@ export function saveChapter(series, bookId, chapterId, content, title) {
   })
 }
 
+export function createChapter(series, bookId, title, content = '') {
+  return req(`/books/${series}/${bookId}/chapters`, {
+    method: 'POST',
+    body: JSON.stringify({ title, content })
+  })
+}
+
+export function createBook(seriesTitle, bookTitle) {
+  return req('/books', {
+    method: 'POST',
+    body: JSON.stringify({ series: seriesTitle, title: bookTitle })
+  })
+}
+
 export function search(query, limit = 20) {
   return req(`/search?q=${encodeURIComponent(query)}&limit=${limit}`)
 }
 
-// --- Muse (0.3 Muse, D16/D17/D19) ------------------------------------------
+// --- Muse (D16/D17/D18/D19) -----------------------------------------------
 // Server streams SSE `data: <chunk>\n\n` events terminated by `data: [DONE]\n\n`.
-// Chunks are single-pass escaped (`\n` → `\n` literal, `\` → `\\`) — unescape
-// must match tokens in one pass or escaped backslashes corrupt. A failed
-// upstream arrives as `data: [ERROR] <message>` before [DONE]. onDelta
-// receives the cumulative *visible* text so far.
+// Chunks are single-pass escaped (`\n` → literal, `\` → `\\`) — unescape must
+// match tokens in one pass or escaped backslashes corrupt. A failed upstream
+// arrives as `data: [ERROR] <message>`; progress arrives as `data: [STATUS]`.
+// onDelta receives the cumulative *visible* text so far.
 
 function unescapeSse(s) {
   return s.replace(/\\n|\\\\/g, (m) => (m === '\\n' ? '\n' : '\\'))
@@ -107,7 +122,7 @@ async function streamSse(path, body, { onDelta, onStatus, signal }) {
       for (const line of event.split('\n')) {
         if (!line.startsWith('data:')) continue
         // SSE `data: ` prefix is 6 chars (data: + 1 space). Preserve any
-        // leading whitespace in the payload itself — it's part of the prose.
+        // leading whitespace in the payload — it's part of the prose.
         const payload = line.length > 5 && line[5] === ' '
           ? line.slice(6)
           : line.slice(5)
@@ -147,7 +162,17 @@ export function museModels() {
   return req('/muse/models')
 }
 
-// --- canon sweep (0.4) ----------------------------------------------------
+// target: 'report' (whole-book audit) | 'bible' (proposed rewrite of one file)
+export function museSweep({ series, bookId, target, bibleName, onDelta, signal }) {
+  return streamSse('/muse/sweep', {
+    series,
+    book_id: bookId,
+    target: target || 'report',
+    bible_name: bibleName || null
+  }, { onDelta, signal })
+}
+
+// --- bible ----------------------------------------------------------------
 
 export function getBible(series, bookId) {
   return req(`/books/${series}/${bookId}/bible`)
@@ -161,17 +186,7 @@ export function saveBible(series, bookId, name, content) {
   })
 }
 
-// target: 'report' (whole-book audit) | 'bible' (proposed rewrite of one file)
-export function museSweep({ series, bookId, target, bibleName, onDelta, signal }) {
-  return streamSse('/muse/sweep', {
-    series,
-    book_id: bookId,
-    target: target || 'report',
-    bible_name: bibleName || null
-  }, { onDelta, signal })
-}
-
-// --- reading-mode notes (1.0) ---------------------------------------------
+// --- reading-mode notes ---------------------------------------------------
 
 export function getNotes(series, bookId, chapterId) {
   return req(`/books/${series}/${bookId}/chapters/${chapterId}/notes`)
@@ -190,13 +205,13 @@ export function saveNotes(series, bookId, chapterId, notes) {
   })
 }
 
-// --- writing rituals (1.0) ------------------------------------------------
+// --- writing rituals ------------------------------------------------------
 
 export function getStats(goal) {
   return req('/stats' + (goal ? `?goal=${goal}` : ''))
 }
 
-// --- delivery: EPUB export (1.0) ------------------------------------------
+// --- delivery: EPUB -------------------------------------------------------
 
 export async function exportEpub(series, bookId, filename) {
   const res = await fetch(`/api/books/${series}/${bookId}/export.epub`)

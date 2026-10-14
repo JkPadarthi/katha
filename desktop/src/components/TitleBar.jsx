@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
+import { Button, IconButton } from '../ui/Button.jsx'
+import ThemePicker from './ThemePicker.jsx'
 
-// The quiet top strip. In the PWA there are no OS window controls — the
-// browser (or the installed app's own chrome) draws those. So this is the
-// brand mark, the version, and an "Install app" button when the browser
-// offers one (beforeinstallprompt).
-export default function TitleBar({ focus, onToggleFocus, onOpenSettings }) {
+// The quiet top strip: brand, theme picker, settings, focus (desktop only), an
+// "Install app" button when the browser offers one, and the version.
+export default function TitleBar({ focus, onToggleFocus, onOpenSettings, theme, onChooseTheme }) {
   const [installEvt, setInstallEvt] = useState(null)
 
   useEffect(() => {
@@ -26,17 +26,12 @@ export default function TitleBar({ focus, onToggleFocus, onOpenSettings }) {
   return (
     <div className="flex h-9 shrink-0 items-center justify-between border-b hairline bg-base px-3">
       <div className="flex items-center gap-2">
-        <span className="text-gold text-[10px]">●</span>
+        <span className="text-[10px] text-accent">●</span>
         <span className="text-[11px] font-medium tracking-wide text-mute">Katha</span>
       </div>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={onOpenSettings}
-          className="rounded-md border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-ink"
-          title="Settings"
-        >
-          ⚙
-        </button>
+
+      <div className="flex items-center gap-1.5">
+        <ThemePicker theme={theme} onChoose={onChooseTheme} />
         <button
           onClick={onToggleFocus}
           className="hidden rounded-md border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-ink md:block"
@@ -44,16 +39,13 @@ export default function TitleBar({ focus, onToggleFocus, onOpenSettings }) {
         >
           {focus ? 'exit focus' : 'focus'}
         </button>
+        <IconButton onClick={onOpenSettings} title="Settings">⚙</IconButton>
         {installEvt && (
-          <button
-            onClick={install}
-            className="rounded-md border border-gold/40 px-2 py-0.5 text-[10.5px] font-medium text-gold hover:bg-gold/10"
-            title="Install Katha as an app"
-          >
+          <Button variant="accent" size="sm" onClick={install} title="Install Katha as an app">
             Install app
-          </button>
+          </Button>
         )}
-        <span className="text-[11px] text-mute/70 select-none">v{__APP_VERSION__}</span>
+        <span className="select-none text-[11px] text-mute/70">v{__APP_VERSION__}</span>
       </div>
     </div>
   )

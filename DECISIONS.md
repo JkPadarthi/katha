@@ -31,6 +31,17 @@ continuity report, and (b) can propose rewrites of individual bible files that
 the author reviews in the same word-diff overlay as rewrites. Nothing is written
 until Accept. Implemented as `POST /api/muse/sweep` (SSE) + `PUT .../bible/{name}`.
 
+## 2026-10 — Client rebuilt on a token-theme system (2.0)
+The presentation layer was rewritten from scratch (same React/Vite/Tailwind;
+the FastAPI backend and the `api.js` contract are unchanged). Themes are now
+first-class: semantic CSS variables defined once in Tailwind's `@theme` and
+overridden per theme via `:root[data-theme="…"]`, so every component re-themes
+for free. Three themes ship — **Hermes** (dark/gold), **Paper** (warm light),
+**Slate** (cool dark) — and the default **follows the OS** (`prefers-color-
+scheme`) until the user picks one, which is then remembered. Shared `ui/`
+primitives (`Overlay`, `Button`, `Field`) replace the per-panel copies. The rail's
+"+ New chapter" button is now wired (POST /chapters).
+
 ## 2026-10 — Mobile layout: one pane + bottom tabs + swipe
 Below 768px the app switches from the three-column grid to one pane at a time,
 with a bottom tab bar (Chapters / Page / Muse) and horizontal swipe between

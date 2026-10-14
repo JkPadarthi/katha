@@ -1,24 +1,65 @@
 @import "tailwindcss";
 
-/* ── Katha tokens — the Hermes design vocabulary ──────────────────────
-   Lifted from the Hermes default skin (hermes_cli/skin_engine.py):
-   base #0e0e12 · accent #FFBF00 · dim #B8860B — plus the neutral chrome
-   observed in the Hermes desktop: hairline borders, rounded panels,
-   warm-white text, generous spacing, zero glare. */
+/* ── Katha design tokens ──────────────────────────────────────────────
+   Semantic CSS variables. The default values live in @theme (Hermes —
+   near-black + gold); other themes override the SAME variable names under
+   `:root[data-theme="…"]`. Because that selector is more specific than
+   `:root`, every utility (bg-base, text-ink, border-accent…) re-themes with
+   no component changes. Themes are applied by setting `data-theme` on <html>
+   (see lib/useTheme.js + the inline bootstrap in index.html). */
 @theme {
+  /* Hermes — dark, gold accent (the default) */
   --color-base: #0e0e12;      /* app background */
   --color-panel: #131318;     /* rails + panels */
   --color-panel-2: #1a1a22;   /* raised: active row, bubbles */
   --color-line: #26262e;      /* hairline borders */
-  --color-ink: #e8e6e0;       /* primary text — warm white */
+  --color-ink: #e8e6e0;       /* primary text */
   --color-mute: #8f8f98;      /* secondary text */
-  --color-gold: #ffbf00;      /* accent — Hermes ui_accent */
-  --color-dim: #b8860b;       /* dim gold — Hermes banner_dim */
+  --color-accent: #ffbf00;    /* accent */
+  --color-accent-dim: #b8860b;
+  --color-onaccent: #0e0e12;  /* text on accent-filled controls */
   --color-ok: #5af7b0;
   --color-warn: #ffcf5f;
   --color-err: #ff6b7d;
   --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
   --font-serif: "Georgia", "Iowan Old Style", "Times New Roman", serif;
+}
+
+:root { color-scheme: dark; }
+
+/* Paper — warm light, serif-forward */
+:root[data-theme="paper"] {
+  color-scheme: light;
+  --color-base: #f6f1e7;
+  --color-panel: #efe7d8;
+  --color-panel-2: #e6dbc7;
+  --color-line: #d9ccb2;
+  --color-ink: #2a241c;
+  --color-mute: #6e6353;
+  --color-accent: #9a5b17;
+  --color-accent-dim: #7a4711;
+  --color-onaccent: #fbf7ef;
+  --color-ok: #2f7d5b;
+  --color-warn: #a9760f;
+  --color-err: #b23b3b;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+}
+
+/* Slate — cool dark, blue accent */
+:root[data-theme="slate"] {
+  color-scheme: dark;
+  --color-base: #0f1419;
+  --color-panel: #151b22;
+  --color-panel-2: #1c242e;
+  --color-line: #263240;
+  --color-ink: #dbe4ee;
+  --color-mute: #8494a6;
+  --color-accent: #5aa2f0;
+  --color-accent-dim: #3b6ea5;
+  --color-onaccent: #0b1220;
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-err: #f87171;
 }
 
 html, body, #root { height: 100%; }
@@ -31,19 +72,25 @@ body {
   font-size: 13.5px;
   overflow: hidden;
   user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* The page is where the author lives — let them select text freely. */
 .page-surface, .page-surface * { user-select: text; }
 
-/* Hairline borders everywhere, one recipe. */
+/* Hairline borders, one recipe. */
 .hairline { border-color: var(--color-line); }
 
-/* Thin, quiet scrollbars — part of the calm. */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #2c2c34; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #3a3a44; }
+/* Thin, quiet scrollbars that adapt to the active theme. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-mute) 32%, transparent);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-mute) 52%, transparent);
+}
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* Focus rings in gold — the Hermes accent handshake. */
-:focus-visible { outline: 1px solid var(--color-gold); outline-offset: 1px; }
+/* Focus rings in the theme accent. */
+:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 1px; }

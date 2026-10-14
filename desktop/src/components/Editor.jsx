@@ -1,24 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react'
-import * as api from '../api.js'
+import * as api from '../lib/api.js'
+import { getSetting, setSetting } from '../lib/settings.js'
+import { countWords, clockNow } from '../lib/text.js'
+import { Button } from '../ui/Button.jsx'
 import ReadingView from './ReadingView.jsx'
-import { getSetting, setSetting } from '../settings.js'
 
-// THE PAGE — the quiet center. Loads real content from the FastAPI archive
-// and autosaves via PUT → md write + revision snapshot on disk.
-// 0.3.3 — selection capture + rewrite trigger; App.jsx owns the rewrite
-// pipeline + diff overlay, this just hands selection up + accepts replacements.
-// 0.3.5 — three apply operations exposed via pageApi: insertAtCursor,
-//         replaceSelection, appendToChapter.
-// 1.0   — Edit/Read modes. Read renders the chapter as prose and supports
-//         margin-note annotations (persisted to a ch-NN.notes.md sidecar).
-export default function Page({ chapter, series, focus, onSelection, onReplaceRequested }) {
+// THE EDITOR — the quiet center. Loads a chapter and autosaves via PUT (md
+// write + revision snapshot on the server). Owns Edit/Read modes and the
+// chapter's margin notes; exposes apply operations to the rest of the app via
+// the module-level `editorApi` bridge.
+export default function Editor({ chapter, series, focus, onSelection }) {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [savedAt, setSavedAt] = useState('')
   const [revision, setRevision] = useState(0)
   const [drafts, setDrafts] = useState(0)
   const [saving, setSaving] = useState(false)
-  // Edit vs Read. Persisted so the app reopens where you left off.
   const [mode, setMode] = useState(() => getSetting('mode', 'edit'))
   const [notes, setNotes] = useState([])
   const taRef = useRef(null)
@@ -26,7 +23,7 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
 
   useEffect(() => { setSetting('mode', mode) }, [mode])
 
-  // Load chapter content from the archive when the selection changes.
+  // Load chapter content when the selection changes.
   useEffect(() => {
     if (!chapter || !series) return
     let alive = true
@@ -36,11 +33,8 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
       .getChapter(series.series, series.book, chapter.id)
       .then((c) => {
         if (!alive) return
-        // Split leading '# Title' heading from the markdown body.
         const lines = (c.content || '').split('\n')
-        if (lines[0] && lines[0].startsWith('# ')) {
-          lines.shift()
-        }
+        if (lines[0] && lines[0].startsWith('# ')) lines.shift()
         setBody(lines.join('\n').trim())
         setRevision(c.revision || 0)
         setSavedAt('loaded')
@@ -60,8 +54,7 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
     return () => { alive = false }
   }, [chapter?.id, series?.series, series?.book])
 
-  // Autosave → PUT to the archive (writes md + revision on the Pi). The
-  // title rides along: the server rewrites the md H1 heading when it changes.
+  // Autosave (debounced).
   useEffect(() => {
     if (!chapter || !series || !(body || title)) return
     const t = setTimeout(() => {
@@ -70,17 +63,16 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
         .then((c) => {
           setRevision(c.revision)
           setDrafts((d) => d + 1)
-          setSavedAt('saved · ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+          setSavedAt('saved · ' + clockNow())
         })
         .catch(() => setSavedAt('offline'))
     }, 900)
     return () => clearTimeout(t)
   }, [body, title, chapter?.id, series?.series, series?.book])
 
-  const words = body.trim() ? body.trim().split(/\s+/).length : 0
+  const words = countWords(body)
 
-  // Manual save — immediate PUT (no debounce), banks a revision on demand.
-  const handleManualSave = () => {
+  const saveNow = () => {
     if (!chapter || !series || saving) return
     setSaving(true)
     api
@@ -88,14 +80,13 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
       .then((c) => {
         setRevision(c.revision)
         setDrafts((d) => d + 1)
-        setSavedAt('saved · ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+        setSavedAt('saved · ' + clockNow())
       })
       .catch(() => setSavedAt('offline'))
       .finally(() => setSaving(false))
   }
 
-  // --- annotations -------------------------------------------------------
-
+  // --- annotations --------------------------------------------------------
   const commitNotes = (list = notes) => {
     if (!chapter || !series) return
     api.saveNotes(series.series, series.book, chapter.id, list).catch(() => {})
@@ -105,16 +96,15 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
     setNotes(next)
     commitNotes(next)
   }
-  const setNoteBody = (i, text) => {
+  const setNoteBody = (i, text) =>
     setNotes((ns) => ns.map((n, idx) => (idx === i ? { ...n, body: text } : n)))
-  }
   const deleteNote = (i) => {
     const next = notes.filter((_, idx) => idx !== i)
     setNotes(next)
     commitNotes(next)
   }
 
-  // Track selection in the textarea so the rewrite button knows what to send.
+  // --- selection + apply bridge -------------------------------------------
   const captureSelection = () => {
     const ta = taRef.current
     if (!ta) return
@@ -125,17 +115,10 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
     if (text && onSelection) onSelection({ start, end, text })
   }
 
-  // Accept a rewrite: replace the last-known selection range with new text.
-  // Called from App.jsx via ref-style callback prop (see replaceSelection).
   useEffect(() => {
-    if (!onReplaceRequested) return
-    // App stores the replace fn on a module-level object that Page reads.
-    pageApi.replaceSelection = (newText) => {
+    editorApi.replaceSelection = (newText) => {
       const { start, end } = lastSelectionRef.current
-      const before = body.slice(0, start)
-      const after = body.slice(end)
-      setBody(before + newText + after)
-      // Restore selection/cursor to the new text.
+      setBody(body.slice(0, start) + newText + body.slice(end))
       requestAnimationFrame(() => {
         const ta = taRef.current
         if (!ta) return
@@ -145,30 +128,26 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
       })
     }
 
-    // 0.3.5 — Muse "apply" buttons. These operate on the body and place the
-    // caret at the end of the inserted text.
-    pageApi.insertAtCursor = (newText) => {
+    editorApi.insertAtCursor = (newText) => {
       const ta = taRef.current
       const cursor = ta ? ta.selectionStart : body.length
       const before = body.slice(0, cursor)
       const after = body.slice(cursor)
-      // Ensure a clean break if the cursor sits mid-paragraph.
-      const needsBreakBefore = before.length > 0 && !before.endsWith('\n\n')
-      const needsBreakAfter = after.length > 0 && !after.startsWith('\n')
-      const text = (needsBreakBefore ? '\n\n' : '') + newText + (needsBreakAfter ? '\n' : '')
+      const lead = before.length > 0 && !before.endsWith('\n\n') ? '\n\n' : ''
+      const trail = after.length > 0 && !after.startsWith('\n') ? '\n' : ''
+      const text = lead + newText + trail
       setBody(before + text + after)
       requestAnimationFrame(() => {
         if (!ta) return
-        const newCursor = cursor + text.length
+        const c = cursor + text.length
         ta.focus()
-        ta.setSelectionRange(newCursor, newCursor)
+        ta.setSelectionRange(c, c)
       })
     }
 
-    pageApi.appendToChapter = (newText) => {
-      // Always append with a clean double-newline separator.
-      const needsSep = body.length > 0 && !body.endsWith('\n\n')
-      const text = (needsSep ? '\n\n' : '') + newText
+    editorApi.appendToChapter = (newText) => {
+      const sep = body.length > 0 && !body.endsWith('\n\n') ? '\n\n' : ''
+      const text = sep + newText
       setBody(body + text)
       requestAnimationFrame(() => {
         const ta = taRef.current
@@ -179,17 +158,18 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
     }
 
     return () => {
-      pageApi.replaceSelection = null
-      pageApi.insertAtCursor = null
-      pageApi.appendToChapter = null
+      editorApi.replaceSelection = null
+      editorApi.insertAtCursor = null
+      editorApi.appendToChapter = null
     }
-  }, [onReplaceRequested, body])
+  }, [body])
 
   const reading = mode === 'read'
+  const measure = focus ? 'mx-auto w-full max-w-[68ch] px-6' : 'px-10'
 
   return (
     <main className="page-surface relative flex min-h-0 flex-col bg-base">
-      <div className={'shrink-0 pb-2 ' + (focus ? 'mx-auto w-full max-w-[68ch] px-6 pt-14' : 'px-10 pt-6')}>
+      <div className={'shrink-0 pb-2 ' + (focus ? measure + ' pt-14' : measure + ' pt-6')}>
         {reading ? (
           <h1 className={'font-serif font-semibold text-ink ' + (focus ? 'text-[30px]' : 'text-[26px]')}>
             {title || chapter?.title || ''}
@@ -203,6 +183,7 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
             placeholder="Chapter title"
           />
         )}
+
         <div className="mt-1 flex items-center gap-3 text-[10.5px] text-mute/70">
           <span>{words} words</span>
           <span>·</span>
@@ -210,12 +191,6 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
           <span>·</span>
           <span>rev {revision}{drafts ? ` · ${drafts} draft${drafts > 1 ? 's' : ''}` : ''}</span>
           <span className="ml-auto flex items-center gap-2">
-            {!reading && (
-              <span className="flex items-center gap-1.5">
-                <span className="h-1 w-1 rounded-full bg-ok" />
-                autosave
-              </span>
-            )}
             <button
               onClick={() => setMode((m) => (m === 'edit' ? 'read' : 'edit'))}
               className="rounded-md border hairline px-2.5 py-0.5 text-[10.5px] font-medium text-mute transition-colors hover:text-ink"
@@ -224,19 +199,15 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
               {reading ? 'Edit' : 'Read'}
             </button>
             {!reading && (
-              <button
-                onClick={handleManualSave}
-                disabled={saving}
-                className="rounded-md border border-gold/40 px-2.5 py-0.5 text-[10.5px] font-medium text-ink transition-colors hover:bg-gold/10 disabled:opacity-40"
-              >
+              <Button variant="accent" size="sm" onClick={saveNow} disabled={saving}>
                 {saving ? '…' : 'Save'}
-              </button>
+              </Button>
             )}
           </span>
         </div>
       </div>
 
-      <div className={'min-h-0 flex-1 overflow-y-auto pb-16 ' + (focus ? 'mx-auto w-full max-w-[68ch] px-6' : 'px-10')}>
+      <div className={'min-h-0 flex-1 overflow-y-auto pb-16 ' + measure}>
         {reading ? (
           <ReadingView
             body={body}
@@ -264,6 +235,5 @@ export default function Page({ chapter, series, focus, onSelection, onReplaceReq
   )
 }
 
-// Tiny shared module object so App can call into Page's apply operations.
-// Single-page-app, no router — this is fine.
-export const pageApi = { replaceSelection: null, insertAtCursor: null, appendToChapter: null }
+// Shared module object so the Muse + rewrite flow can apply text to the editor.
+export const editorApi = { replaceSelection: null, insertAtCursor: null, appendToChapter: null }

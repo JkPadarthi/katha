@@ -28,12 +28,17 @@ same FastAPI server as the API.
 - **1.3** — mobile layout: below 768px, one pane at a time with bottom tabs
   (Chapters / Page / Muse) and swipe between panes. The PWA is now usable on a
   phone, not just installable.
+- **2.0** — client rebuilt from scratch on a token-theme system: **Hermes /
+  Paper / Slate**, default follows the OS then remembers your pick. Shared `ui/`
+  primitives; the rail's "+ New chapter" is now wired. Dead files removed.
 
 ## Next
-- **2.0** — the PWA as the universal client (desktop + mobile). No Flutter.
+- Dogfood the full loop (write → autosave/revisions → Muse tools → rewrite diff
+  → sweep → reading + notes → EPUB); browser-verify the three themes + mobile.
+- Then: New book/series, and a revision-history browser (list / preview / restore).
 
 ## Verify
-- Server: `cd server && .venv\Scripts\python.exe -m pytest -q` (40 tests).
+- Server: `cd server && .venv\Scripts\python.exe -m pytest -q` (45 tests).
 - Client: `cd desktop && npm run build`.
 - Install: build, serve via the Pi, open over `tailscale serve` HTTPS, Install app.
 

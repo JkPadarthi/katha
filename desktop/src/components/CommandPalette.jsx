@@ -64,7 +64,7 @@ export default function CommandPalette({ onClose, onJump, archive, commands = []
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="w-[540px] overflow-hidden rounded-lg border hairline bg-panel shadow-2xl shadow-black/60"
+        className="w-[540px] max-w-[94vw] overflow-hidden rounded-lg border hairline bg-panel shadow-2xl shadow-black/60"
       >
         <div className="flex items-center gap-2 border-b hairline px-3">
           <span className="text-[11px] text-mute">{MOD_LABEL}</span>

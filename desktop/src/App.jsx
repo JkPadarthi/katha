@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import TitleBar from './components/TitleBar.jsx'
 import Rail from './components/Rail.jsx'
 import Page, { pageApi } from './components/Page.jsx'
@@ -10,6 +10,7 @@ import Settings from './components/Settings.jsx'
 import Bible from './components/Bible.jsx'
 import * as api from './api.js'
 import { getSetting, setSetting } from './settings.js'
+import { useMediaQuery } from './useMediaQuery.js'
 
 export default function App() {
   const [archive, setArchive] = useState(null)
@@ -28,6 +29,10 @@ export default function App() {
   const [goal, setGoal] = useState(() => getSetting('goal', '') ?? '')
   const [nudgeOn, setNudgeOn] = useState(() => getSetting('nudge', false))
   const [nudge, setNudge] = useState(false)
+  // Mobile: one pane at a time — bottom tabs + horizontal swipe.
+  const isMobile = useMediaQuery('(max-width: 767px)')
+  const [pane, setPane] = useState(1)          // 0=Chapters 1=Page 2=Muse
+  const touchRef = useRef({ x0: 0, dx: 0, active: false })
   // Surface archive-load errors so the user sees what went wrong (instead
   // of a silent "Loading archive…" forever).
   const [loadError, setLoadError] = useState('')
@@ -194,6 +199,67 @@ export default function App() {
     setProposed('')
   }
 
+  // --- mobile swipe ------------------------------------------------------
+  // Ignore gestures that start in an editable field so text selection in the
+  // editor never turns into a pane swipe.
+  const onTouchStart = (e) => {
+    const t = e.target
+    if (t && t.closest && t.closest('textarea,input,[contenteditable]')) {
+      touchRef.current.active = false
+      return
+    }
+    const p = e.touches[0]
+    touchRef.current = { x0: p.clientX, dx: 0, active: true }
+  }
+  const onTouchMove = (e) => {
+    if (touchRef.current.active) touchRef.current.dx = e.touches[0].clientX - touchRef.current.x0
+  }
+  const onTouchEnd = () => {
+    const { dx, active } = touchRef.current
+    touchRef.current.active = false
+    if (active && Math.abs(dx) > 60) {
+      setPane((p) => Math.max(0, Math.min(2, p + (dx < 0 ? 1 : -1))))
+    }
+  }
+
+  const pageNode = (
+    <div className="relative h-full min-h-0">
+      <Page
+        chapter={chapter}
+        series={series}
+        focus={focusMode}
+        onSaved={() => {}}
+        onSelection={onSelection}
+        onReplaceRequested={true}
+      />
+      {/* Floating ✎ button — appears when the user has a non-empty selection */}
+      {selection && selection.text && !rewriteOpen && (
+        <button
+          onClick={onRewriteClick}
+          className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-gold/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-gold shadow-lg shadow-black/40 hover:bg-gold/10"
+          title="Rewrite the selected text with the Muse"
+        >
+          ✎ Rewrite selection
+        </button>
+      )}
+      {nudge && !focusMode && (
+        <div className="absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border hairline bg-panel px-3 py-1.5 text-[11px] text-mute shadow-lg shadow-black/40">
+          <span>Still going?</span>
+          <button
+            onClick={() => {
+              if (museApi.setDraft) museApi.setDraft('Continue the scene from where I left off.')
+              setNudge(false)
+            }}
+            className="rounded-full border border-gold/40 px-2 py-0.5 text-[10.5px] font-medium text-gold hover:bg-gold/10"
+          >
+            Ask the Muse
+          </button>
+          <button onClick={() => setNudge(false)} className="text-mute hover:text-ink">×</button>
+        </div>
+      )}
+    </div>
+  )
+
   const commands = [
     {
       id: 'focus',
@@ -230,17 +296,63 @@ export default function App() {
         onToggleFocus={() => setFocusMode((v) => !v)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
-      <div
-        className="grid min-h-0 flex-1"
-        style={{
-          gridTemplateColumns: focusMode
-            ? '1fr'
-            : railCollapsed ? '48px 1fr 320px' : '232px 1fr 320px',
-          transition: 'grid-template-columns 160ms ease'
-        }}
-      >
-        {archive && series ? (
-          <>
+      {archive && series ? (
+        isMobile ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              <div
+                className="flex h-full"
+                style={{
+                  transform: `translateX(-${pane * 100}%)`,
+                  transition: 'transform 220ms ease',
+                  touchAction: 'pan-y',
+                  willChange: 'transform'
+                }}
+                onTouchStart={onTouchStart}
+                onTouchMove={onTouchMove}
+                onTouchEnd={onTouchEnd}
+              >
+                <div className="flex h-full w-full shrink-0 overflow-hidden">
+                  <Rail
+                    collapsed={false}
+                    onToggle={() => setRailCollapsed((v) => !v)}
+                    active={activeChapter}
+                    onSelect={(id) => { jumpTo(id); setPane(1) }}
+                    archive={archive}
+                    onOpenBible={(name) => setBibleName(name || '')}
+                  />
+                </div>
+                <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
+                <div className="flex h-full w-full shrink-0 overflow-hidden">
+                  <Muse series={series} chapter={chapter} />
+                </div>
+              </div>
+            </div>
+            <nav
+              className="flex shrink-0 border-t hairline bg-panel"
+              style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+            >
+              {['Chapters', 'Page', 'Muse'].map((label, i) => (
+                <button
+                  key={label}
+                  onClick={() => setPane(i)}
+                  className={'flex-1 py-2.5 text-[11.5px] ' + (pane === i ? 'text-gold' : 'text-mute')}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+          </div>
+        ) : (
+          <div
+            className="grid min-h-0 flex-1"
+            style={{
+              gridTemplateColumns: focusMode
+                ? '1fr'
+                : railCollapsed ? '48px 1fr 320px' : '232px 1fr 320px',
+              transition: 'grid-template-columns 160ms ease'
+            }}
+          >
             {!focusMode && (
               <Rail
                 collapsed={railCollapsed}
@@ -251,58 +363,24 @@ export default function App() {
                 onOpenBible={(name) => setBibleName(name || '')}
               />
             )}
-            <div className="relative min-h-0">
-              <Page
-                chapter={chapter}
-                series={series}
-                focus={focusMode}
-                onSaved={() => {}}
-                onSelection={onSelection}
-                onReplaceRequested={true}
-              />
-              {/* Floating ✎ button — appears when the user has a non-empty selection */}
-              {selection && selection.text && !rewriteOpen && (
-                <button
-                  onClick={onRewriteClick}
-                  className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-gold/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-gold shadow-lg shadow-black/40 hover:bg-gold/10"
-                  title="Rewrite the selected text with the Muse"
-                >
-                  ✎ Rewrite selection
-                </button>
-              )}
-              {nudge && !focusMode && (
-                <div className="absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border hairline bg-panel px-3 py-1.5 text-[11px] text-mute shadow-lg shadow-black/40">
-                  <span>Still going?</span>
-                  <button
-                    onClick={() => {
-                      if (museApi.setDraft) museApi.setDraft('Continue the scene from where I left off.')
-                      setNudge(false)
-                    }}
-                    className="rounded-full border border-gold/40 px-2 py-0.5 text-[10.5px] font-medium text-gold hover:bg-gold/10"
-                  >
-                    Ask the Muse
-                  </button>
-                  <button onClick={() => setNudge(false)} className="text-mute hover:text-ink">×</button>
-                </div>
-              )}
-            </div>
+            {pageNode}
             {!focusMode && <Muse series={series} chapter={chapter} />}
-          </>
-        ) : loadError ? (
-          <div className="flex flex-col items-center justify-center gap-2 text-center text-mute">
-            <div className="text-[12px] text-red-300">Failed to load archive</div>
-            <div className="text-[10.5px] text-mute/70">{loadError}</div>
-            <div className="text-[10px] text-mute/50">
-              Server at <code className="text-ink">{window.location.origin}</code> didn't respond.
-              Open DevTools (F12) → Network for details.
-            </div>
           </div>
-        ) : (
-          <div className="flex items-center justify-center text-mute">
-            Loading archive…
+        )
+      ) : loadError ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center text-mute">
+          <div className="text-[12px] text-red-300">Failed to load archive</div>
+          <div className="text-[10.5px] text-mute/70">{loadError}</div>
+          <div className="text-[10px] text-mute/50">
+            Server at <code className="text-ink">{window.location.origin}</code> didn't respond.
+            Open DevTools (F12) → Network for details.
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 items-center justify-center text-mute">
+          Loading archive…
+        </div>
+      )}
       {paletteOpen && archive && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}

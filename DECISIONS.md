@@ -31,6 +31,15 @@ continuity report, and (b) can propose rewrites of individual bible files that
 the author reviews in the same word-diff overlay as rewrites. Nothing is written
 until Accept. Implemented as `POST /api/muse/sweep` (SSE) + `PUT .../bible/{name}`.
 
+## 2026-10 — Mobile layout: one pane + bottom tabs + swipe
+Below 768px the app switches from the three-column grid to one pane at a time,
+with a bottom tab bar (Chapters / Page / Muse) and horizontal swipe between
+panes (swipe is ignored when the gesture starts in a `textarea`/`input`/
+`[contenteditable]`, so it never hijacks text selection). Tapping a chapter in
+the rail jumps to the Page pane. This is the concrete "2.0 PWA everywhere"
+deliverable — the same client now works on a phone. Desktop (≥768px) is
+unchanged.
+
 ## 2026-10 — The bible is a tree; characters split per file
 `bible/` is a recursive folder tree: `bible/characters/kael.md`,
 `bible/characters/mira.md`, `bible/places/crosswater.md`, while loose

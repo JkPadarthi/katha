@@ -11,7 +11,7 @@ export default function Settings({ goal, onGoal, nudge, onNudge, onClose }) {
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="w-[440px] overflow-hidden rounded-lg border hairline bg-panel shadow-2xl shadow-black/60"
+        className="w-[440px] max-w-[92vw] overflow-hidden rounded-lg border hairline bg-panel shadow-2xl shadow-black/60"
       >
         <div className="flex items-center justify-between border-b hairline px-4 py-2.5">
           <span className="text-[12px] font-medium text-ink">Settings</span>

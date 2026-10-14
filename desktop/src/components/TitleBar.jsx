@@ -39,7 +39,7 @@ export default function TitleBar({ focus, onToggleFocus, onOpenSettings }) {
         </button>
         <button
           onClick={onToggleFocus}
-          className="rounded-md border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-ink"
+          className="hidden rounded-md border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-ink md:block"
           title={focus ? 'Exit focus mode (Ctrl+Shift+F)' : 'Focus mode (Ctrl+Shift+F)'}
         >
           {focus ? 'exit focus' : 'focus'}

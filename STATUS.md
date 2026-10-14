@@ -25,6 +25,9 @@ same FastAPI server as the API.
 - **1.2** — the bible is a recursive tree (`bible/characters/kael.md`); a legacy
   flat `characters.md` is auto-split per `##` heading on boot (original kept as
   `.orig`). Bible overlay renders the tree; nested PUT paths.
+- **1.3** — mobile layout: below 768px, one pane at a time with bottom tabs
+  (Chapters / Page / Muse) and swipe between panes. The PWA is now usable on a
+  phone, not just installable.
 
 ## Next
 - **2.0** — the PWA as the universal client (desktop + mobile). No Flutter.

@@ -114,7 +114,7 @@ export default function Bible({ series, initial, onClose, onChanged }) {
         className="flex h-[80vh] w-[860px] max-w-[94vw] overflow-hidden rounded-lg border hairline bg-panel shadow-2xl shadow-black/60"
       >
         {/* files */}
-        <div className="flex w-56 shrink-0 flex-col border-r hairline">
+        <div className="flex w-40 shrink-0 flex-col border-r hairline md:w-56">
           <div className="flex items-center justify-between px-3 py-2.5">
             <span className="text-[11px] font-medium text-ink">Bible</span>
             <button

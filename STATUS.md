@@ -67,6 +67,9 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.5** — paragraph gap 1.00em -> **1.70em** (line spacing stays 1.55). Paragraphs are
+  now separated by more than a full line, which is airy for a printed page but exactly what
+  the author asked for; one number to change if it reads too loose.
 - **3.0.4** — the author's own numbers: line spacing **1.55**, paragraph gap **1.00em**
   (reading mode), with the write view and review pane set to the same rhythm so a chapter
   reads identically wherever it appears. Focus mode keeps a touch more air (1.62) for

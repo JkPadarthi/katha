@@ -23,7 +23,7 @@ function Blocks({ text }) {
         </blockquote>
       )
     }
-    return <p key={i} className="mb-[1em] whitespace-pre-wrap">{t}</p>
+    return <p key={i} className="mb-[1.7em] whitespace-pre-wrap">{t}</p>
   })
 }
 

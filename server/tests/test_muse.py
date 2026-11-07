@@ -15,7 +15,6 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -124,9 +123,10 @@ def test_muse_models_endpoint():
 
     assert r.status_code == 200
     body = r.json()
-    assert body["chat_model"] == config.MUSE_CHAT_MODEL
+    assert body["chat_model"] == config.MUSE_AGENT_MODEL
     assert body["rewrite_model"] == config.MUSE_REWRITE_MODEL
-    assert body["ollama_base"] == config.OLLAMA_BASE
+    # The upstream address is internal; it must not be served to the client.
+    assert "ollama_base" not in body
 
 
 # --- rewrite streaming ----------------------------------------------------
@@ -213,7 +213,7 @@ def test_muse_rewrite_streams_single_proposal(monkeypatch: pytest.MonkeyPatch):
 
 def test_muse_rewrite_style_routes_through_correct_model(monkeypatch: pytest.MonkeyPatch):
     """The rewrite endpoint must use MUSE_REWRITE_MODEL (the thinking model),
-    NOT MUSE_CHAT_MODEL. We assert this by capturing the upstream request URL
+    NOT MUSE_AGENT_MODEL. We assert this by capturing the upstream request URL
     payload via the mock transport."""
     captured: dict = {}
 
@@ -245,7 +245,7 @@ def test_muse_rewrite_style_routes_through_correct_model(monkeypatch: pytest.Mon
             list(r.iter_lines())
 
     assert captured["body"]["model"] == config.MUSE_REWRITE_MODEL
-    assert captured["body"]["model"] != config.MUSE_CHAT_MODEL
+    assert captured["body"]["model"] != config.MUSE_AGENT_MODEL
 
 
 # --- canon context (D18) ---------------------------------------------------
@@ -430,7 +430,7 @@ def test_thread_is_persisted_to_archive_dot_katha(tmp_path, monkeypatch):
     assert thread_path.exists()
     body = thread_path.read_text(encoding="utf-8")
     assert "hello" in body
-    assert "ASSISTANT" in body
+    assert "katha:assistant" in body
 
 
 def test_muse_persistence_dir_excluded_from_books_listing():
@@ -705,3 +705,201 @@ def test_story_tool_lists_files():
     # a nested bible file is readable by the tool
     ok = muse_mod._run_tool(ctx, "read_story_file", {"path": "bible/characters/kael.md"})
     assert "Kael" in ok
+
+
+# --- hardening: nested sweep, thread restore, OR search ---------------------
+
+def test_sweep_bible_accepts_a_nested_name(monkeypatch: pytest.MonkeyPatch):
+    """The bible is a tree (1.2); sweep must propose updates for
+    characters/kael.md, not just flat files."""
+    import httpx
+
+    from app import muse as muse_mod
+
+    captured: dict = {}
+    proposed = "# Kael\n\n- Grey eyes, carries a debt.\n"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson(
+                {"model": "deepseek-r1:14b",
+                 "message": {"role": "assistant", "content": proposed},
+                 "done": True},
+            ),
+        )
+
+    monkeypatch.setattr(
+        muse_mod, "_client",
+        httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                          timeout=muse_mod._client.timeout),
+    )
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST", "/api/muse/sweep",
+            json={"series": ar.slugify("The Ember Throne"),
+                  "book_id": ar.slugify("The First Flame"),
+                  "target": "bible", "bible_name": "characters/kael.md"},
+        ) as r:
+            payload = _sse_payload(r)
+
+    assert payload == proposed
+    assert "Invalid bible file name" not in payload
+    sent = captured["body"]["messages"][-1]["content"]
+    assert "CURRENT BIBLE FILE: characters/kael.md" in sent
+    assert "Kael" in sent
+
+
+def test_thread_roundtrip_survives_markdown_separators():
+    """Assistant prose may contain `---`, `## headings`, or `**USER**:` —
+    the marker format must round-trip it exactly."""
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
+
+    chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-02"
+    path = ARCHIVE_ROOT / ".katha" / "muse" / "ch-02.md"
+    path.unlink(missing_ok=True)
+    reply = "A line.\n\n---\n\n## Heading\n\n<!-- not a marker -->\n\n**USER**: prose"
+    try:
+        muse_mod._persist_thread(chapter_id, [{"role": "user", "content": "question"}], reply)
+        msgs = muse_mod.thread_messages(chapter_id)
+        assert [m["role"] for m in msgs] == ["user", "assistant"]
+        assert msgs[1]["text"] == reply
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_thread_endpoint_restores_the_conversation():
+    """`GET /api/muse/thread` returns what `_persist_thread` wrote, so the
+    client can reload a chapter's Muse conversation."""
+    chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01"
+    with TestClient(app) as client:
+        r = client.get("/api/muse/thread", params={"chapter_id": chapter_id})
+    assert r.status_code == 200
+    msgs = r.json()["messages"]
+    assert any(m["role"] == "user" and "hello" in m["text"] for m in msgs)
+    assert any(m["role"] == "assistant" and "mocked reply" in m["text"] for m in msgs)
+
+
+def test_thread_persistence_stores_only_the_last_exchange(tmp_path, monkeypatch):
+    """The client sends the whole thread each turn; the server must not write
+    every prior message again (that grew the file quadratically)."""
+    import httpx
+
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
+
+    chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01"
+    thread_path = ARCHIVE_ROOT / ".katha" / "muse" / "ch-01.md"
+    thread_path.unlink(missing_ok=True)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson(
+                {"model": "gemma4:12b",
+                 "message": {"role": "assistant", "content": "reply"},
+                 "done": True},
+            ),
+        )
+
+    monkeypatch.setattr(
+        muse_mod, "_client",
+        httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                          timeout=muse_mod._client.timeout),
+    )
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST", "/api/muse/chat",
+            json={
+                "messages": [
+                    {"role": "user", "content": "old question"},
+                    {"role": "assistant", "content": "old answer"},
+                    {"role": "user", "content": "new question"},
+                ],
+                "chapter_id": chapter_id,
+            },
+        ) as r:
+            list(r.iter_lines())
+
+    text = thread_path.read_text(encoding="utf-8")
+    assert "new question" in text
+    assert "old question" not in text
+    assert "old answer" not in text
+
+
+def test_canon_context_includes_ranked_bible_hits(monkeypatch: pytest.MonkeyPatch):
+    """A prose prompt must actually surface bible entries (FTS5 AND would
+    match nothing); hits are scoped to the current book."""
+    import httpx
+
+    from app import muse as muse_mod
+    from app.main import reindex_search
+
+    reindex_search()
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content=_ollama_chat_ndjson(
+                {"model": "deepseek-r1:14b",
+                 "message": {"role": "assistant", "content": "ok"},
+                 "done": True},
+            ),
+        )
+
+    monkeypatch.setattr(
+        muse_mod, "_client",
+        httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                          timeout=muse_mod._client.timeout),
+    )
+
+    chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01"
+    with TestClient(app) as client:
+        with client.stream(
+            "POST", "/api/muse/rewrite",
+            json={"text": "Kael drew his blade at Crosswater.",
+                  "style": "novel", "chapter_id": chapter_id},
+        ) as r:
+            list(r.iter_lines())
+
+    canon = next(m for m in captured["body"]["messages"]
+                 if m["role"] == "system" and "CURRENT CHAPTER" in m["content"])
+    assert "CANON" in canon["content"]
+    assert "kael" in canon["content"].lower()
+
+
+def test_think_tag_split_across_chunks_is_stripped(monkeypatch: pytest.MonkeyPatch):
+    """Ollama streams tokens; a <think> tag can be split across chunks. The
+    stateful filter must still hide reasoning without eating prose."""
+    chunks = [
+        {"message": {"role": "assistant", "content": "<thi"}, "done": False},
+        {"message": {"role": "assistant", "content": "nk>secret plan</thi"}, "done": False},
+        {"message": {"role": "assistant", "content": "nk>The answer is 42."}, "done": True},
+    ]
+    _patch_ollama(monkeypatch, _ollama_chat_ndjson(*chunks))
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST", "/api/muse/rewrite",
+            json={"text": "rewrite me", "style": "clean"},
+        ) as r:
+            payload = _sse_payload(r)
+
+    assert payload == "The answer is 42."
+    assert "secret" not in payload
+
+
+def test_fts_or_query_matches_any_distinctive_term():
+    from app import muse as muse_mod
+
+    q = muse_mod._fts_or_query("The fire in the hearth had burned low, and Kael watched.")
+    assert '"fire"' in q
+    assert " OR " in q
+    assert '"the"' not in q          # stopword
+    assert muse_mod._fts_or_query("the and of") == ""

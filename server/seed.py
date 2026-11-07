@@ -8,7 +8,6 @@ Idempotent: existing files are left untouched unless --force.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from app import archive as ar
 from app.config import ARCHIVE_ROOT
@@ -59,7 +58,7 @@ CHAPTER_BODIES = {
 def seed(force: bool = False, quiet: bool = False) -> list[str]:
     written = []
     for entry in ARCHIVE:
-        meta = ar.ensure_book(entry["series"], entry["book"])
+        ar.ensure_book(entry["series"], entry["book"])
         bdir = ar.book_dir(entry["series"], entry["book"])
         # bible files
         bd = ar.bible_dir(bdir)

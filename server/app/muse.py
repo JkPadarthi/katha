@@ -38,10 +38,7 @@ from . import db
 from .config import (
     ARCHIVE_ROOT,
     MUSE_AGENT_MODEL,
-    MUSE_CHAT_MODEL,
-    MUSE_FALLBACK_MODEL,
     MUSE_MAX_TOOL_ROUNDS,
-    MUSE_MODEL,
     MUSE_NUM_PREDICT,
     MUSE_REWRITE_MODEL,
     MUSE_STYLE_PROSE_CHAPTERS,
@@ -76,12 +73,104 @@ def strip_think(text: str) -> str:
     return text
 
 
+class ThinkStreamFilter:
+    """Stateful <think> stripper for streamed NDJSON chunks.
+
+    A tag can be split across chunks (`<thi` + `nk>`), which a per-chunk regex
+    leaks. This buffers only the tail that could begin/end a tag, so the
+    reader never sees chain-of-thought and never loses prose either.
+    """
+
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self):
+        self._in_think = False
+        self._buf = ""
+
+    def feed(self, text: str) -> str:
+        self._buf += text or ""
+        out: list[str] = []
+        while self._buf:
+            if self._in_think:
+                end = self._buf.find(self.CLOSE)
+                if end == -1:
+                    # Hold back a tail that may be a partial closing tag.
+                    self._buf = self._buf[-len(self.CLOSE):]
+                    return "".join(out)
+                self._buf = self._buf[end + len(self.CLOSE):]
+                self._in_think = False
+                continue
+
+            start = self._buf.find(self.OPEN)
+            if start == -1:
+                # Hold back a tail that may be a partial opening tag.
+                keep = 0
+                for k in range(1, len(self.OPEN)):
+                    if self._buf.endswith(self.OPEN[:k]):
+                        keep = k
+                if keep:
+                    out.append(self._buf[:-keep])
+                    self._buf = self._buf[-keep:]
+                else:
+                    out.append(self._buf)
+                    self._buf = ""
+                return "".join(out)
+
+            out.append(self._buf[:start])
+            self._buf = self._buf[start + len(self.OPEN):]
+            self._in_think = True
+        return "".join(out)
+
+    def finish(self) -> str:
+        """Flush a held-back partial tag (it was prose, not a tag)."""
+        if self._in_think:
+            self._buf = ""
+            return ""
+        out, self._buf = self._buf, ""
+        return out
+
+
+# Words too common to anchor a canon lookup — they would match half the book.
+_STOPWORDS = frozenset("""
+a an and are as at be been but by can could did do does for from had has have
+he her here him his how i if in into is it its me my no not of on or our she
+should so that the their them then there these they this those to was we were
+what when where which who why will with would you your
+""".split())
+_WORD_RE = re.compile(r"[A-Za-z0-9']{3,}")
+
+
+def _fts_or_query(text: str, max_terms: int = 24) -> str:
+    """Turn prose into an FTS5 query that matches ANY distinctive term.
+
+    FTS5 ANDs bare terms, so handing it a whole paragraph (the old canon
+    behaviour) almost never matched a bible entry. Each token is quoted — no
+    operator injection — and OR'd; bm25 still ranks the entries that share
+    more terms first.
+    """
+    seen: list[str] = []
+    for word in _WORD_RE.findall((text or "").lower()):
+        if word in _STOPWORDS or word in seen:
+            continue
+        seen.append(word)
+        if len(seen) >= max_terms:
+            break
+    return " OR ".join(f'"{w}"' for w in seen)
+
+
+def _plain_snippet(text: str) -> str:
+    """FTS snippets carry <mark> tags for the UI — prompts want plain text."""
+    return (text or "").replace("<mark>", "").replace("</mark>", "")
+
+
 # --- upstream call --------------------------------------------------------
 
 async def _post_chat(payload: dict) -> AsyncIterator[str]:
     """POST to Ollama /api/chat with stream=True; yield visible-only deltas."""
     payload = {**payload, "stream": True}
     url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
+    filt = ThinkStreamFilter()
     async with _client.stream("POST", url, json=payload) as r:
         r.raise_for_status()
         async for line in r.aiter_lines():
@@ -92,9 +181,12 @@ async def _post_chat(payload: dict) -> AsyncIterator[str]:
             except json.JSONDecodeError:
                 continue
             content = obj.get("message", {}).get("content", "")
-            visible = strip_think(content)
+            visible = filt.feed(content)
             if visible:
                 yield visible
+    tail = filt.finish()
+    if tail:
+        yield tail
 
 
 # --- agentic chat: the model fetches story files via tools (1.1) ----------
@@ -128,9 +220,6 @@ def _tool_ctx(chapter_id: str | None) -> _ToolCtx | None:
     if bdir is None:
         return None
     return _ToolCtx(bdir.parent, bdir)
-
-
-_SNAPSHOT_RE = re.compile(r"ch-\d{2}\.\d+\.md")
 
 
 def _safe_story_path(ctx: _ToolCtx, rel: str) -> Path | None:
@@ -170,12 +259,8 @@ def _safe_story_path(ctx: _ToolCtx, rel: str) -> Path | None:
 
 def _list_story_files(ctx: _ToolCtx) -> str:
     out: list[str] = []
-    cd = ctx.book_dir / "chapters"
-    if cd.is_dir():
-        for f in sorted(cd.glob("ch-*.md")):
-            if _SNAPSHOT_RE.fullmatch(f.name):
-                continue
-            out.append(f"chapters/{f.name}")
+    for f in ar_mod.chapter_files(ctx.book_dir / "chapters"):
+        out.append(f"chapters/{f.name}")
     bd = ctx.book_dir / "bible"
     for f in ar_mod._iter_bible_files(bd):  # type: ignore[attr-defined]
         out.append(f"bible/{f.relative_to(bd).as_posix()}")
@@ -200,14 +285,16 @@ def _search_story(ctx: _ToolCtx, query: str) -> str:
     q = (query or "").strip()
     if not q:
         return "ERROR: empty query"
+    # Search only this book, and match ANY term (prose queries are long).
+    fts = _fts_or_query(q) or q
     try:
-        hits = [h for h in db.search(q, limit=12) if h.get("book_id") == ctx.book_dir.name]
+        hits = db.search(fts, limit=12, book_id=ctx.book_dir.name)
     except Exception:
         return "(no results)"
     if not hits:
         return "(no results)"
     return "\n".join(
-        f"{h.get('kind')} {h.get('doc_id')} — {h.get('title')}: {h.get('snippet', '')}"
+        f"{h.get('kind')} {h.get('doc_id')} — {h.get('title')}: {_plain_snippet(h.get('snippet', ''))}"
         for h in hits[:6]
     )
 
@@ -265,6 +352,7 @@ async def _stream_turn(payload: dict, holder: dict) -> AsyncIterator[str]:
     payload = {**payload, "stream": True}
     holder["tool_calls"] = []
     url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
+    filt = ThinkStreamFilter()
     async with _client.stream("POST", url, json=payload) as r:
         r.raise_for_status()
         async for line in r.aiter_lines():
@@ -277,9 +365,12 @@ async def _stream_turn(payload: dict, holder: dict) -> AsyncIterator[str]:
             msg = obj.get("message", {}) or {}
             for tc in msg.get("tool_calls") or []:
                 holder["tool_calls"].append(tc)
-            visible = strip_think(msg.get("content", "") or "")
+            visible = filt.feed(msg.get("content", "") or "")
             if visible:
                 yield visible
+    tail = filt.finish()
+    if tail:
+        yield tail
 
 
 # --- public: chat ---------------------------------------------------------
@@ -406,29 +497,34 @@ async def rewrite(
 # --- public: models info --------------------------------------------------
 
 def models_info() -> dict:
-    """Return the configured models + upstream base (for the UI)."""
+    """Return the models the server actually routes to (for the UI/health).
+
+    The upstream base URL is deliberately not exposed — a client never needs
+    it, and it is an internal network address."""
     return {
-        "default_model": MUSE_MODEL,
-        "chat_model": MUSE_CHAT_MODEL,
-        "agent_model": MUSE_AGENT_MODEL,
-        "rewrite_model": MUSE_REWRITE_MODEL,
-        "fallback_model": MUSE_FALLBACK_MODEL,
-        "ollama_base": OLLAMA_BASE,
+        "chat_model": MUSE_AGENT_MODEL,      # agentic chat
+        "agent_model": MUSE_AGENT_MODEL,     # same setting, explicit name
+        "rewrite_model": MUSE_REWRITE_MODEL,  # rewrite + sweep + style digest
     }
 
 
 # --- canon context (D18) --------------------------------------------------
 
 def _resolve_bdir(series_slug: str, book_slug: str) -> Path | None:
-    """Resolve a series+book slug to a book dir, matching by title if needed
-    (same fallback as main.py:_resolve_book_path). None if not found."""
+    """Resolve a series+book to a book dir, matching by slug/id/title (same
+    fallback as main.py:_resolve_book_path). None if not found."""
+    if not ar_mod.is_slug(series_slug) or not book_slug:
+        return None
     sd = ARCHIVE_ROOT / series_slug
     if not sd.is_dir():
         return None
-    bdir = sd / book_slug
-    if bdir.is_dir():
-        return bdir
+    if ar_mod.is_slug(book_slug):
+        bdir = sd / book_slug
+        if bdir.is_dir():
+            return bdir
     for b in sorted(sd.iterdir()):
+        if not b.is_dir() or b.name.startswith("."):
+            continue
         meta = ar_mod._read_book_json(b)  # type: ignore[attr-defined]
         if meta.get("id") == book_slug or meta.get("title") == book_slug:
             return b
@@ -473,40 +569,56 @@ async def _load_canon_context(chapter_id: str, user_prompt: str = "") -> str:
     # Style digest (cached per book). Auto-generates on first touch.
     style_digest = await _load_style_summary(book_slug, bdir)
 
-    # Bible hits — rank against the user prompt (or the chapter text).
-    query = (user_prompt or chapter_text)[:500]
-    try:
-        bible_hits = db.search(query, limit=4) if query.strip() else []
-    except Exception:
-        bible_hits = []
+    # Bible hits — rank against the user prompt (or the chapter text), scoped
+    # to this book and matched on ANY distinctive term (see _fts_or_query).
+    query = _fts_or_query((user_prompt or chapter_text)[:500])
+    bible_hits: list[dict] = []
+    if query:
+        try:
+            bible_hits = db.search(query, limit=8, book_id=bdir.name)
+        except Exception:
+            bible_hits = []
     bible_block = ""
     if bible_hits:
         blocks = []
         for h in bible_hits:
             if h.get("kind") != "bible":
                 continue
-            blocks.append(f"### {h.get('title') or h.get('doc_id')}\n{h.get('snippet', '')}")
+            blocks.append(
+                f"### {h.get('title') or h.get('doc_id')}\n"
+                f"{_plain_snippet(h.get('snippet', ''))}"
+            )
+            if len(blocks) >= 4:
+                break
         if blocks:
             bible_block = "## CANON (relevant bible entries)\n\n" + "\n\n".join(blocks)
 
-    parts: list[str] = []
-    if style_digest:
-        parts.append("## STORY STYLE (the voice you've established)\n\n" + style_digest)
-    parts.append("## CURRENT CHAPTER (what you're rewriting inside)\n\n" + chapter_text.strip())
-    if bible_block:
-        parts.append(bible_block)
+    style_part = (
+        "## STORY STYLE (the voice you've established)\n\n" + style_digest
+        if style_digest else ""
+    )
+    chapter_part = (
+        "## CURRENT CHAPTER (what you're rewriting inside)\n\n"
+        + chapter_text.strip()
+    )
+    block = "\n\n---\n\n".join(p for p in (style_part, chapter_part, bible_block) if p)
 
-    block = "\n\n---\n\n".join(parts)
-    # Cap at ~6000 tokens = ~24000 chars. Truncate the middle if too long.
+    # Cap at ~6000 tokens = ~24000 chars. Keep the chapter (the centerpiece)
+    # intact for as long as the budget allows; trim style + canon first.
     char_cap = MUSECONTEXT_MAX_TOKENS * 4
     if len(block) > char_cap:
-        # Keep the chapter (centerpiece) intact, trim style + bible.
-        head = block.split("## CURRENT CHAPTER")[0]
-        tail_idx = block.find("\n\n---\n\n", block.find("## CURRENT CHAPTER"))
-        tail = block[tail_idx:] if tail_idx > -1 else ""
-        chapter = chapter_text.strip()
-        keep_chap = chapter[:char_cap - len(head) - len(tail) - 200]
-        block = head + "## CURRENT CHAPTER\n\n" + keep_chap + "\n\n[…truncated…]\n\n" + tail
+        budget = max(0, char_cap - 200)
+        style_keep = style_part[: min(len(style_part), budget // 6)]
+        canon_keep = bible_block[: min(len(bible_block), budget // 4)]
+        remaining = max(0, budget - len(style_keep) - len(canon_keep))
+        chapter_keep = chapter_text.strip()[:remaining]
+        block = "\n\n---\n\n".join(
+            p for p in (
+                style_keep,
+                "## CURRENT CHAPTER (what you're rewriting inside)\n\n" + chapter_keep,
+                canon_keep,
+            ) if p
+        ) + "\n\n[…truncated…]"
     return block
 
 
@@ -521,10 +633,11 @@ def _thread_path(chapter_id: str) -> Path | None:
 
 
 def _persist_thread(chapter_id: str, user_messages: list[dict], assistant_text: str) -> None:
-    """Append a Muse exchange to `archive/.katha/muse/<chapter>.md`.
+    """Append ONE exchange to `archive/.katha/muse/<chapter>.md`.
 
-    Best-effort — failures here MUST NOT break the stream. We swallow errors
-    and log them; the user already has their reply.
+    Only the final user turn is written — the client already re-sends the
+    whole thread on every request, so persisting all of it grew the file
+    quadratically. Best-effort: failures here MUST NOT break the stream.
     """
     try:
         path = _thread_path(chapter_id)
@@ -532,11 +645,16 @@ def _persist_thread(chapter_id: str, user_messages: list[dict], assistant_text: 
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        last_user = next(
+            (m for m in reversed(user_messages) if m.get("role") == "user"),
+            None,
+        )
+        user_text = (last_user or {}).get("content", "")
         with path.open("a", encoding="utf-8") as f:
             f.write(f"\n## {ts}\n\n")
-            for m in user_messages:
-                f.write(f"**{m.get('role', 'user').upper()}**: {m.get('content', '')}\n\n")
-            f.write(f"**ASSISTANT**: {assistant_text}\n\n---\n")
+            f.write(f"<!-- katha:user -->\n{user_text}\n\n")
+            f.write(f"<!-- katha:assistant -->\n{assistant_text}\n\n")
+            f.write("<!-- katha:end -->\n")
     except Exception as e:
         # Never break the response over persistence.
         import sys
@@ -562,8 +680,7 @@ async def _load_style_summary(book_slug: str, bdir: Path) -> str:
         return ""
 
     # Most recent N chapters by filename sort (ch-01, ch-02, …).
-    chap_files = sorted(chapters_dir.glob("ch-*.md"))
-    chap_files = [p for p in chap_files if re.fullmatch(r"ch-\d{2}\.md", p.name)]
+    chap_files = ar_mod.chapter_files(chapters_dir)
     chap_files = chap_files[-MUSE_STYLE_PROSE_CHAPTERS:]
     if not chap_files:
         return ""
@@ -620,6 +737,47 @@ def read_thread(chapter_id: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+_THREAD_TURN_RE = re.compile(
+    r"\*\*(USER|ASSISTANT)\*\*:\s*(.*?)(?=\n\*\*(?:USER|ASSISTANT)\*\*:|\n---|\Z)",
+    re.DOTALL,
+)
+# New format: HTML-comment markers are invisible in rendered markdown and
+# cannot be produced by ordinary prose (a horizontal rule or a `## ` heading
+# used to truncate the exchange).
+_THREAD_MARK_RE = re.compile(r"<!--\s*katha:(user|assistant|end)\s*-->")
+
+
+def thread_messages(chapter_id: str) -> list[dict]:
+    """Parse the persisted thread md into [{role, text}] (oldest first).
+
+    This is what makes persistence useful: the client reloads the thread when
+    a chapter opens instead of the file being a write-only log."""
+    text = read_thread(chapter_id)
+    if not text:
+        return []
+    if not _THREAD_MARK_RE.search(text):
+        # Legacy files (pre-2.0.1) used `**USER**: …` + a `---` terminator.
+        return [
+            {"role": m.group(1).lower(), "text": m.group(2).strip()}
+            for m in _THREAD_TURN_RE.finditer(text)
+            if m.group(2).strip()
+        ]
+
+    out: list[dict] = []
+    role: str | None = None
+    pos = 0
+    for m in _THREAD_MARK_RE.finditer(text):
+        if role and m.start() > pos:
+            chunk = text[pos:m.start()].strip()
+            if chunk:
+                out.append({"role": role, "text": chunk})
+        role = None if m.group(1) == "end" else m.group(1)
+        pos = m.end()
+    if role and text[pos:].strip():
+        out.append({"role": role, "text": text[pos:].strip()})
+    return out
+
+
 # --- canon sweep (0.4) ----------------------------------------------------
 # A whole-manuscript continuity pass. Two targets:
 #   report → stream a markdown audit of contradictions / drift (read-only)
@@ -650,12 +808,8 @@ _SWEEP_CHAR_CAP = MUSECONTEXT_MAX_TOKENS * 8
 def _load_full_book_context(bdir: Path) -> str:
     """Whole-book context: every chapter + every bible file, char-capped."""
     parts: list[str] = []
-    cd = bdir / "chapters"
-    if cd.is_dir():
-        for f in sorted(cd.glob("ch-*.md")):
-            if not re.fullmatch(r"ch-\d{2}\.md", f.name):
-                continue
-            parts.append(f.read_text(encoding="utf-8").strip())
+    for f in ar_mod.chapter_files(bdir / "chapters"):
+        parts.append(f.read_text(encoding="utf-8").strip())
     bd = bdir / "bible"
     for f in ar_mod._iter_bible_files(bd):  # type: ignore[attr-defined]
         rel = f.relative_to(bd).as_posix()
@@ -686,15 +840,19 @@ async def sweep_report(series: str, book_id: str) -> AsyncIterator[str]:
 
 
 async def sweep_bible(series: str, book_id: str, bible_name: str) -> AsyncIterator[str]:
-    """Stream a proposed rewrite of one bible file (approval-gated)."""
+    """Stream a proposed rewrite of one bible file (approval-gated).
+
+    `bible_name` may be nested (`characters/kael.md`); the shared guard is the
+    same one the PUT route uses, so sweep and save accept exactly the same
+    paths and nothing outside bible/*.md."""
     bdir = _resolve_bdir(series, book_id)
     if bdir is None:
         yield "Book not found."
         return
-    if not re.fullmatch(r"[A-Za-z0-9._-]+\.md", bible_name or ""):
+    target = ar_mod.safe_bible_path(bdir, bible_name or "")
+    if target is None:
         yield "Invalid bible file name."
         return
-    target = bdir / "bible" / bible_name
     current = target.read_text(encoding="utf-8") if target.is_file() else "(new file)"
     context = _load_full_book_context(bdir)
     user = (

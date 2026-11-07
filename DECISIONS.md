@@ -2,6 +2,34 @@
 
 Every settled call and why. Newest first.
 
+## 2026-11 — Hardening pass (2.0.1)
+- **Autosave is edit-only.** The editor keeps a saved baseline (chapter key +
+  body + title) and only PUTs when the buffer differs. Opening a chapter costs
+  a GET, not a revision; a failed GET leaves the baseline invalidated so an
+  empty buffer can never overwrite the file.
+- **Sweep shares the bible write guard.** `sweep_bible` resolves names through
+  `archive.safe_bible_path` (nested paths allowed, traversal/hidden/non-md
+  rejected) instead of a flat-name regex — the 1.2 tree and 0.4 sweep now agree.
+- **The bible has a canonical shape.** `characters/<name>.md` is one main
+  character per file; `characters/side-characters.md` holds NPCs and the
+  supporting cast; `places.md` and `timeline.md` are scaffolded alongside. New
+  books get it at creation, `POST …/bible/scaffold` backfills old books
+  idempotently (never overwrites edited canon), and the panel is reachable
+  without an existing file (rail "Add bible" + ⌘K "Open bible").
+- **The rail is the book picker.** Series/books are switched from the rail;
+  "New book" calls `POST /api/books`. Command-palette hits carry their own
+  series/book so a search result opens the right book.
+- **Threads are readable.** `GET /api/muse/thread` parses `.katha/muse/*.md`
+  and the client restores it on chapter open; persistence writes only the last
+  exchange (the client already sends the full thread each turn).
+- **Chapters are `ch-\d{2,}`.** 100+ chapters are valid and sorted numerically
+  everywhere (rail, search, sweep, style digest, EPUB).
+- **Static serving is contained.** The SPA fallback resolves under `WEB_DIR`
+  and rejects anything outside, matching the archive's path guards.
+- **Canon retrieval uses OR'd terms.** FTS5 ANDs bare terms, so a prose query
+  never matched; `_fts_or_query` quotes + ORs distinctive tokens and scopes
+  the search to the current book.
+
 ## 2026-10 — Client is an installable PWA (overturns the earlier "PWA rejected" call)
 The client was an Electron desktop app. We are replacing it with a single
 installable **PWA** for desktop *and* mobile. Why: one codebase instead of an
@@ -76,7 +104,7 @@ Long-running fetches surface as a `[STATUS]` SSE event so the UI can show
 
 ## 2026-10 — Annotations are md sidecars
 Reading-mode annotations persist as `chapters/ch-NN.notes.md` — portable,
-git-able, and already excluded from chapter listings by the `ch-\d{2}\.md`
+git-able, and already excluded from chapter listings by the `ch-\d{2,}\.md`
 fullmatch. Keeps the "md on disk is the truth" principle (the DB is only an
 index, and must never hold data that can't be rebuilt).
 

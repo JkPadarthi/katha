@@ -20,28 +20,60 @@ export default function Editor({ chapter, series, focus, onSelection }) {
   const [notes, setNotes] = useState([])
   const taRef = useRef(null)
   const lastSelectionRef = useRef({ start: 0, end: 0, text: '' })
+  // What is currently on disk for this chapter. Autosave only fires when the
+  // buffer differs from this — so merely opening a chapter never writes a
+  // revision, and a failed load can never blank the file.
+  const savedRef = useRef({ key: '', body: '', title: '' })
+  // The latest debounced-but-unsaved edit, so switching chapters (or closing
+  // the app) flushes it instead of dropping the last few keystrokes.
+  const pendingRef = useRef(null)
+  const chapterKey = chapter && series ? `${series.series}/${series.book}/${chapter.id}` : ''
 
   useEffect(() => { setSetting('mode', mode) }, [mode])
 
   // Load chapter content when the selection changes.
   useEffect(() => {
+    // Flush the chapter we are leaving before invalidating anything.
+    const pending = pendingRef.current
+    if (pending && pending.key && pending.key !== chapterKey) {
+      pendingRef.current = null
+      api
+        .saveChapter(pending.series, pending.book, pending.chapter, pending.body, pending.title)
+        .catch(() => { /* the debounce failed; nothing else to do */ })
+    }
+    // A new chapter invalidates both the old selection offsets and the saved
+    // baseline — nothing may be written until this chapter's text has loaded.
+    lastSelectionRef.current = { start: 0, end: 0, text: '' }
+    if (onSelection) onSelection({ start: 0, end: 0, text: '' })
+    savedRef.current = { key: '', body: '', title: '' }
     if (!chapter || !series) return
     let alive = true
     setBody('')
-    setTitle(chapter.title)
+    setTitle(chapter.title || '')
+    setSavedAt('loading')
     api
       .getChapter(series.series, series.book, chapter.id)
       .then((c) => {
         if (!alive) return
         const lines = (c.content || '').split('\n')
         if (lines[0] && lines[0].startsWith('# ')) lines.shift()
-        setBody(lines.join('\n').trim())
+        const loadedBody = lines.join('\n').trim()
+        const loadedTitle = c.title || chapter.title || ''
+        setBody(loadedBody)
+        setTitle(loadedTitle)
         setRevision(c.revision || 0)
+        savedRef.current = { key: chapterKey, body: loadedBody, title: loadedTitle }
         setSavedAt('loaded')
       })
-      .catch(() => setBody(''))
+      .catch(() => {
+        if (!alive) return
+        setBody('')
+        // savedRef stays invalidated: an unreadable chapter must not be
+        // overwritten with whatever the empty buffer contains.
+        setSavedAt('offline — not saving')
+      })
     return () => { alive = false }
-  }, [chapter?.id, series?.series, series?.book])
+  }, [chapterKey])
 
   // Load this chapter's annotations.
   useEffect(() => {
@@ -54,30 +86,64 @@ export default function Editor({ chapter, series, focus, onSelection }) {
     return () => { alive = false }
   }, [chapter?.id, series?.series, series?.book])
 
-  // Autosave (debounced).
+  // Autosave (debounced, edit-only). The guard is the saved-baseline diff:
+  // opening a chapter or a failed GET leaves savedRef.key empty, so nothing
+  // is written until a real edit happens on successfully loaded content.
   useEffect(() => {
-    if (!chapter || !series || !(body || title)) return
+    if (!chapterKey || !chapter || !series) return
+    const saved = savedRef.current
+    if (saved.key !== chapterKey) { pendingRef.current = null; return }
+    if (body === saved.body && title === saved.title) { pendingRef.current = null; return }
     const t = setTimeout(() => {
+      pendingRef.current = null
       api
         .saveChapter(series.series, series.book, chapter.id, body, title)
         .then((c) => {
+          savedRef.current = { key: chapterKey, body, title }
           setRevision(c.revision)
           setDrafts((d) => d + 1)
           setSavedAt('saved · ' + clockNow())
         })
         .catch(() => setSavedAt('offline'))
     }, 900)
+    pendingRef.current = {
+      key: chapterKey,
+      series: series.series,
+      book: series.book,
+      chapter: chapter.id,
+      body,
+      title,
+      timer: t
+    }
     return () => clearTimeout(t)
-  }, [body, title, chapter?.id, series?.series, series?.book])
+  }, [body, title, chapterKey])
+
+  // Flush the last pending edit if the editor unmounts (app closed/route gone).
+  useEffect(() => () => {
+    const p = pendingRef.current
+    if (p) {
+      api
+        .saveChapter(p.series, p.book, p.chapter, p.body, p.title)
+        .catch(() => { /* best-effort */ })
+    }
+  }, [])
 
   const words = countWords(body)
 
   const saveNow = () => {
     if (!chapter || !series || saving) return
+    // Never write a chapter we failed to load.
+    if (savedRef.current.key !== chapterKey) {
+      setSavedAt('offline — not saving')
+      return
+    }
+    if (pendingRef.current?.timer) clearTimeout(pendingRef.current.timer)
+    pendingRef.current = null
     setSaving(true)
     api
       .saveChapter(series.series, series.book, chapter.id, body, title)
       .then((c) => {
+        savedRef.current = { key: chapterKey, body, title }
         setRevision(c.revision)
         setDrafts((d) => d + 1)
         setSavedAt('saved · ' + clockNow())
@@ -112,7 +178,8 @@ export default function Editor({ chapter, series, focus, onSelection }) {
     const end = ta.selectionEnd
     const text = start !== end ? ta.value.slice(start, end) : ''
     lastSelectionRef.current = { start, end, text }
-    if (text && onSelection) onSelection({ start, end, text })
+    // Always report — an empty selection is how App clears the rewrite banner.
+    if (onSelection) onSelection({ start, end, text })
   }
 
   useEffect(() => {
@@ -165,10 +232,12 @@ export default function Editor({ chapter, series, focus, onSelection }) {
   }, [body])
 
   const reading = mode === 'read'
-  const measure = focus ? 'mx-auto w-full max-w-[68ch] px-6' : 'px-10'
+  // Focus mode gives the page the whole window — edit and read alike. Normal
+  // mode fills the middle pane.
+  const measure = focus ? 'w-full px-8 xl:px-12' : 'px-10'
 
   return (
-    <main className="page-surface relative flex min-h-0 flex-col bg-base">
+    <main className="page-surface relative flex h-full min-h-0 flex-col bg-base">
       <div className={'shrink-0 pb-2 ' + (focus ? measure + ' pt-14' : measure + ' pt-6')}>
         {reading ? (
           <h1 className={'font-serif font-semibold text-ink ' + (focus ? 'text-[30px]' : 'text-[26px]')}>
@@ -207,7 +276,7 @@ export default function Editor({ chapter, series, focus, onSelection }) {
         </div>
       </div>
 
-      <div className={'min-h-0 flex-1 overflow-y-auto pb-16 ' + measure}>
+      <div className={'min-h-0 flex-1 pb-16 ' + (reading ? 'overflow-y-auto ' : 'flex flex-col ') + measure}>
         {reading ? (
           <ReadingView
             body={body}
@@ -226,7 +295,7 @@ export default function Editor({ chapter, series, focus, onSelection }) {
             onKeyUp={captureSelection}
             onMouseUp={captureSelection}
             spellCheck={false}
-            className={'h-full min-h-[60vh] w-full resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]')}
+            className={'min-h-0 w-full flex-1 resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]')}
             placeholder="The page is blank. The story begins here."
           />
         )}

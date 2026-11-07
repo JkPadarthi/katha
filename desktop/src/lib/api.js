@@ -162,6 +162,12 @@ export function museModels() {
   return req('/muse/models')
 }
 
+// Persisted conversation for a chapter (`series/book/ch-NN`) — restored when
+// the chapter is reopened.
+export function museThread(chapterId) {
+  return req(`/muse/thread?chapter_id=${encodeURIComponent(chapterId || '')}`)
+}
+
 // target: 'report' (whole-book audit) | 'bible' (proposed rewrite of one file)
 export function museSweep({ series, bookId, target, bibleName, onDelta, signal }) {
   return streamSse('/muse/sweep', {
@@ -184,6 +190,12 @@ export function saveBible(series, bookId, name, content) {
     method: 'PUT',
     body: JSON.stringify({ content })
   })
+}
+
+// Create the canonical starter bible (side characters, places, timeline).
+// Idempotent: existing files are never overwritten.
+export function scaffoldBible(series, bookId) {
+  return req(`/books/${series}/${bookId}/bible/scaffold`, { method: 'POST' })
 }
 
 // --- reading-mode notes ---------------------------------------------------

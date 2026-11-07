@@ -70,12 +70,8 @@ def _md_to_html(md: str) -> str:
 def _docs(bdir: Path) -> list[tuple[str, str, str]]:
     """(filename, title, html) for every chapter + bible entry."""
     docs: list[tuple[str, str, str]] = []
-    cd = bdir / "chapters"
-    if cd.is_dir():
-        for f in sorted(cd.glob("ch-*.md")):
-            if not re.fullmatch(r"ch-\d{2}\.md", f.name):
-                continue
-            docs.append((f"{f.stem}.xhtml", ar._chapter_title(f), _md_to_html(f.read_text(encoding="utf-8"))))
+    for f in ar.chapter_files(bdir / "chapters"):
+        docs.append((f"{f.stem}.xhtml", ar._chapter_title(f), _md_to_html(f.read_text(encoding="utf-8"))))
     for name, text in sorted(ar.read_bible(bdir).items()):
         base = name.split("/")[-1].rsplit(".", 1)[0]
         slug = name.rsplit(".", 1)[0].replace("/", "-")

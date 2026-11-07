@@ -21,6 +21,10 @@ _SERIES_RE = re.compile(r"[^a-z0-9]+")
 # Safe path segment: a lowercase slug — no dots (..), separators, or unicode.
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
+# Canonical chapter file. Two-or-more digits so ch-100 is still a chapter
+# (the old \d{2} silently invented a 99-chapter ceiling).
+CHAPTER_RE = re.compile(r"ch-\d{2,}\.md")
+
 
 def slugify(name: str) -> str:
     return _SERIES_RE.sub("-", name.lower()).strip("-")
@@ -33,7 +37,24 @@ def is_slug(s: str) -> bool:
 
 
 def is_chapter_id(cid: str) -> bool:
-    return bool(re.fullmatch(r"ch-\d{2}", cid))
+    return bool(re.fullmatch(r"ch-\d{2,}", cid))
+
+
+def chapter_number(chapter: Path | str) -> int:
+    """Numeric sort key for ch-01 / ch-100 (lexical order is wrong past 99)."""
+    m = re.match(r"ch-(\d+)", Path(chapter).name)
+    return int(m.group(1)) if m else 0
+
+
+def chapter_files(cd: Path) -> list[Path]:
+    """Canonical chapter files only (no snapshots, notes, or markers), in
+    numeric chapter order."""
+    if not cd.is_dir():
+        return []
+    return sorted(
+        (f for f in cd.glob("ch-*.md") if CHAPTER_RE.fullmatch(f.name)),
+        key=chapter_number,
+    )
 
 
 def _now() -> str:
@@ -74,6 +95,8 @@ def _is_hidden(p: Path) -> bool:
 def list_books() -> list[dict]:
     """Scan the archive root → series → books tree (rail source)."""
     tree: dict[str, list[dict]] = {}
+    if not ARCHIVE_ROOT.is_dir():
+        return []
     for series_dir in sorted(ARCHIVE_ROOT.iterdir()):
         if not series_dir.is_dir() or _is_hidden(series_dir):
             continue
@@ -147,18 +170,16 @@ def list_chapters(book: Path) -> list[dict]:
     if not cd.exists():
         return out
     # IMPORTANT: match ONLY canonical chapter files ch-NN.md. Revision
-    # snapshots live as ch-NN.<rev>.md (D9 time machine) — those must NOT be
-    # counted as chapters. The regex excludes any name with a second segment.
-    for f in sorted(cd.glob("ch-*.md")):
-        if not re.fullmatch(r"ch-\d{2}\.md", f.name):
-            continue  # revision snapshot (ch-01.1.md) or marker — skip
+    # snapshots live as ch-NN.<rev>.md (D9 time machine) and notes as
+    # ch-NN.notes.md — neither must be counted as a chapter.
+    for f in chapter_files(cd):
         m = f.stem  # ch-01
         title = _chapter_title(f)
         out.append({
             "id": m,
             "book_id": book.name,
             "title": title,
-            "words": _count_words(f.read_text()),
+            "words": body_words(f),
             "path": f.relative_to(ARCHIVE_ROOT).as_posix(),
             "revision": _read_revision_marker(f),
         })
@@ -182,11 +203,7 @@ def get_chapter(book: Path, chapter_id: str) -> Path | None:
 def create_chapter(book: Path, title: str, content: str = "") -> dict:
     cd = chapters_dir(book)
     cd.mkdir(parents=True, exist_ok=True)
-    nums = [
-        int(f.stem.split("-")[-1])
-        for f in cd.glob("ch-*.md")
-        if f.stem.split("-")[-1].isdigit()
-    ]
+    nums = [chapter_number(f) for f in chapter_files(cd)]
     next_n = (max(nums) + 1) if nums else 1
     cid = f"ch-{next_n:02d}"
     path = cd / f"{cid}.md"
@@ -195,12 +212,11 @@ def create_chapter(book: Path, title: str, content: str = "") -> dict:
 
 
 def _chapter_meta(book: Path, cid: str, title: str, path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
     return {
         "id": cid,
         "book_id": book.name,
         "title": _chapter_title(path) or title,
-        "words": _count_words(text),
+        "words": body_words(path),
         "path": path.relative_to(ARCHIVE_ROOT).as_posix(),
         "revision": _read_revision_marker(path),
     }
@@ -216,6 +232,22 @@ def _chapter_title(path: Path) -> str:
 
 def _count_words(text: str) -> int:
     return len(re.findall(r"\S+", text) or [])
+
+
+def _body_text(text: str) -> str:
+    """Everything after the leading `# title` line — the prose the author wrote.
+
+    Word counts must agree with what a save reports (body only), not with the
+    file (which also carries the heading)."""
+    first, _, rest = text.partition("\n")
+    if first.startswith("# "):
+        return rest
+    return text
+
+
+def body_words(chapter: Path) -> int:
+    """Word count of a chapter's body (title line excluded)."""
+    return _count_words(_body_text(chapter.read_text(encoding="utf-8")))
 
 
 # ---------- revisions (D9 time machine) ----------
@@ -235,28 +267,40 @@ def _read_revision_marker(chapter: Path) -> int:
 
 
 def write_revision(chapter: Path, content: str, title: str):
-    """Snapshot a full-copy revision next to the chapter (ch-01.md.1, .2, …)."""
-    rev = _read_revision_marker(chapter) + 1
+    """Snapshot a full-copy revision next to the chapter (ch-01.1.md, .2, …)."""
+    rev = _next_revision_number(chapter)
     snap = chapter.parent / f"{chapter.stem}.{rev}.md"
     snap.write_text(f"# {title}\n\n{content}".rstrip() + "\n", encoding="utf-8")
     _revision_marker_path(chapter).write_text(str(rev), encoding="utf-8")
     return rev
 
 
+def _snapshot_numbers(chapter: Path) -> list[int]:
+    """Existing snapshot numbers on disk (ch-01.1.md → 1), ascending."""
+    pat = re.compile(re.escape(chapter.stem) + r"\.(\d+)\.md")
+    out = []
+    for f in chapter.parent.glob(f"{chapter.stem}.*.md"):
+        m = pat.fullmatch(f.name)
+        if m:
+            out.append(int(m.group(1)))
+    return sorted(set(out))
+
+
+def _next_revision_number(chapter: Path) -> int:
+    """Next number, never colliding with an existing snapshot (even if the
+    marker was lost or snapshots were deleted/recovered)."""
+    return max([_read_revision_marker(chapter), *_snapshot_numbers(chapter)]) + 1
+
+
 def list_revisions(book: Path, chapter_id: str):
     chapter = get_chapter(book, chapter_id)
     if not chapter:
         return None
-    snaps = sorted(
-        (chapter.parent / f"{chapter.stem}.{n}.md")
-        for n in range(1, _read_revision_marker(chapter) + 1)
-        if (chapter.parent / f"{chapter.stem}.{n}.md").exists()
-    )
     return [{
-        "number": i + 1,
-        "created_at": _mtime(rev),
-        "words": _count_words(rev.read_text()),
-    } for i, rev in enumerate(snaps)]
+        "number": n,
+        "created_at": _mtime(chapter.parent / f"{chapter.stem}.{n}.md"),
+        "words": body_words(chapter.parent / f"{chapter.stem}.{n}.md"),
+    } for n in _snapshot_numbers(chapter)]
 
 
 def get_revision(book: Path, chapter_id: str, number: int):
@@ -270,7 +314,7 @@ def get_revision(book: Path, chapter_id: str, number: int):
         "number": number,
         "created_at": _mtime(p),
         "content": p.read_text(encoding="utf-8"),
-        "words": _count_words(p.read_text(encoding="utf-8")),
+        "words": body_words(p),
     }
 
 
@@ -330,6 +374,50 @@ def safe_bible_path(book: Path, rel: str) -> Path | None:
     return cand
 
 
+BIBLE_SCAFFOLD: dict[str, str] = {
+    "characters/side-characters.md": (
+        "# Side Characters & NPCs\n\n"
+        "One `## Name` section per supporting character. Main characters get "
+        "their own file under `characters/` (e.g. `characters/kael.md`).\n\n"
+        "## Name\n"
+        "- Role:\n"
+        "- Appearance:\n"
+        "- Voice / manner:\n"
+        "- Secret:\n"
+    ),
+    "places.md": (
+        "# Places\n\n"
+        "## Name\n"
+        "- Where it is:\n"
+        "- What it looks / sounds like:\n"
+        "- Who is here:\n"
+    ),
+    "timeline.md": (
+        "# Timeline\n\n"
+        "One bullet per event, in story order. Note the chapter where it is "
+        "revealed.\n\n"
+        "- \n"
+    ),
+}
+
+
+def scaffold_bible(book: Path) -> list[str]:
+    """Create the starter bible structure. Never overwrites existing files.
+
+    Main characters are one-file-each under `characters/`; the supporting cast
+    and NPCs share `characters/side-characters.md`. Returns the paths written.
+    """
+    written: list[str] = []
+    for rel, content in BIBLE_SCAFFOLD.items():
+        dest = safe_bible_path(book, rel)
+        if dest is None or dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
+        written.append(rel)
+    return written
+
+
 def split_characters_bible(book: Path) -> list[str]:
     """One-time migration: split `bible/characters.md` into
     `bible/characters/<slug>.md` (one per `## ` heading). The original is
@@ -381,7 +469,7 @@ def migrate_archive() -> list[str]:
 
 # ---------- reading-mode notes (1.0) ----------
 # Annotations live as a markdown sidecar next to the chapter (ch-NN.notes.md)
-# so they stay portable and git-able, and are skipped by the ch-\d{2}\.md
+# so they stay portable and git-able, and are skipped by the ch-\d{2,}\.md
 # chapter regexes. Format:
 #     # Notes — ch-01
 #
@@ -442,7 +530,7 @@ def write_notes(book: Path, chapter_id: str, notes: list[dict]) -> Path | None:
     p = notes_path(book, chapter_id)
     if p is None:
         return None
-    cid = chapter_id if re.fullmatch(r"ch-\d{2}", chapter_id) else f"ch-{int(chapter_id):02d}"
+    cid = chapter_id if is_chapter_id(chapter_id) else f"ch-{int(chapter_id):02d}"
     lines = [f"# Notes — {cid}", ""]
     for n in notes:
         created = (n.get("created_at") or "").strip() or _now()
@@ -465,6 +553,8 @@ def iter_searchable_docs():
 
     Walks the archive on disk — the md files are the truth, this just reads
     them so the FTS index can be rebuilt from scratch (reindex)."""
+    if not ARCHIVE_ROOT.is_dir():
+        return
     for series_dir in sorted(ARCHIVE_ROOT.iterdir()):
         if not series_dir.is_dir() or _is_hidden(series_dir):
             continue
@@ -474,13 +564,9 @@ def iter_searchable_docs():
                 continue
             book_id = b.name
             cd = b / "chapters"
-            if cd.exists():
-                for f in sorted(cd.glob("ch-*.md")):
-                    # Only canonical ch-NN.md — skip revision snapshots (ch-NN.R.md).
-                    if not re.fullmatch(r"ch-\d{2}\.md", f.name):
-                        continue
-                    yield ("chapter", series_slug, book_id, f.stem,
-                           _chapter_title(f), f.read_text(encoding="utf-8"))
+            for f in chapter_files(cd):
+                yield ("chapter", series_slug, book_id, f.stem,
+                       _chapter_title(f), f.read_text(encoding="utf-8"))
             bd = b / "bible"
             for f in _iter_bible_files(bd):
                 rel = f.relative_to(bd).as_posix()

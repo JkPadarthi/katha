@@ -32,8 +32,15 @@ Open the served URL and use **Install app** in the browser (works on desktop and
 ### Dev
 
 ```bash
-cd server && .venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 4901
-cd desktop && npm install && npm run dev   # :5173, proxies /api → :4901
+# server — one port serves the API (and the built PWA, when it exists)
+cd server
+python3 -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python seed.py                                 # sample archive; skip for an empty one
+uvicorn app.main:app --reload --port 4901
+
+# client — :5173, proxies /api → :4901
+cd desktop && npm install && npm run dev
 ```
 
 ## Docs

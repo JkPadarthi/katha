@@ -26,8 +26,9 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
   SSE streaming); `lib/useTheme.js` drives the theme system (Hermes/Paper/Slate,
   OS-follow default); `lib/settings.js` holds per-machine prefs. `ui/` holds the
   shared primitives (`Overlay`, `Button`, `Field`). Components: `TitleBar`,
-  `ThemePicker`, `Rail`, `Editor`, `ReadingView`, `Muse`, `CommandPalette`,
-  `DiffOverlay`, `SweepPanel`, `BiblePanel`, `RitualsCard`, `SettingsPanel`.
+  `ThemePicker`, `Rail` (book picker), `Editor`, `ReadingView`, `Muse`,
+  `CommandPalette`, `DiffOverlay`, `SweepPanel`, `BiblePanel`, `RitualsCard`,
+  `SettingsPanel`, `NewBookDialog`.
   `public/sw.js` caches the shell only.
 - **Server** (`server/app/`) — `main.py` (HTTP + SSE + static PWA),
   `schemas.py` (contracts), `archive.py` (files = truth), `db.py` (SQLite index
@@ -44,8 +45,10 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
       chapters/ch-01.md          # "# Title\n\n<body>"
       chapters/ch-01.1.md        # revision snapshot (D9)
       chapters/ch-01.notes.md    # reading-mode annotations (1.0)
-      bible/characters/kael.md   # the bible is a TREE (1.2)
+      bible/characters/kael.md   # one file per main character (1.2 tree)
+      bible/characters/side-characters.md  # NPCs / supporting cast
       bible/places.md            # loose files still allowed
+      bible/timeline.md
   .katha/muse/<chapter>.md       # Muse threads
   .katha/muse/style-<book>.md    # style digest
   .katha/stats/writing.jsonl     # writing-ritual log (1.0)
@@ -66,9 +69,11 @@ SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 | GET/PUT | `/api/books/{series}/{book}/chapters/{id}` | read / autosave (+revision) |
 | GET | `…/chapters/{id}/revisions[/{n}]` | revision history |
 | GET/PUT | `/api/books/{series}/{book}/bible[/{name:path}]` | read / write canon (nested paths ok) |
+| POST | `/api/books/{series}/{book}/bible/scaffold` | create the starter bible (idempotent) |
 | GET | `/api/search?q=&limit=` | FTS5 across chapters + bible |
 | POST | `/api/search/reindex` | rebuild the index from md |
 | GET | `/api/muse/models` | configured models |
+| GET | `/api/muse/thread?chapter_id=` | persisted chat thread for a chapter |
 | POST | `/api/muse/chat` | SSE chat — agentic; the model fetches story files via tools |
 | POST | `/api/muse/rewrite` | SSE rewrite proposal |
 | POST | `/api/muse/sweep` | SSE canon sweep (`report` \| `bible`) |

@@ -8,6 +8,7 @@ import DiffOverlay from './components/DiffOverlay.jsx'
 import SweepPanel from './components/SweepPanel.jsx'
 import BiblePanel from './components/BiblePanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
+import NewBookDialog from './components/NewBookDialog.jsx'
 import * as api from './lib/api.js'
 import { getSetting, setSetting } from './lib/settings.js'
 import { useMediaQuery } from './lib/useMediaQuery.js'
@@ -26,6 +27,7 @@ export default function App() {
 
   const [sweepOpen, setSweepOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [newBookOpen, setNewBookOpen] = useState(false)
   const [bibleName, setBibleName] = useState(null)   // null = closed
   const [goal, setGoal] = useState(() => getSetting('goal', '') ?? '')
   const [nudgeOn, setNudgeOn] = useState(() => getSetting('nudge', false))
@@ -119,7 +121,47 @@ export default function App() {
 
   const jumpTo = (id) => {
     setActiveChapter(id)
+    setSelection(null)
     setPaletteOpen(false)
+  }
+
+  // Switch series/book — the archive holds every book; the rail is the picker.
+  const selectBook = (seriesName, bookId) => {
+    if (!archive) return
+    const s = archive.find((x) => x.name === seriesName)
+    if (!s) return
+    const b = s.books.find((x) => x.id === bookId) || s.books[0]
+    if (!b) return
+    setSeries({ series: s.name, book: b.id })
+    setActiveChapter(b.chapters[0]?.id || null)
+    setSelection(null)
+    if (isMobile) setPane(1)
+  }
+
+  // Search hits carry their own series/book — open the right one, not the
+  // current book's chapter with the same id. Bible hits open the canon file.
+  const openHit = (hit) => {
+    if (!hit) return
+    const s = archive?.find((x) => x.name === hit.series)
+    const b = s?.books?.find((x) => x.id === hit.book_id) || s?.books?.[0]
+    setSeries({ series: hit.series, book: b?.id || hit.book_id })
+    setSelection(null)
+    setPaletteOpen(false)
+    if (hit.kind === 'chapter') {
+      setActiveChapter(hit.doc_id)
+      setPane(1)
+    } else if (hit.kind === 'bible') {
+      setBibleName(hit.doc_id)
+    }
+  }
+
+  const onBookCreated = async (b) => {
+    setNewBookOpen(false)
+    if (!b) return
+    await refreshArchive()
+    setSeries({ series: b.series, book: b.id })
+    setActiveChapter(b.chapters?.[0]?.id || null)
+    setSelection(null)
   }
 
   const book = useMemo(
@@ -138,6 +180,7 @@ export default function App() {
       const c = await api.createChapter(series.series, series.book, 'Untitled')
       await refreshArchive()
       setActiveChapter(c.id)
+      setSelection(null)
       if (isMobile) setPane(1)
     } catch { /* the archive refresh will surface any failure */ }
   }
@@ -169,6 +212,7 @@ export default function App() {
     if (editorApi.replaceSelection && proposed) editorApi.replaceSelection(proposed)
     setRewriteOpen(false)
     setProposed('')
+    setSelection(null)   // offsets are stale once the text is replaced
   }
   const onRetry = () => { if (selection) runRewrite(selection, rewriteStyle) }
   const onStyleChange = (s) => {
@@ -236,6 +280,8 @@ export default function App() {
       run: () => setFocusMode((v) => !v)
     },
     { id: 'new-chapter', label: 'New chapter', hint: 'Write', run: newChapter },
+    { id: 'new-book', label: 'New book', hint: 'Write', run: () => setNewBookOpen(true) },
+    { id: 'bible', label: 'Open bible', hint: 'Canon', run: () => setBibleName('') },
     { id: 'sweep', label: 'Canon sweep', hint: 'Muse', run: () => setSweepOpen(true) },
     ...(series
       ? [{
@@ -281,6 +327,9 @@ export default function App() {
                     active={activeChapter}
                     onSelect={(id) => { jumpTo(id); setPane(1) }}
                     archive={archive}
+                    current={series}
+                    onSelectBook={selectBook}
+                    onNewBook={() => setNewBookOpen(true)}
                     onOpenBible={(name) => setBibleName(name || '')}
                     onNewChapter={newChapter}
                   />
@@ -323,6 +372,9 @@ export default function App() {
                 active={activeChapter}
                 onSelect={jumpTo}
                 archive={archive}
+                current={series}
+                onSelectBook={selectBook}
+                onNewBook={() => setNewBookOpen(true)}
                 onOpenBible={(name) => setBibleName(name || '')}
                 onNewChapter={newChapter}
               />
@@ -345,7 +397,14 @@ export default function App() {
       )}
 
       {paletteOpen && archive && (
-        <CommandPalette onClose={() => setPaletteOpen(false)} onJump={jumpTo} archive={archive} commands={commands} />
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onJump={jumpTo}
+          onOpenHit={openHit}
+          series={series}
+          archive={archive}
+          commands={commands}
+        />
       )}
       {rewriteOpen && selection && (
         <DiffOverlay
@@ -378,6 +437,9 @@ export default function App() {
           onNudge={(v) => { setNudgeOn(v); setSetting('nudge', v) }}
           onClose={() => setSettingsOpen(false)}
         />
+      )}
+      {newBookOpen && (
+        <NewBookDialog onClose={() => setNewBookOpen(false)} onCreated={onBookCreated} />
       )}
     </div>
   )

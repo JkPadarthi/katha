@@ -31,14 +31,24 @@ same FastAPI server as the API.
 - **2.0** — client rebuilt from scratch on a token-theme system: **Hermes /
   Paper / Slate**, default follows the OS then remembers your pick. Shared `ui/`
   primitives; the rail's "+ New chapter" is now wired. Dead files removed.
+- **2.0.1 hardening** — edit-only autosave (opening a chapter no longer writes
+  a revision; a failed load can never blank a file); nested bible paths work in
+  the canon sweep; SPA static serving is contained to `dist/`; Muse threads are
+  restored when a chapter opens (and no longer re-append the whole history);
+  the rail switches between series/books and can create one; chapters past 99
+  are supported and sorted numerically; revision numbers survive deleted
+  snapshots; canon lookups use OR'd FTS terms scoped to the book; a fresh
+  checkout boots without an `archive/` directory. The bible has a canonical
+  shape (one file per main character, a shared side-characters file, places,
+  timeline) scaffolded on book creation and backfillable from the panel.
 
 ## Next
 - Dogfood the full loop (write → autosave/revisions → Muse tools → rewrite diff
   → sweep → reading + notes → EPUB); browser-verify the three themes + mobile.
-- Then: New book/series, and a revision-history browser (list / preview / restore).
+- Then: a revision-history browser (list / preview / restore).
 
 ## Verify
-- Server: `cd server && .venv\Scripts\python.exe -m pytest -q` (45 tests).
+- Server: `cd server && .venv/bin/python -m pytest -q` (59 tests).
 - Client: `cd desktop && npm run build`.
 - Install: build, serve via the Pi, open over `tailscale serve` HTTPS, Install app.
 

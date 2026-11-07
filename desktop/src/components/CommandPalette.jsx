@@ -22,32 +22,33 @@ function Snippet({ html }) {
   return <>{nodes}</>
 }
 
-export default function CommandPalette({ onClose, onJump, archive, commands = [] }) {
+export default function CommandPalette({ onClose, onJump, onOpenHit, archive, series, commands = [] }) {
   const [q, setQ] = useState('')
   const [hits, setHits] = useState(null)   // null = idle, [] = none, [...] = hits
   const inputRef = useRef(null)
 
   useEffect(() => inputRef.current?.focus(), [])
 
-  // Debounced FTS search.
+  // Debounced FTS search. `alive` lives in the effect scope so a slow older
+  // request can never overwrite the results of a newer query.
   useEffect(() => {
     const term = q.trim()
     if (!term) { setHits(null); return }
     setHits(null)
+    let alive = true
     const t = setTimeout(() => {
-      let alive = true
       api.search(term)
-        .then((r) => alive && setHits(r.hits || []))
-        .catch(() => alive && setHits([]))
-      return () => { alive = false }
+        .then((r) => { if (alive) setHits(r.hits || []) })
+        .catch(() => { if (alive) setHits([]) })
     }, 180)
-    return () => clearTimeout(t)
+    return () => { alive = false; clearTimeout(t) }
   }, [q])
 
-  const chapters = useMemo(
-    () => (archive && archive[0]?.books?.[0]?.chapters) || [],
-    [archive]
-  )
+  const chapters = useMemo(() => {
+    const s = archive?.find((x) => x.name === series?.series)
+    const b = s?.books?.find((x) => x.id === series?.book)
+    return b?.chapters || []
+  }, [archive, series])
   const showChapters = !q.trim()
 
   return (
@@ -95,11 +96,12 @@ export default function CommandPalette({ onClose, onJump, archive, commands = []
         {!showChapters && Array.isArray(hits) && hits.map((h) => (
           <li key={`${h.kind}-${h.book_id}-${h.doc_id}`}>
             <button
-              onClick={() => { if (h.kind === 'chapter') { onJump(h.doc_id); onClose() } }}
-              className={
-                'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left ' +
-                (h.kind === 'chapter' ? 'hover:bg-panel-2' : 'opacity-80')
-              }
+              onClick={() => {
+                if (onOpenHit) onOpenHit(h)
+                else if (h.kind === 'chapter') onJump(h.doc_id)
+                onClose()
+              }}
+              className="flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left hover:bg-panel-2"
             >
               <span className="flex w-full items-center justify-between gap-2">
                 <span className="truncate text-[12.5px] text-ink">{h.title}</span>

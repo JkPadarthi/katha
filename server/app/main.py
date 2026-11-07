@@ -44,6 +44,9 @@ from .schemas import (
 async def lifespan(_app: FastAPI):
     """Migrate any legacy archive layout (e.g. a flat characters.md), then
     rebuild the search index from disk."""
+    # A fresh checkout has no archive/ (it is gitignored) — create it so the
+    # app boots even before seed.py has run.
+    ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     ar.migrate_archive()
     reindex_search()
     yield
@@ -71,20 +74,26 @@ def reindex_search():
 # ---------- helpers ----------
 
 def _resolve_book_path(series: str, book_id: str) -> Path:
-    """Match a series+book_id to a real dir; book_id may be slug or title."""
-    # Traversal guard: params become path segments — only slugs pass.
-    if not ar.is_slug(series) or not ar.is_slug(book_id):
+    """Match a series+book_id to a real dir; book_id may be a slug, id, or title."""
+    # Traversal guard: the series becomes a path segment — only slugs pass.
+    if not ar.is_slug(series):
         raise HTTPException(404, "series not found")
     sd = ARCHIVE_ROOT / series
     if not sd.is_dir():
         raise HTTPException(404, "series not found")
-    # book dirs keyed by slug
-    bdir = sd / book_id
-    if bdir.is_dir():
-        return bdir
+    # Fast path: a slug that names the directory. Any non-slug input (a real
+    # title like "The First Flame") is matched below by iterating entries —
+    # never joined onto the path.
+    if ar.is_slug(book_id):
+        bdir = sd / book_id
+        if bdir.is_dir():
+            return bdir
     for b in sorted(sd.iterdir()):
+        if not b.is_dir() or b.name.startswith("."):
+            continue
         meta = ar._read_book_json(b)
-        if meta.get("id") == book_id or meta.get("title") == book_id:
+        if (b.name == book_id or meta.get("id") == book_id
+                or meta.get("title") == book_id):
             return b
     raise HTTPException(404, "book not found")
 
@@ -103,6 +112,13 @@ def books_tree():
 def create_book(payload: BookCreate):
     meta = ar.ensure_book(payload.series, payload.title)
     db.upsert_book(meta["id"], meta["series"], meta["title"])
+    # Every book starts with the canonical bible shape: one file per main
+    # character under characters/, one shared side-characters file, places,
+    # and a timeline.
+    bdir = ar.book_dir(payload.series, payload.title)
+    ar.scaffold_bible(bdir)
+    for name, content in ar.read_bible(bdir).items():
+        db.index_doc("bible", meta["series"], bdir.name, name, Path(name).stem, content)
     # Series travels as its slug here — same form every other route expects.
     return _book_detail(meta["id"], meta["series"])
 
@@ -170,13 +186,13 @@ def save_chapter(series: str, book_id: str, chapter_id: str, payload: ChapterUpd
         raise HTTPException(404, "chapter not found")
     existing_title = ar._chapter_title(chapter)
     title = (payload.title or "").strip() or existing_title
-    prev_file_words = ar._count_words(chapter.read_text(encoding="utf-8"))
+    prev_words = ar.body_words(chapter)
     new_text = f"# {title}\n\n{payload.content}".rstrip() + "\n"
     chapter.write_text(new_text, encoding="utf-8")
     rev = ar.write_revision(chapter, payload.content, title)
     words = ar._count_words(payload.content)
     stats.append_write(ar._mtime(chapter), series, bdir.name, chapter.stem,
-                       words, ar._count_words(new_text) - prev_file_words)
+                       words, words - prev_words)
     db.record_revision(bdir.name, chapter.stem, rev, ar._mtime(chapter), words)
     db.upsert_chapter({
         "id": chapter.stem,
@@ -265,6 +281,21 @@ def save_bible(series: str, book_id: str, name: str, payload: BibleUpdate):
     return BibleOut(book_id=bdir.name, files=ar.read_bible(bdir))
 
 
+@app.post("/api/books/{series}/{book_id}/bible/scaffold", response_model=BibleOut,
+          tags=["bible"])
+def scaffold_bible(series: str, book_id: str):
+    """Create the starter bible for an existing book (idempotent).
+
+    characters/side-characters.md + places.md + timeline.md. Main characters
+    are added one file each under characters/."""
+    bdir = _resolve_book_path(series, book_id)
+    ar.scaffold_bible(bdir)
+    files = ar.read_bible(bdir)
+    for name, content in files.items():
+        db.index_doc("bible", series, bdir.name, name, Path(name).stem, content)
+    return BibleOut(book_id=bdir.name, files=files)
+
+
 @app.get("/api/search", response_model=SearchOut, tags=["search"])
 def search(q: str = "", limit: int = 20):
     """Full-text search across chapters + bible (FTS5, 0.2.2)."""
@@ -347,6 +378,15 @@ def muse_models():
     return muse_mod.models_info()
 
 
+@app.get("/api/muse/thread", tags=["muse"])
+def muse_thread(chapter_id: str = ""):
+    """The persisted chat thread for a chapter (`series/book/ch-NN`).
+
+    Reopening a chapter restores its Muse conversation instead of the thread
+    files being a write-only log."""
+    return {"chapter_id": chapter_id, "messages": muse_mod.thread_messages(chapter_id)}
+
+
 @app.post("/api/muse/chat", tags=["muse"])
 async def muse_chat(payload: MuseChatRequest):
     """Stream a chat reply as SSE.
@@ -418,17 +458,29 @@ async def muse_sweep(payload: MuseSweepRequest):
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 if WEB_DIR.is_dir():
-    _assets = WEB_DIR / "assets"
+    _web_root = WEB_DIR.resolve()
+    _assets = _web_root / "assets"
     if _assets.is_dir():
         app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str):
         # Never shadow the API — unknown /api paths must 404, not return HTML.
-        if full_path.startswith("api/"):
+        if full_path == "api" or full_path.startswith("api/"):
             raise HTTPException(404, "not found")
-        candidate = WEB_DIR / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(str(candidate))
+        # Serve a real file inside the built client, or fall through to the
+        # shell. Resolve + containment check so `..%2f` cannot escape dist/.
+        if full_path:
+            try:
+                candidate = (_web_root / full_path).resolve()
+            except OSError:
+                candidate = None
+            if candidate is not None:
+                try:
+                    candidate.relative_to(_web_root)
+                except ValueError:
+                    raise HTTPException(404, "not found")
+                if candidate.is_file():
+                    return FileResponse(str(candidate))
         # SPA deep links fall through to the shell.
-        return FileResponse(str(WEB_DIR / "index.html"))
+        return FileResponse(str(_web_root / "index.html"))

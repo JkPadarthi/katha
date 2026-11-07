@@ -51,6 +51,30 @@ export default function Muse({ series, chapter }) {
     return () => { museApi.setDraft = null }
   }, [])
 
+  // Restore the persisted conversation for the open chapter.
+  useEffect(() => {
+    // A live stream belongs to the chapter it started in — stop it on switch.
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+    let alive = true
+    setBusy(false)
+    setMessages([])
+    setError('')
+    setStatus('')
+    setStreaming('')
+    if (!chapterId) return
+    api
+      .museThread(chapterId)
+      .then((r) => {
+        if (!alive) return
+        setMessages((r.messages || []).map((m) => ({ role: m.role, text: m.text })))
+      })
+      .catch(() => { /* history is best-effort */ })
+    return () => { alive = false }
+  }, [chapterId])
+
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
   }, [messages, streaming])
@@ -65,7 +89,9 @@ export default function Muse({ series, chapter }) {
     setStreaming('')
 
     const payloadMessages = [
-      ...messages.map((m) => ({ role: m.role, content: m.text })),
+      ...messages
+        .filter((m) => !m.local)
+        .map((m) => ({ role: m.role, content: m.text })),
       { role: 'user', content: text }
     ]
 
@@ -85,7 +111,8 @@ export default function Muse({ series, chapter }) {
     } catch (e) {
       if (e.name !== 'AbortError') {
         setError(e.message || 'Muse unavailable')
-        setMessages((m) => [...m, { role: 'assistant', text: '— offline —' }])
+        // Local-only placeholder: shown, but never sent back as a model turn.
+        setMessages((m) => [...m, { role: 'assistant', text: '— offline —', local: true }])
       }
     } finally {
       setBusy(false)

@@ -10,7 +10,6 @@ Revisions keep full snapshots as files (D9); this DB stores their metadata.
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 from .config import DB_PATH
 
@@ -155,20 +154,28 @@ def index_doc(kind: str, series: str, book_id: str, doc_id: str,
     conn.close()
 
 
-def search(query: str, limit: int = 20) -> list[dict]:
+def search(query: str, limit: int = 20, book_id: str | None = None) -> list[dict]:
     """Full-text search across chapters + bible. Returns ranked hits with a
     snippet. Malformed FTS5 syntax (unbalanced quotes, dangling operators)
-    degrades to an empty result — never a 500."""
+    degrades to an empty result — never a 500.
+
+    `book_id` scopes the search to one book (the Muse's tools and canon
+    context must never borrow another book's bible)."""
     conn = connect()
     try:
-        rows = conn.execute(
+        sql = (
             "SELECT kind, series, book_id, doc_id, title, "
             "       snippet(search_index, 5, '<mark>', '</mark>', '…', 24) AS snippet "
             "FROM search_index "
-            "WHERE search_index MATCH ? "
-            "ORDER BY rank LIMIT ?",
-            (query, limit),
-        ).fetchall()
+            "WHERE search_index MATCH ?"
+        )
+        params: list = [query]
+        if book_id:
+            sql += " AND book_id = ?"
+            params.append(book_id)
+        sql += " ORDER BY rank LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
     except sqlite3.OperationalError:
         # FTS5 MATCH syntax error (e.g. q='"unbalanced') — treat as no hits.
         return []

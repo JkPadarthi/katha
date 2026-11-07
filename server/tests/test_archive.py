@@ -41,7 +41,7 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "2.0.0"
+    assert body["version"] == "2.0.1"
     assert body["db_ok"] is True
 
 
@@ -344,3 +344,113 @@ def test_epub_export_is_valid_zip():
 def test_epub_export_404_on_missing_book():
     r = client.get(f"/api/books/{ar.slugify(SERIES)}/nope/export.epub")
     assert r.status_code == 404
+
+
+# --- hardening: word counts, revision numbering, 100+ chapters --------------
+
+def test_word_counts_exclude_the_title_line():
+    """Saving and listing must report the same body word count (the heading
+    is not prose)."""
+    series, book = ar.slugify(SERIES), ar.slugify(BOOK)
+    created = client.post(f"/api/books/{series}/{book}/chapters",
+                          json={"title": "Counted", "content": "one two"}).json()
+    cid = created["id"]
+    assert created["words"] == 2
+
+    r = client.put(f"/api/books/{series}/{book}/chapters/{cid}",
+                   json={"content": "alpha beta gamma", "title": "Counted"})
+    assert r.json()["words"] == 3
+
+    row = next(c for c in client.get(f"/api/books/{series}/{book}/chapters").json()["chapters"]
+               if c["id"] == cid)
+    assert row["words"] == 3
+
+
+def test_revision_numbers_survive_a_deleted_snapshot():
+    """Numbers come from the files on disk, not from enumerate() — deleting
+    ch-NN.1.md must not make ch-NN.2.md look like revision 1."""
+    series, book = ar.slugify(SERIES), ar.slugify(BOOK)
+    created = client.post(f"/api/books/{series}/{book}/chapters",
+                          json={"title": "Snapshots", "content": "start"}).json()
+    cid = created["id"]
+    base = f"/api/books/{series}/{book}/chapters/{cid}"
+    client.put(base, json={"content": "first"})
+    client.put(base, json={"content": "second"})
+
+    snapshot = ar.chapters_dir(ar.book_dir(SERIES, BOOK)) / f"{cid}.1.md"
+    snapshot.unlink()
+
+    revs = client.get(f"{base}/revisions").json()
+    assert [r["number"] for r in revs] == [2]
+    assert client.get(f"{base}/revisions/2").status_code == 200
+    assert "second" in client.get(f"{base}/revisions/2").json()["content"]
+
+    # The next save must not reuse the deleted number.
+    body = client.put(base, json={"content": "third"}).json()
+    assert body["revision"] == 3
+
+
+def test_search_can_scope_to_a_book():
+    """The Muse's canon lookup must never borrow another book's bible."""
+    from app import db
+
+    _reindex()
+    hits = db.search("Kael", limit=20, book_id=ar.slugify(BOOK))
+    assert hits
+    assert all(h["book_id"] == ar.slugify(BOOK) for h in hits)
+    assert db.search("Kael", limit=20, book_id="no-such-book") == []
+
+
+def test_book_lookup_accepts_a_title():
+    """The documented book_id title fallback actually works (it used to be
+    dead code behind a slug-only guard)."""
+    r = client.get(f"/api/books/{ar.slugify(SERIES)}/{BOOK}/chapters")
+    assert r.status_code == 200
+    assert r.json()["book_id"] == ar.slugify(BOOK)
+
+
+def test_new_book_starts_with_the_canonical_bible():
+    """Creating a book scaffolds characters/, side-characters, places, and
+    timeline — the bible has a shape before the author writes a word."""
+    r = client.post("/api/books", json={"series": "Starter Series", "title": "Starter Book"})
+    assert r.status_code == 201
+
+    series_slug, book_slug = ar.slugify("Starter Series"), ar.slugify("Starter Book")
+    files = client.get(f"/api/books/{series_slug}/{book_slug}/bible").json()["files"]
+    assert "characters/side-characters.md" in files
+    assert "places.md" in files
+    assert "timeline.md" in files
+    assert "## Name" in files["characters/side-characters.md"]
+
+
+def test_scaffold_is_idempotent_and_never_overwrites():
+    """Backfilling an old book must not clobber edited canon."""
+    r = client.post("/api/books", json={"series": "Scaffold Series", "title": "Keep"})
+    assert r.status_code == 201
+    series_slug, book_slug = ar.slugify("Scaffold Series"), ar.slugify("Keep")
+
+    client.put(f"/api/books/{series_slug}/{book_slug}/bible/places.md",
+               json={"content": "# My Places\n\ncustom"})
+    again = client.post(f"/api/books/{series_slug}/{book_slug}/bible/scaffold")
+    assert again.status_code == 200
+    files = again.json()["files"]
+    assert files["places.md"] == "# My Places\n\ncustom"
+    assert "characters/side-characters.md" in files
+
+
+def test_chapters_beyond_99_are_real_and_sorted():
+    assert ar.is_chapter_id("ch-100")
+    assert ar.chapter_number("ch-100") == 100
+
+    book = ar.book_dir(SERIES, BOOK)
+    cd = ar.chapters_dir(book)
+    high = cd / "ch-100.md"
+    low = cd / "ch-099.md"
+    high.write_text("# Hundred\n\nlast", encoding="utf-8")
+    low.write_text("# Ninety nine\n\nbefore", encoding="utf-8")
+    try:
+        ids = [c["id"] for c in ar.list_chapters(book)]
+        assert ids.index("ch-099") < ids.index("ch-100")
+    finally:
+        high.unlink(missing_ok=True)
+        low.unlink(missing_ok=True)

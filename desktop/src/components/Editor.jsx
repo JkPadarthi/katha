@@ -310,7 +310,7 @@ export default function Editor({ chapter, series, focus, onSelection }) {
             onKeyUp={captureSelection}
             onMouseUp={captureSelection}
             spellCheck={false}
-            className={'min-h-0 w-full flex-1 resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.62]' : 'text-[16px] leading-[1.55]')}
+            className={'min-h-0 w-full flex-1 resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]')}
             placeholder="The page is blank. The story begins here."
           />
         )}

@@ -13,19 +13,19 @@ function Blocks({ text }) {
     const t = b.trim()
     if (!t) return null
     if (t.startsWith('## ')) {
-      return <h3 key={i} className="mb-2.5 mt-8 font-serif text-[19px] font-semibold text-ink">{t.slice(3)}</h3>
+      return <h3 key={i} className="mb-2 mt-6 font-serif text-[19px] font-semibold text-ink">{t.slice(3)}</h3>
     }
     if (t.startsWith('# ')) {
-      return <h2 key={i} className="mb-2.5 mt-8 font-serif text-[22px] font-semibold text-ink">{t.slice(2)}</h2>
+      return <h2 key={i} className="mb-2 mt-6 font-serif text-[22px] font-semibold text-ink">{t.slice(2)}</h2>
     }
     if (t.startsWith('>')) {
       return (
-        <blockquote key={i} className="my-[1.1em] border-l-2 border-accent/40 pl-3 font-serif text-[16px] italic text-mute">
+        <blockquote key={i} className="my-3 border-l-2 border-accent/40 pl-3 font-serif text-[16px] italic text-mute">
           {t.replace(/^>\s?/gm, '')}
         </blockquote>
       )
     }
-    return <p key={i} className="mb-[1.7em] whitespace-pre-wrap">{t}</p>
+    return <p key={i} className="mb-3 whitespace-pre-wrap">{t}</p>
   })
 }
 
@@ -52,7 +52,7 @@ export default function ReadingView({ body, notes, onAddNote, onNoteBody, onDele
 
   return (
     <div>
-      <div onMouseUp={onMouseUp} className="font-serif text-[17px] leading-[1.55] text-ink/95">
+      <div onMouseUp={onMouseUp} className="font-serif text-[17px] leading-[1.95] text-ink/95">
         <Blocks text={body} />
       </div>
 

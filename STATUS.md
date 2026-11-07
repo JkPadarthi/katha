@@ -67,6 +67,13 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.7** — spacing reverted to the originals, at the author's request. Read mode is back to
+  line 1.95 with a 12px paragraph gap, the writing surface to 1.85 (focus 1.95), the review
+  pane to 1.85/1.8 — proven by an empty `git diff` against the pre-experiment commit for two of
+  the three files, the third differing only by the paragraph-rule import. The paragraph rule
+  (D50) stays: it is what makes ch-01 render as 115 paragraphs instead of one, and at the old
+  values ch-01 now gets exactly the same gap ch-00 always had. The experiment chased a symptom;
+  the paragraphs were the bug.
 - **3.0.6** — a chapter's paragraph style is its own. ch-01 separates paragraphs with single
   newlines and no blank lines, so every block-based renderer (reading mode *and* the EPUB
   export) read the whole 4,790-word chapter as ONE paragraph — which is why paragraph spacing

@@ -133,6 +133,22 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D51 — typography is the author's, and a revert must be provable (3.0.7)
+Tonight's spacing experiment (line 1.95 -> 1.55, paragraph gap 12px -> 1.70em, across reading
+mode, the writing surface and the review pane) is **reverted at the author's request**: read
+mode is back to `leading-1.95` with `mb-3`, the writing surface to `1.85` (focus `1.95`), the
+review pane to `1.85`/`1.8`. The values were never the problem — the *paragraphs* were (ch-01's
+single-newline style, D50) — and tuning them further was chasing a symptom.
+
+**A revert must be provable, not asserted.** The check used: `git diff 56ba1aa --
+desktop/src/components/Editor.jsx desktop/src/components/ProposalReview.jsx` is *empty* (byte
+identical to the pre-experiment state), and ReadingView differs only by the paragraph-rule
+import. If a revert cannot be shown that way, it is not finished.
+
+What deliberately stays: the **paragraph rule** (D50). It is not a spacing preference — it is
+what lets every renderer see ch-01's 115 paragraphs at all, and it fixes the EPUB export. With
+the original values restored it gives ch-01 the same 12px paragraph gap ch-00 always had.
+
 ## D50 — a chapter's paragraph style is the chapter's own (3.0.6)
 The author reported: "only ch-0 is being changed. not ch 1 why?" — paragraph spacing appeared in
 the introduction and never in the first chapter. The cause was not the CSS (the rules were

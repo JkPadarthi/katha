@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react'
+import { proseBlocks } from '../lib/prose.js'
 
 // READING MODE — the page as book. Renders the chapter's markdown as prose
 // (headings, blockquotes, paragraphs), lets the reader select a passage to
@@ -6,7 +7,8 @@ import React, { useMemo, useState } from 'react'
 // persisted by the parent (Editor) to a ch-NN.notes.md sidecar on the Pi.
 
 function Blocks({ text }) {
-  const blocks = useMemo(() => (text || '').split(/\n\s*\n/), [text])
+  // Paragraph breaks follow the manuscript's own convention (D50) — see lib/prose.js.
+  const blocks = useMemo(() => proseBlocks(text), [text])
   return blocks.map((b, i) => {
     const t = b.trim()
     if (!t) return null

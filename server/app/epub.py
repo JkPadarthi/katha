@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import archive as ar
+from . import prose
 
 _CSS = """body { font-family: Georgia, serif; line-height: 1.6; margin: 1em; }
 h1 { font-size: 1.6em; } h2 { font-size: 1.25em; }
@@ -69,7 +70,7 @@ def _xhtml(title: str, body_html: str) -> str:
 
 def _md_to_html(md: str) -> str:
     out = []
-    for block in re.split(r"\n\s*\n", md or ""):
+    for block in prose.split_paragraphs(md or ""):
         t = block.strip()
         if not t:
             continue

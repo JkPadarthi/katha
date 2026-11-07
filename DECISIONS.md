@@ -133,6 +133,35 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D50 — a chapter's paragraph style is the chapter's own (3.0.6)
+The author reported: "only ch-0 is being changed. not ch 1 why?" — paragraph spacing appeared in
+the introduction and never in the first chapter. The cause was not the CSS (the rules were
+deployed and correct) and not the browser: **the two chapters are written in two different
+styles.**
+
+* ch-00 separates paragraphs with a **blank line**, and wraps a long paragraph across lines —
+  a single newline there is a soft wrap.
+* ch-01 puts every paragraph on **one line**, with single newlines and no blank lines at all —
+  a single newline there *is* the paragraph break.
+
+Both renderers split on blank lines only, so ch-01 was **one 4,790-word paragraph**: no
+paragraph spacing (nothing to space), no gaps, and an EPUB that was a single `<p>` with a
+`<br/>` at every line — the export had the same bug and it would have shipped.
+
+**The rule** (`server/app/prose.py`, mirrored in `desktop/src/lib/prose.js`): if the prose
+contains a blank line, blank lines separate paragraphs; if it never does, every line is a
+paragraph. A leading heading and the blank line under it do not vote. Blank lines always
+break, and a heading or blockquote never swallows the prose beside it. Measured on the real
+files: ch-00 → 11 paragraphs (unchanged), ch-01 → 115 paragraphs (was 2).
+
+Two lessons worth more than the fix:
+* **The two implementations must be checked against each other, not just against their own
+  tests.** A JS/Python parity run on four fixtures caught a real divergence —
+  `'…\n'.split(/\r?\n/)` keeps a trailing empty string where Python's `splitlines()` drops
+  it, and that difference alone flipped the rule in the browser only.
+* **"No difference" is a measurement problem before it is a code problem.** The app prints its
+  build version in the title bar; ask for it before touching the CSS.
+
 ## D49 — an accept is only valid against the text the Muse read (3.0.1)
 Found on real data, not in a test: the author's ch-01 was at revision 6 while the waiting
 revision had been written against revision 5 — they had saved 226 words into the chapter

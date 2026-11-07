@@ -67,6 +67,13 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.6** — a chapter's paragraph style is its own. ch-01 separates paragraphs with single
+  newlines and no blank lines, so every block-based renderer (reading mode *and* the EPUB
+  export) read the whole 4,790-word chapter as ONE paragraph — which is why paragraph spacing
+  appeared in ch-00 and never in ch-01. Both now share one rule: blank lines separate
+  paragraphs when the manuscript uses them, and every line is a paragraph when it doesn't.
+  Measured: ch-00 → 11 paragraphs (unchanged), ch-01 → **2 → 115**. The EPUB gets 115 `<p>`
+  instead of one `<p>` with 115 `<br/>`.
 - **3.0.5** — paragraph gap 1.00em -> **1.70em** (line spacing stays 1.55). Paragraphs are
   now separated by more than a full line, which is airy for a printed page but exactly what
   the author asked for; one number to change if it reads too loose.

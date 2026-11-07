@@ -133,6 +133,29 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D45 — the Muse proposes, the author disposes (2.9.0)
+The Muse's tools are still read-only. What changed is that it can now put a
+whole-chapter revision *in front of* the author instead of only talking about one.
+
+* The agent gains **`propose_chapter_rewrite`**, which parks a revision under
+  `archive/.katha/proposals/<book>-<chapter>-<stamp>.json` and returns a tool result
+  that says outright it is NOT saved and must not be re-pasted into the chat.
+* The stream carries **`[PROPOSAL] <id>`** — the id, never the chapter — so the
+  client raises a "Review diff" affordance rather than pretending the work is done.
+* **Accept runs the same save path as autosave** (`_write_chapter_text`), so the
+  revision snapshot (D9), the FTS index and the writing stats all behave exactly as
+  if the author had typed it. Discard is a no-op on the chapter, because the chapter
+  was never touched.
+* Refusals are explicit and go back to the model: shorter than
+  `PROPOSAL_MIN_CHARS` (200), or identical to the chapter as it stands — both leave
+  nothing on disk.
+* Ids are a single slug segment with a microsecond stamp: a traversal-shaped id is a
+  404, and two revisions in the same second cannot collide.
+
+The rule this encodes: **an agent may draft, but only the author writes.** Letting a
+model write the archive unattended is a different decision with a different risk
+profile, and it is deliberately not this one.
+
 ## D44 — the deploy defers to the author, and the Muse writes into its reply (2.8.1)
 Both halves come from one incident: a **forced deploy landed 57 seconds into a Muse
 turn**. The container was recreated, the SSE stream died, and the *persisted

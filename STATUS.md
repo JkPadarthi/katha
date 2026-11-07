@@ -67,6 +67,18 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.9.0** — the Muse proposes, the author disposes. Asking the Muse to "write the
+  chapter" used to produce either prose to copy by hand or, worse, a promise to do
+  it later — its tools were read-only and the author was left holding the text. Now
+  it has a real handover: `propose_chapter_rewrite` parks the complete revision,
+  the stream announces `[PROPOSAL] <id>`, and the Muse panel offers **Review diff**
+  (the existing word-level overlay, whole chapter vs whole chapter) with **Accept**
+  or **Discard**. Accept runs the *same* save path as autosave, so the revision
+  snapshot, search index and writing stats behave exactly as if you had typed it;
+  discard leaves the chapter untouched because it never was touched. Revisions under
+  200 characters, or identical to what is already there, are refused with a reason
+  the model sees. 13 new tests pin the safety property that matters most: *the
+  chapter file and its revision counter are unchanged by a proposal.*
 - **2.8.1** — the deploy learns to wait, and the Muse learns to work. A forced deploy
   of 2.8.0 landed 57 seconds into a Muse turn: recreating the container killed the
   stream mid-reply, and the persisted thread kept a half-written assistant turn

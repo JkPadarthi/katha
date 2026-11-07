@@ -162,7 +162,7 @@ function unescapeSse(s) {
   return s.replace(/\\n|\\\\/g, (m) => (m === '\\n' ? '\n' : '\\'))
 }
 
-async function streamSse(path, body, { onDelta, onStatus, signal }) {
+async function streamSse(path, body, { onDelta, onStatus, onProposal, signal }) {
   const res = await fetch(`/api${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -197,6 +197,12 @@ async function streamSse(path, body, { onDelta, onStatus, signal }) {
           if (onStatus) onStatus(payload.slice(8).trim())
           continue
         }
+        // A whole-chapter revision is waiting for the author (2.9, D45). It is NOT
+        // applied — the reply carries only its id; the diff is a fetch away.
+        if (payload.startsWith('[PROPOSAL]')) {
+          if (onProposal) onProposal(payload.slice(10).trim())
+          continue
+        }
         if (payload.startsWith('[ERROR]')) {
           throw new Error(payload.slice(7).trim() || 'Muse error')
         }
@@ -209,12 +215,31 @@ async function streamSse(path, body, { onDelta, onStatus, signal }) {
   return acc
 }
 
-export function museChat({ messages, chapterId, chip, onDelta, onStatus, signal }) {
+export function museChat({ messages, chapterId, chip, onDelta, onStatus, onProposal, signal }) {
   return streamSse('/muse/chat', {
     messages,
     chapter_id: chapterId || null,
     chip: chip || null
-  }, { onDelta, onStatus, signal })
+  }, { onDelta, onStatus, onProposal, signal })
+}
+
+// --- whole-chapter revisions (2.9, D45) -----------------------------------
+// The Muse proposes; the author disposes. `acceptProposal` runs the same save path
+// as autosave on the server, so accepting one snapshots a revision like any edit.
+export function listProposals() {
+  return req('/muse/proposals')
+}
+
+export function getProposal(id) {
+  return req(`/muse/proposals/${encodeURIComponent(id)}`)
+}
+
+export function acceptProposal(id) {
+  return req(`/muse/proposals/${encodeURIComponent(id)}/accept`, { method: 'POST' })
+}
+
+export function discardProposal(id) {
+  return req(`/muse/proposals/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export function museRewrite({ text, style, chapterId, onDelta, signal }) {

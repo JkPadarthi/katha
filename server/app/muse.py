@@ -54,6 +54,14 @@ _client = httpx.AsyncClient(timeout=MUSE_UPSTREAM_TIMEOUT)
 # Muse-side data lives inside the archive under `.katha/muse/`. Already
 # git-ignored because archive/ is git-ignored.
 _MUSE_ROOT = ARCHIVE_ROOT / ".katha" / "muse"
+# Whole-chapter revisions the Muse hands to the author for approval (2.9, D45).
+# They live beside the threads — inside the archive, so a backup covers them, and
+# under a dot-directory, so no listing or search ever sees them. Nothing here is
+# ever applied without the author's word.
+_PROPOSAL_ROOT = ARCHIVE_ROOT / ".katha" / "proposals"
+PROPOSAL_MIN_CHARS = 200     # shorter than this is not a chapter, it's a fragment
+PROPOSAL_KEEP = 3            # newest N per book+chapter; older ones are pruned
+_PID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,120}$")
 
 
 # --- token stripping ------------------------------------------------------
@@ -195,23 +203,34 @@ class Status:
         self.text = text
 
 
-class _ToolCtx:
-    __slots__ = ("series_dir", "book_dir")
+class Proposal:
+    """Marker yielded from a Muse generator to emit an SSE `[PROPOSAL] <id>` event:
+    the Muse has handed over a whole-chapter revision and is waiting for the
+    author to accept it (2.9, D45)."""
+    __slots__ = ("proposal_id",)
 
-    def __init__(self, series_dir: Path, book_dir: Path):
+    def __init__(self, proposal_id: str):
+        self.proposal_id = proposal_id
+
+
+class _ToolCtx:
+    __slots__ = ("series_dir", "book_dir", "cid")
+
+    def __init__(self, series_dir: Path, book_dir: Path, cid: str = ""):
         self.series_dir = series_dir
         self.book_dir = book_dir
+        self.cid = cid            # the chapter this conversation is about (2.9)
 
 
 def _tool_ctx(chapter_id: str | None) -> _ToolCtx | None:
     parsed = _parse_chapter_id(chapter_id) if chapter_id else None
     if not parsed:
         return None
-    series_slug, book_slug, _cid = parsed
+    series_slug, book_slug, cid = parsed
     bdir = _resolve_bdir(series_slug, book_slug)
     if bdir is None:
         return None
-    return _ToolCtx(bdir.parent, bdir)
+    return _ToolCtx(bdir.parent, bdir, cid)
 
 
 def _safe_story_path(ctx: _ToolCtx, rel: str) -> Path | None:
@@ -291,7 +310,143 @@ def _search_story(ctx: _ToolCtx, query: str) -> str:
     )
 
 
-def _run_tool(ctx: _ToolCtx, name: str, args: dict) -> str:
+# --- whole-chapter proposals (2.9, D45) -----------------------------------
+
+def _proposal_path(pid: str) -> Path | None:
+    """Resolve a proposal id to its file, or None.
+
+    The id arrives from a URL, so it is validated as a single slug segment and must
+    resolve to a real file inside the proposals directory — no traversal, no dots.
+    """
+    if not _PID_RE.match(pid or ""):
+        return None
+    p = _PROPOSAL_ROOT / f"{pid}.json"
+    return p if p.is_file() else None
+
+
+def list_proposals() -> list[dict]:
+    """Pending revisions, newest first — metadata only, never the chapter body."""
+    if not _PROPOSAL_ROOT.is_dir():
+        return []
+    out: list[dict] = []
+    files = sorted(_PROPOSAL_ROOT.glob("*.json"),
+                   key=lambda q: q.stat().st_mtime, reverse=True)
+    for p in files:
+        try:
+            meta = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        out.append({
+            "id": meta.get("id", p.stem),
+            "series": meta.get("series", ""),
+            "book": meta.get("book", ""),
+            "chapter": meta.get("chapter", ""),
+            "created_at": meta.get("created_at", ""),
+            "words": meta.get("words", 0),
+            "base_revision": meta.get("base_revision", 0),
+        })
+    return out
+
+
+def read_proposal(pid: str) -> dict | None:
+    p = _proposal_path(pid)
+    if p is None:
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def delete_proposal(pid: str) -> bool:
+    p = _proposal_path(pid)
+    if p is None:
+        return False
+    p.unlink()
+    return True
+
+
+def _prune_proposals(book: str, cid: str) -> None:
+    """Keep the newest PROPOSAL_KEEP revisions for one chapter.
+
+    Unaccepted revisions are drafts; a handful per chapter is plenty. Nothing else
+    prunes them, on purpose — like the trash, they are never erased by time alone.
+    """
+    mine = [m for m in list_proposals() if m["book"] == book and m["chapter"] == cid]
+    for stale in mine[PROPOSAL_KEEP:]:
+        delete_proposal(stale["id"])
+
+
+_HEADING_RE = re.compile(r"^\s*#\s+(\S.*?)\s*$", re.M)
+
+
+def split_heading(text: str, fallback: str = "") -> tuple[str, str]:
+    """Pull a leading `# Title` line off a revision → (body, title).
+
+    The Muse is asked to send the complete chapter *including* its heading, but the
+    save path writes its own heading — two of them would be a bug the author has to
+    clean up by hand.
+    """
+    text = text or ""
+    m = _HEADING_RE.match(text)
+    if not m:
+        return text.strip(), fallback
+    return text[m.end():].lstrip("\n").rstrip(), (m.group(1).strip() or fallback)
+
+
+def _propose_rewrite(ctx: _ToolCtx, content: str, out: dict | None) -> str:
+    """Park a whole-chapter revision for approval; tell the model what happened.
+
+    This is the only way the Muse can touch the archive, and it still cannot: it
+    parks a proposal, the author reviews a diff, and *accepting* is a normal save —
+    so D9's time machine snapshots it like any other edit. Nothing an LLM says ever
+    rewrites the author's prose unattended.
+    """
+    text = (content or "").strip()
+    if len(text) < PROPOSAL_MIN_CHARS:
+        return (f"ERROR: that is only {len(text)} characters — not a chapter. Send "
+                f"the COMPLETE revision (at least {PROPOSAL_MIN_CHARS} characters) in "
+                "markdown, including its `# Title` line. Nothing was handed over.")
+    if not ctx.cid:
+        return "ERROR: no chapter in context — nothing was handed over."
+
+    chapter = ar_mod.get_chapter(ctx.book_dir, ctx.cid)
+    if chapter is None:
+        return (f"ERROR: {ctx.cid} is not in this book any more — nothing was "
+                "handed over.")
+
+    current = chapter.read_text(encoding="utf-8")
+    if " ".join(text.split()) == " ".join(current.split()):
+        return ("ERROR: that is identical to the chapter as it stands, so there is "
+                "nothing for the author to review.")
+
+    now = datetime.now(timezone.utc)
+    # Microseconds, deliberately: two revisions in the same second must not share an
+    # id, or the second silently overwrites the first.
+    pid = f"{ctx.book_dir.name}-{ctx.cid}-{now.strftime('%Y%m%dt%H%M%S%f')}"
+    meta = {
+        "id": pid,
+        "series": ctx.series_dir.name,
+        "book": ctx.book_dir.name,
+        "chapter": ctx.cid,
+        "created_at": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "content": text,
+        "words": ar_mod._count_words(text),
+        "base_revision": ar_mod._read_revision_marker(chapter),
+    }
+    _PROPOSAL_ROOT.mkdir(parents=True, exist_ok=True)
+    (_PROPOSAL_ROOT / f"{pid}.json").write_text(json.dumps(meta, indent=2),
+                                                encoding="utf-8")
+    _prune_proposals(ctx.book_dir.name, ctx.cid)
+    if out is not None:
+        out["proposal_id"] = pid
+    return ("Handed to the author for approval — NOT saved. They are being shown a "
+            "diff of your revision against the current chapter. Do NOT paste the "
+            "chapter into the chat: reply in one or two sentences telling them to "
+            "review the diff and Accept.")
+
+
+def _run_tool(ctx: _ToolCtx, name: str, args: dict, out: dict | None = None) -> str:
     args = args or {}
     if name == "list_story_files":
         return _list_story_files(ctx)
@@ -299,6 +454,8 @@ def _run_tool(ctx: _ToolCtx, name: str, args: dict) -> str:
         return _read_story_file(ctx, str(args.get("path", "")))
     if name == "search_story":
         return _search_story(ctx, str(args.get("query", "")))
+    if name == "propose_chapter_rewrite":
+        return _propose_rewrite(ctx, str(args.get("content", "")), out)
     return f"ERROR: unknown tool {name}"
 
 
@@ -325,6 +482,27 @@ _TOOLS = [
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "propose_chapter_rewrite",
+        "description": (
+            "Hand the author a COMPLETE revised version of the chapter for approval. "
+            "Use this whenever they ask you to write, rewrite, fix, tighten, "
+            "restructure or clean up the whole chapter. It is NOT saved and you "
+            "cannot save it: the author is shown a word-level diff and accepting it "
+            "creates a normal revision snapshot. Send the entire chapter in "
+            "markdown, including its `# Title` line, and do NOT also paste the "
+            "chapter into the chat — afterwards just tell them it is ready to "
+            "review."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string",
+                            "description": "the complete revised chapter, in markdown, "
+                                           "starting with its `# Title` line"},
+            },
+            "required": ["content"],
         },
     }},
 ]
@@ -433,10 +611,19 @@ async def chat(
                 except json.JSONDecodeError:
                     args = {}
             args = args or {}
-            label = args.get("path") or args.get("query") or name
-            yield Status(f"reading {label}…")
-            result = _run_tool(ctx, name, args)
+            out: dict = {}
+            if name == "propose_chapter_rewrite":
+                # Not a read: the Muse is handing over a whole-chapter revision for
+                # approval (2.9, D45).
+                yield Status("preparing a full-chapter revision…")
+            else:
+                label = args.get("path") or args.get("query") or name
+                yield Status(f"reading {label}…")
+            result = _run_tool(ctx, name, args, out)
             payload["messages"].append({"role": "tool", "tool_name": name, "content": result})
+            if out.get("proposal_id"):
+                # The client turns this marker into the "review the diff" affordance.
+                yield Proposal(out["proposal_id"])
 
     if hit_limit:
         # Ran out of rounds mid-fetch: force a final answer with no tools.

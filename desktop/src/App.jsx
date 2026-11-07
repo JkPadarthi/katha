@@ -36,6 +36,10 @@ export default function App() {
   const currentBook = (archive || [])
     .flatMap((s) => s.books || [])
     .find((b) => b.id === series?.book) || null
+  // A whole-chapter revision the Muse handed over, waiting for approval (2.9, D45):
+  // {id, content, original}. Nothing is written until the author accepts it.
+  const [proposal, setProposal] = useState(null)
+  const [proposalBusy, setProposalBusy] = useState(false)
 
   const [sweepOpen, setSweepOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -274,6 +278,39 @@ export default function App() {
     setProposed('')
     setSelection(null)   // offsets are stale once the text is replaced
   }
+
+  // The Muse handed over a whole-chapter revision (2.9, D45). Fetch it together
+  // with the chapter as it stands, so the author reads a word-level diff instead of
+  // a wall of prose — and nothing is written until they accept.
+  const openProposal = async (id) => {
+    if (!series || !activeChapter) return
+    try {
+      const [p, ch] = await Promise.all([
+        api.getProposal(id),
+        api.getChapter(series.series, series.book, activeChapter)
+      ])
+      setProposal({ id, content: p.content || '', original: ch.content || '' })
+    } catch {
+      setProposal(null)   // gone or unreadable: no banner, no half-open overlay
+    }
+  }
+
+  // Accepting is a normal save on the server (revision snapshot and all), so the
+  // editor is loaded from what the server actually stored.
+  const acceptProposal = async () => {
+    if (!proposal) return
+    setProposalBusy(true)
+    try {
+      const saved = await api.acceptProposal(proposal.id)
+      if (editorApi.replaceAll) editorApi.replaceAll(saved.content, saved.title)
+      setProposal(null)
+      await refreshArchive()
+    } catch {
+      /* leave the diff open — the author can press Accept again */
+    } finally {
+      setProposalBusy(false)
+    }
+  }
   const onRetry = () => { if (selection) runRewrite(selection, rewriteStyle) }
   const onStyleChange = (s) => {
     setRewriteStyle(s)
@@ -400,7 +437,7 @@ export default function App() {
                 </div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">
-                  <Muse series={series} chapter={chapter} />
+                  <Muse series={series} chapter={chapter} onProposal={openProposal} />
                 </div>
               </div>
             </div>
@@ -449,7 +486,7 @@ export default function App() {
               onEditBook={() => setBookFace(true)}
             />
             {pageNode}
-            {!focusMode && <Muse series={series} chapter={chapter} />}
+            {!focusMode && <Muse series={series} chapter={chapter} onProposal={openProposal} />}
           </div>
         )
       ) : loadError ? (
@@ -504,6 +541,17 @@ export default function App() {
           onAccept={onAccept}
           onRetry={onRetry}
           onClose={onCloseRewrite}
+        />
+      )}
+      {proposal && (
+        <DiffOverlay
+          title="Revision"
+          original={proposal.original}
+          proposed={proposal.content}
+          busy={proposalBusy}
+          showStyles={false}
+          onAccept={acceptProposal}
+          onClose={() => setProposal(null)}
         />
       )}
       {sweepOpen && series && (

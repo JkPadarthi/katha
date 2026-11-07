@@ -270,21 +270,20 @@ def read_chapter(series: str, book_id: str, chapter_id: str):
     )
 
 
-@app.put("/api/books/{series}/{book_id}/chapters/{chapter_id}",
-         response_model=ChapterOut, tags=["chapters"])
-def save_chapter(series: str, book_id: str, chapter_id: str, payload: ChapterUpdate):
-    """Autosave: write md (source of truth) + snapshot a revision (D9)."""
-    bdir = _resolve_book_path(series, book_id)
-    chapter = ar.get_chapter(bdir, chapter_id)
-    if not chapter:
-        raise HTTPException(404, "chapter not found")
-    existing_title = ar._chapter_title(chapter)
-    title = (payload.title or "").strip() or existing_title
+def _write_chapter_text(series: str, bdir: Path, chapter: Path, title: str,
+                        content: str) -> dict:
+    """The one save path: md is the truth, a revision snapshot is taken (D9), and
+    the index + writing stats are updated.
+
+    Autosave and an accepted Muse proposal both come through here, deliberately — a
+    revision the author accepts should look exactly like one they typed, including
+    in the time machine this archive keeps for every save (2.9, D45).
+    """
     prev_words = ar.body_words(chapter)
-    new_text = f"# {title}\n\n{payload.content}".rstrip() + "\n"
+    new_text = f"# {title}\n\n{content}".rstrip() + "\n"
     chapter.write_text(new_text, encoding="utf-8")
-    rev = ar.write_revision(chapter, payload.content, title)
-    words = ar._count_words(payload.content)
+    rev = ar.write_revision(chapter, content, title)
+    words = ar._count_words(content)
     stats.append_write(ar._mtime(chapter), series, bdir.name, chapter.stem,
                        words, words - prev_words)
     db.record_revision(bdir.name, chapter.stem, rev, ar._mtime(chapter), words)
@@ -296,12 +295,29 @@ def save_chapter(series: str, book_id: str, chapter_id: str, payload: ChapterUpd
         "words": words,
         "revision": rev,
     })
-    db.index_doc("chapter", series, bdir.name, chapter.stem, title, payload.content)
-    return ChapterOut(
-        id=chapter.stem, book_id=bdir.name, title=title,
-        words=words, path=chapter.relative_to(ARCHIVE_ROOT).as_posix(),
-        revision=rev, content=payload.content,
-    )
+    db.index_doc("chapter", series, bdir.name, chapter.stem, title, content)
+    return {
+        "id": chapter.stem,
+        "book_id": bdir.name,
+        "title": title,
+        "words": words,
+        "path": chapter.relative_to(ARCHIVE_ROOT).as_posix(),
+        "revision": rev,
+        "content": content,
+    }
+
+
+@app.put("/api/books/{series}/{book_id}/chapters/{chapter_id}",
+         response_model=ChapterOut, tags=["chapters"])
+def save_chapter(series: str, book_id: str, chapter_id: str, payload: ChapterUpdate):
+    """Autosave: write md (source of truth) + snapshot a revision (D9)."""
+    bdir = _resolve_book_path(series, book_id)
+    chapter = ar.get_chapter(bdir, chapter_id)
+    if not chapter:
+        raise HTTPException(404, "chapter not found")
+    title = (payload.title or "").strip() or ar._chapter_title(chapter)
+    return ChapterOut(**_write_chapter_text(series, bdir, chapter, title,
+                                            payload.content))
 
 
 @app.get("/api/books/{series}/{book_id}/chapters/{chapter_id}/revisions",
@@ -412,6 +428,53 @@ def reindex():
 def get_stats(goal: int | None = None):
     """Writing-ritual summary: today's words, goal, streak, 14-day history."""
     return stats.summary(goal if goal and goal > 0 else DAILY_GOAL)
+
+
+# ---------- whole-chapter proposals (2.9, D45) ----------------------------
+# The Muse can read the story but never write it. When it has a full revision for
+# the author, it parks it here and the app shows a diff; Accept runs the *same*
+# save path as autosave, so the time machine keeps the revision either way.
+
+@app.get("/api/muse/proposals", response_model=dict, tags=["muse"])
+def list_proposals():
+    """Pending revisions, newest first. Metadata only — the body is one GET away."""
+    return {"proposals": muse_mod.list_proposals()}
+
+
+@app.get("/api/muse/proposals/{proposal_id}", response_model=dict, tags=["muse"])
+def read_proposal(proposal_id: str):
+    p = muse_mod.read_proposal(proposal_id)
+    if p is None:
+        raise HTTPException(404, "no such proposal")
+    return p
+
+
+@app.post("/api/muse/proposals/{proposal_id}/accept", response_model=ChapterOut,
+          tags=["muse"])
+def accept_proposal(proposal_id: str):
+    """Apply a proposed revision — as a normal save, so it snapshots a revision."""
+    p = muse_mod.read_proposal(proposal_id)
+    if p is None:
+        raise HTTPException(404, "no such proposal")
+    bdir = _resolve_book_path(p["series"], p["book"])
+    chapter = ar.get_chapter(bdir, p["chapter"])
+    if chapter is None:
+        raise HTTPException(404, "that chapter is not in this book any more")
+    # The Muse is asked for the whole chapter *with* its heading; the save path
+    # writes its own heading, so take the one it sent and drop the duplicate.
+    body, title = muse_mod.split_heading(p["content"], ar._chapter_title(chapter))
+    out = _write_chapter_text(p["series"], bdir, chapter, title, body)
+    muse_mod.delete_proposal(proposal_id)
+    return ChapterOut(**out)
+
+
+@app.delete("/api/muse/proposals/{proposal_id}", response_model=dict, tags=["muse"])
+def discard_proposal(proposal_id: str):
+    """Throw a revision away. The chapter is untouched — it never was."""
+    removed = muse_mod.delete_proposal(proposal_id)
+    if not removed:
+        raise HTTPException(404, "no such proposal")
+    return {"ok": True, "removed": proposal_id}
 
 
 # ---------- the book's face: author + cover (2.8, D43) ---------------------
@@ -530,6 +593,10 @@ async def _sse_from(async_iter) -> AsyncIterator[bytes]:
             if isinstance(chunk, muse_mod.Status):
                 msg = " ".join(chunk.text.split())
                 yield f"data: [STATUS] {_sse_escape(msg)}\n\n".encode("utf-8")
+            elif isinstance(chunk, muse_mod.Proposal):
+                # A whole-chapter revision is waiting for the author (2.9, D45).
+                # The id, not the chapter: the client fetches it to show the diff.
+                yield f"data: [PROPOSAL] {_sse_escape(chunk.proposal_id)}\n\n".encode("utf-8")
             else:
                 yield f"data: {_sse_escape(chunk)}\n\n".encode("utf-8")
     except Exception as e:

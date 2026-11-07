@@ -224,10 +224,25 @@ export default function Editor({ chapter, series, focus, onSelection }) {
       })
     }
 
+    // Replace the whole chapter — how an accepted Muse proposal lands (2.9, D45).
+    // Deliberately not replaceSelection: accepting a revision must not depend on
+    // whatever happens to be selected when the author clicks Accept.
+    editorApi.replaceAll = (newText, newTitle) => {
+      setBody(newText)
+      if (typeof newTitle === 'string' && newTitle) setTitle(newTitle)
+      requestAnimationFrame(() => {
+        const ta = taRef.current
+        if (!ta) return
+        ta.focus()
+        ta.setSelectionRange(newText.length, newText.length)
+      })
+    }
+
     return () => {
       editorApi.replaceSelection = null
       editorApi.insertAtCursor = null
       editorApi.appendToChapter = null
+      editorApi.replaceAll = null
     }
   }, [body])
 
@@ -305,4 +320,4 @@ export default function Editor({ chapter, series, focus, onSelection }) {
 }
 
 // Shared module object so the Muse + rewrite flow can apply text to the editor.
-export const editorApi = { replaceSelection: null, insertAtCursor: null, appendToChapter: null }
+export const editorApi = { replaceSelection: null, insertAtCursor: null, appendToChapter: null, replaceAll: null }

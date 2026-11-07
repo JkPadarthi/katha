@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import * as api from '../lib/api.js'
 import { editorApi } from './Editor.jsx'
+import { Button } from '../ui/Button.jsx'
 
 // Imperative bridge so App can pre-fill the composer (proactive nudge).
 export const museApi = { setDraft: null }
@@ -32,9 +33,10 @@ function latestAssistant(messages) {
   return ''
 }
 
-export default function Muse({ series, chapter }) {
+export default function Muse({ series, chapter, onProposal }) {
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState('')
+  const [proposal, setProposal] = useState('')   // a whole-chapter revision, waiting (2.9)
   const [busy, setBusy] = useState(false)
   const [streaming, setStreaming] = useState('')
   const [error, setError] = useState('')
@@ -104,6 +106,9 @@ export default function Muse({ series, chapter }) {
         chip: chip || null,
         onDelta: (acc) => setStreaming(acc),
         onStatus: (s) => setStatus(s),
+        // The server parked a whole-chapter revision for approval. Nothing was
+        // written: this only raises the "review the diff" affordance (2.9, D45).
+        onProposal: (id) => setProposal(id),
         signal: ac.signal
       })
       setMessages((m) => [...m, { role: 'assistant', text: full }])
@@ -174,6 +179,31 @@ export default function Muse({ series, chapter }) {
           </button>
         ))}
       </div>
+
+      {/* A whole-chapter revision is waiting (2.9, D45). The Muse cannot write:
+          this is the author's decision, and nothing has changed until Accept. */}
+      {proposal && (
+        <div className="mx-3 mb-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-accent">◆</span>
+            <span className="min-w-0 flex-1 text-[11px] text-ink">
+              A full-chapter revision is ready — not applied.
+            </span>
+            <Button variant="accent" size="sm" onClick={() => onProposal && onProposal(proposal)}>
+              Review diff
+            </Button>
+            <Button
+              size="sm"
+              onClick={async () => {
+                try { await api.discardProposal(proposal) } catch { /* gone is gone */ }
+                setProposal('')
+              }}
+            >
+              Discard
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Thread */}
       <div ref={threadRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-2">

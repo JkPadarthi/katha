@@ -6,7 +6,9 @@ import { Button } from '../ui/Button.jsx'
 // Word-level diff between the author's selection and the Muse's proposal.
 // Accept writes the proposal into the editor; Retry re-calls rewrite; the style
 // toggle switches the rewrite prompt. `showStyles=false` reuses this shell for
-// the bible-diff approval in the canon sweep.
+// the bible-diff approval in the canon sweep and for a whole-chapter revision the
+// Muse handed over (2.9) — in that case there is nothing to Retry, so the button
+// is not rendered at all.
 
 const STYLES = ['novel', 'scene', 'clean']
 
@@ -19,7 +21,8 @@ export default function DiffOverlay({
   onClose,
   style,
   onStyleChange,
-  showStyles = true
+  showStyles = true,
+  title = 'Rewrite'
 }) {
   const parts = useMemo(() => diffWordsWithSpace(original || '', proposed || ''), [original, proposed])
   const [copied, setCopied] = useState(false)
@@ -44,7 +47,7 @@ export default function DiffOverlay({
     <Overlay onClose={onClose} width={780} padTop="10vh">
       <OverlayHeader
         icon="✎"
-        title="Rewrite"
+        title={title}
         onClose={onClose}
         extra={
           showStyles ? (
@@ -104,7 +107,9 @@ export default function DiffOverlay({
           <span className="text-[10px] text-mute/60">Esc to dismiss · Ctrl/⌘+Enter to accept</span>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="md" onClick={onRetry} disabled={busy}>Retry</Button>
+          {onRetry && (
+            <Button size="md" onClick={onRetry} disabled={busy}>Retry</Button>
+          )}
           <Button variant="primary" onClick={onAccept} disabled={!proposed || busy}>Accept</Button>
         </div>
       </div>

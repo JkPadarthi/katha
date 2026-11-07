@@ -28,18 +28,22 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "2.6.1"
+VERSION = "2.7.0"
 
 # --- Muse upstream (0.3 Muse, D16/D19; dialect switch 2.1, D20-D23) -----------
 # Which wire dialect the Muse talks. "ollama" is the LAN box (unchanged
-# default); "openai" is any OpenAI-compatible /chat/completions gateway.
+# default); "openai" is any OpenAI-compatible /chat/completions gateway;
+# "anthropic" is a Messages-shape gateway (POST {base}/messages, x-api-key) —
+# some providers serve Claude models ONLY that way, and say so per model in
+# `GET /models` under `supported_endpoints`.
 MUSE_API = os.environ.get("KATHA_MUSE_API", "ollama").strip().lower()
-# Base URL for openai mode, INCLUDING any version segment —
+# Base URL for the keyed dialects, INCLUDING any version segment —
 # e.g. https://openrouter.ai/api/v1 or https://api.commandcode.ai/provider/v1.
 # Ignored in ollama mode.
 MUSE_API_BASE = os.environ.get("KATHA_MUSE_API_BASE", "").strip()
-# Bearer token for openai mode. Sent as a header only: never logged, never
-# returned by any endpoint, never echoed in an error message.
+# Key/token for the keyed dialects (Bearer for openai, x-api-key for anthropic).
+# Sent as a header only: never logged, never returned by any endpoint, never
+# echoed in an error message.
 MUSE_API_KEY = os.environ.get("KATHA_MUSE_API_KEY", "").strip()
 
 # Friend's jenga box — direct Ollama, trusted LAN. No key needed.
@@ -47,19 +51,22 @@ MUSE_API_KEY = os.environ.get("KATHA_MUSE_API_KEY", "").strip()
 # is all it takes.
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://100.77.183.77:11434")
 # Rewrite, canon sweep, and the style digest all use the thinking model —
-# the planning genuinely improves prose output. Defaults are per dialect: an
-# explicit env value always wins, so the ollama names below are what 2.0.1 used.
-MUSE_REWRITE_MODEL = (
-    os.environ.get("MUSE_REWRITE_MODEL")
-    or ("deepseek/deepseek-v4-flash" if MUSE_API == "openai" else "deepseek-r1:14b")
-)
+# the planning genuinely improves prose output. Defaults are per dialect (an
+# explicit env value always wins, so the ollama names are what 2.0.1 used); a
+# keyed dialect must never come up with an empty model name.
+_AGENT_DEFAULT = {"openai": "deepseek/deepseek-v4-flash",
+                  "anthropic": "claude-sonnet-5-5"}.get(MUSE_API, "gemma4:12b")
+_REWRITE_DEFAULT = {"openai": "deepseek/deepseek-v4-flash",
+                    "anthropic": "claude-sonnet-5-5"}.get(MUSE_API, "deepseek-r1:14b")
+
+MUSE_REWRITE_MODEL = (os.environ.get("MUSE_REWRITE_MODEL") or _REWRITE_DEFAULT)
 # Agentic chat: the model drives tool calls to fetch story files on demand.
 # Must be a tool-capable model (gemma4/qwen3/llama3.1/…); deepseek-r1 is not.
 # MUSE_CHAT_MODEL is kept as a legacy alias for the same setting.
 MUSE_AGENT_MODEL = (
     os.environ.get("MUSE_AGENT_MODEL")
     or os.environ.get("MUSE_CHAT_MODEL")
-    or ("deepseek/deepseek-v4-flash" if MUSE_API == "openai" else "gemma4:12b")
+    or _AGENT_DEFAULT
 )
 # Upper bound on tool-call rounds in a single agentic reply (latency guard).
 MUSE_MAX_TOOL_ROUNDS = int(os.environ.get("KATHA_MUSE_MAX_TOOL_ROUNDS", "6"))

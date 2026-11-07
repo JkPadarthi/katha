@@ -133,6 +133,31 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D42 — The Muse's third dialect is named after the endpoint, not the vendor (2.7.0)
+`KATHA_MUSE_API` now accepts `messages`: `POST {MUSE_API_BASE}/messages` with an
+`x-api-key` and a version pin — the shape a gateway requires for Claude models.
+Traffic still goes to `MUSE_API_BASE`; the dialect is a wire shape, never a vendor
+address, so a commandcode/OpenRouter-style base is the normal case (the name is
+`messages`, not `anthropic`, exactly so nobody reads it as "bypass the gateway";
+`anthropic` is still accepted as an alias).
+
+Two things forced it, both worth remembering:
+
+* **A gateway can serve a model on one endpoint only, and it says so.** Read
+  `supported_endpoints` per model in `GET /models` rather than guessing an alias:
+  `claude-sonnet-5-5` is `['/messages']` while `deepseek/deepseek-v4-flash` is
+  `['/chat/completions', '/responses']`. Calling a Claude model on
+  `/chat/completions` answers `400 unsupported_model: … must be called via
+  /provider/v1/messages`.
+* **The Messages shape differs in ways a naive port gets wrong.** `system` is a
+  top-level field, not a role; `max_tokens` is required and has no default; tools
+  flatten to `{name, description, input_schema}`; and a tool result is a
+  `tool_result` block inside a *user* turn paired by id — which forces
+  consecutive same-role turns to be merged, because the roles must alternate.
+  Streaming is `text_delta` + `input_json_delta` fragments, reassembled into the
+  same complete internal call list the OpenAI path produces, so the agentic tool
+  loop never learns which dialect it is on.
+
 ## D41 — The logo is generated, and its light is one gradient (2.6.0)
 The mark is a near-black tile carrying a golden **क** (the first letter of कथा),
 produced by `scripts/make-logo.py` (pillow + fonttools; `scripts/requirements-logo.txt`)

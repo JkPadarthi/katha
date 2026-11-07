@@ -1,16 +1,20 @@
-"""Tests for the upstream dialect switch (2.1, D20–D23).
+"""Tests for the upstream dialect switch (2.1, D20–D23; messages 2.7, D42).
 
 The Muse speaks one dialect internally (the Ollama shape) and `app/upstream.py`
-translates on the wire. The regression net has to prove three things:
+translates on the wire. The regression net has to prove four things:
 
 1. **ollama mode is untouched** — same URL, same NDJSON parsing, no auth header.
 2. **openai mode is correct** — URL + bearer, payload conversion, SSE delta
    parsing, and tool-call fragment reassembly (the fiddly part).
-3. **a dead upstream fails fast and loudly** — a short connect timeout plus the
-   existing `[ERROR]` SSE event, instead of a 300s silent freeze.
+3. **messages mode is correct** — `{gateway_base}/messages` + `x-api-key`, system
+   hoisted to the top level, `max_tokens` never missing, tools flattened to
+   `input_schema`, and tool results riding in *user* turns paired by id.
+4. **a dead upstream fails fast and loudly** — a short connect timeout plus the
+   existing `[ERROR]` SSE event, instead of a 300s silent freeze. A gateway that
+   refuses the model must also surface its message, not stream nothing.
 
 Hermetic: `httpx.MockTransport` stands in for the upstream, and the module
-globals are monkeypatched per test so both dialects are covered in one process.
+globals are monkeypatched per test so every dialect is covered in one process.
 """
 
 from __future__ import annotations
@@ -65,6 +69,17 @@ def _openai_mode(monkeypatch: pytest.MonkeyPatch, key: str = "sk-test-key-1234")
     monkeypatch.setattr(up, "MUSE_API_KEY", key)
 
 
+def _messages_mode(monkeypatch: pytest.MonkeyPatch, key: str = "sk-ant-abc") -> None:
+    """Route the Muse at a gateway that serves Claude in the Messages shape.
+
+    The base is a *gateway* (commandcode/OpenRouter-style) on purpose — the
+    dialect is a wire shape, not a vendor address.
+    """
+    monkeypatch.setattr(up, "MUSE_API", up.MESSAGES)
+    monkeypatch.setattr(up, "MUSE_API_BASE", "https://api.example.test/provider/v1")
+    monkeypatch.setattr(up, "MUSE_API_KEY", key)
+
+
 def _sse(*payloads) -> bytes:
     """OpenAI-style SSE body: `data: <json>` events, `[DONE]` terminated."""
     out = b""
@@ -80,6 +95,16 @@ def _delta(**delta) -> dict:
 
 def _ndjson(*chunks: dict) -> bytes:
     return "\n".join(json.dumps(c) for c in chunks).encode("utf-8") + b"\n"
+
+
+def _messages_sse(*events) -> bytes:
+    """Anthropic-style SSE: `event:` + `data:` pairs, no `[DONE]` terminator."""
+    out = b""
+    for e in events:
+        obj = e if isinstance(e, dict) else {"type": e}
+        out += b"event: " + (obj.get("type") or "message").encode("utf-8") + b"\n"
+        out += b"data: " + json.dumps(obj).encode("utf-8") + b"\n\n"
+    return out
 
 
 def _client_with(handler, monkeypatch: pytest.MonkeyPatch) -> httpx.AsyncClient:
@@ -378,3 +403,264 @@ def test_key_never_leaks_into_models_endpoint(monkeypatch: pytest.MonkeyPatch):
 
     assert "sk-super-secret" not in body
     assert "api.example.test" not in body
+
+
+# --- 6. messages (Claude-on-a-gateway) mode --------------------------------
+
+def test_messages_mode_uses_messages_url_on_the_gateway(monkeypatch: pytest.MonkeyPatch):
+    """Claude via a gateway: `{gateway_base}/messages`, x-api-key + version pin,
+    and no Bearer — the gateway base is what's called, never the vendor."""
+    _messages_mode(monkeypatch, key="sk-gw-123")
+    seen: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["headers"] = dict(request.headers)
+        return httpx.Response(200, content=_messages_sse(
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "text_delta", "text": "ok"}},
+            {"type": "message_stop"}))
+
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    _collect(up.stream_events({"model": "m", "messages": [], "stream": True}, mock))
+
+    assert seen["url"] == "https://api.example.test/provider/v1/messages"
+    assert seen["headers"]["x-api-key"] == "sk-gw-123"
+    assert seen["headers"]["anthropic-version"] == up.ANTHROPIC_VERSION
+    assert "authorization" not in seen["headers"]
+
+
+def test_messages_payload_hoists_system_and_keeps_max_tokens(monkeypatch: pytest.MonkeyPatch):
+    """The shape has no `system` role and *requires* `max_tokens`: system turns
+    become the top-level field, and the ceiling is never absent."""
+    _messages_mode(monkeypatch)
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, content=_messages_sse({"type": "message_stop"}))
+
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    tools = [{"type": "function", "function": {
+        "name": "read_story_file", "description": "read one file",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}]
+    _collect(up.stream_events({
+        "model": "claude-sonnet-5-5",
+        "messages": [{"role": "system", "content": "you are the muse"},
+                     {"role": "system", "content": "keep the voice"},
+                     {"role": "user", "content": "who is Kael?"}],
+        "options": {"num_predict": 1024, "temperature": 0.8},
+        "tools": tools,
+    }, mock))
+
+    body = captured["body"]
+    assert body["model"] == "claude-sonnet-5-5"
+    assert body["system"] == "you are the muse\n\nkeep the voice"
+    assert [m["role"] for m in body["messages"]] == ["user"]
+    assert body["messages"][0]["content"] == [{"type": "text", "text": "who is Kael?"}]
+    assert body["max_tokens"] == 1024
+    assert body["temperature"] == 0.8
+    assert body["stream"] is True
+    assert "options" not in body
+    assert body["tools"][0] == {
+        "name": "read_story_file", "description": "read one file",
+        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}
+
+
+def test_messages_max_tokens_has_a_default_when_options_are_absent():
+    """No `options` at all must still satisfy the required field."""
+    body = up.to_anthropic_payload(
+        {"model": "m", "messages": [{"role": "user", "content": "u"}]})
+    assert body["max_tokens"] == up.DEFAULT_MAX_TOKENS
+
+
+def test_messages_pairs_tool_results_into_user_turns():
+    """A tool result is a `tool_result` block in a *user* turn, paired to its
+    `tool_use` by id; roles must alternate, so same-role turns merge."""
+    out = up.to_anthropic_messages([
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "who is Kael?"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "toolu_9", "function": {"name": "read_story_file",
+                                           "arguments": {"path": "bible/characters/kael.md"}}},
+        ]},
+        {"role": "tool", "tool_name": "read_story_file", "content": "# Kael"},
+        {"role": "user", "content": "and?"},
+    ])
+
+    # system is gone, and the trailing user turn merged with the tool result.
+    assert [m["role"] for m in out] == ["user", "assistant", "user"]
+    assert out[1]["content"][0] == {
+        "type": "tool_use", "id": "toolu_9", "name": "read_story_file",
+        "input": {"path": "bible/characters/kael.md"}}
+    assert out[2]["content"][0] == {
+        "type": "tool_result", "tool_use_id": "toolu_9", "content": "# Kael"}
+    assert out[2]["content"][1] == {"type": "text", "text": "and?"}
+
+
+def test_messages_pairs_a_result_with_no_id_by_name():
+    """Internally a result carries only `tool_name`; it must still find its call."""
+    out = up.to_anthropic_messages([
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "search_story", "arguments": {"query": "ember"}}}]},
+        {"role": "tool", "tool_name": "search_story", "content": "one hit"},
+    ])
+
+    call = out[0]["content"][0]
+    assert call["type"] == "tool_use" and call["id"]
+    assert out[1]["content"][0] == {
+        "type": "tool_result", "tool_use_id": call["id"], "content": "one hit"}
+
+
+def test_messages_text_deltas_stream_through(monkeypatch: pytest.MonkeyPatch):
+    """Text arrives as `text_delta` events; nothing else is mistaken for prose."""
+    _messages_mode(monkeypatch)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_messages_sse(
+            {"type": "message_start", "message": {"role": "assistant"}},
+            {"type": "content_block_start", "index": 0,
+             "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "text_delta", "text": "The dog "}},
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "text_delta", "text": "padded across the road."}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_stop"}))
+
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    events = _collect(up.stream_events({"model": "m", "messages": [], "stream": True}, mock))
+
+    assert "".join(e.get("content", "") for e in events) == "The dog padded across the road."
+
+
+def test_messages_reassembles_streamed_tool_input_fragments(monkeypatch: pytest.MonkeyPatch):
+    """A `tool_use` block opens first (id + name), then its arguments arrive as
+    `input_json_delta` fragments — same reassembly as the OpenAI path."""
+    _messages_mode(monkeypatch)
+    args = '{"path": "chapters/ch-03.md"}'
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_messages_sse(
+            {"type": "content_block_start", "index": 1,
+             "content_block": {"type": "tool_use", "id": "toolu_77",
+                               "name": "read_story_file", "input": {}}},
+            {"type": "content_block_delta", "index": 1,
+             "delta": {"type": "input_json_delta", "partial_json": args[:9]}},
+            {"type": "content_block_delta", "index": 1,
+             "delta": {"type": "input_json_delta", "partial_json": args[9:]}},
+            {"type": "content_block_stop", "index": 1},
+            {"type": "message_stop"}))
+
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    events = _collect(up.stream_events({"model": "m", "messages": [], "stream": True}, mock))
+
+    calls = [c for e in events for c in (e.get("tool_calls") or [])]
+    assert len(calls) == 1
+    assert calls[0]["id"] == "toolu_77"
+    assert calls[0]["function"]["name"] == "read_story_file"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"path": "chapters/ch-03.md"}
+
+
+def test_messages_error_event_becomes_a_real_error(monkeypatch: pytest.MonkeyPatch):
+    """Regression net for the exact failure that started this: a gateway that
+    refuses the model must say so, not stream nothing for 300 seconds."""
+    _messages_mode(monkeypatch)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_messages_sse(
+            {"type": "error", "error": {
+                "type": "invalid_request_error",
+                "message": 'Model "x" must be called via /provider/v1/messages'}}))
+
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    with pytest.raises(RuntimeError) as err:
+        _collect(up.stream_events({"model": "m", "messages": [], "stream": True}, mock))
+
+    assert "must be called via" in str(err.value)
+
+
+def test_messages_complete_returns_internal_shape(monkeypatch: pytest.MonkeyPatch):
+    """The style digest is non-streaming and expects the Ollama shape."""
+    _messages_mode(monkeypatch)
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "dry, close-third cadence."}],
+            "stop_reason": "end_turn"})
+
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    out = asyncio.run(up.complete(
+        {"model": "m", "messages": [{"role": "user", "content": "p"}],
+         "options": {"num_predict": 400}}, mock))
+
+    assert out == {"message": {"content": "dry, close-third cadence."}}
+    assert captured["body"]["stream"] is False
+    assert captured["body"]["max_tokens"] == 400
+
+
+def test_agentic_chat_with_tools_in_messages_mode(monkeypatch: pytest.MonkeyPatch):
+    """End-to-end through the API: turn 1 asks for a file, the server reads it,
+    turn 2 answers — and the echoed thread is valid Messages shape (tool_use in
+    the assistant turn, tool_result in a user turn)."""
+    _messages_mode(monkeypatch)
+    requests_seen: list[dict] = []
+    state = {"turn": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        requests_seen.append(body)
+        if not body.get("stream"):
+            # style digest (first touch of this book) — answer, don't stream.
+            return httpx.Response(200, json={
+                "content": [{"type": "text", "text": "terse, cold cadence."}]})
+        state["turn"] += 1
+        if state["turn"] == 1:
+            return httpx.Response(200, content=_messages_sse(
+                {"type": "content_block_start", "index": 0,
+                 "content_block": {"type": "tool_use", "id": "toolu_1",
+                                   "name": "read_story_file", "input": {}}},
+                {"type": "content_block_delta", "index": 0,
+                 "delta": {"type": "input_json_delta",
+                           "partial_json": '{"path": "bible/characters/kael.md"}'}},
+                {"type": "content_block_stop", "index": 0},
+                {"type": "message_stop"}))
+        return httpx.Response(200, content=_messages_sse(
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "text_delta", "text": "Kael is the ember-bearer."}},
+            {"type": "message_stop"}))
+
+    _client_with(_handler, monkeypatch)
+
+    with TestClient(app) as c:
+        with c.stream("POST", "/api/muse/chat", json={
+            "messages": [{"role": "user", "content": "who is the main character?"}],
+            "chapter_id": CHAPTER_ID,
+        }) as r:
+            assert r.status_code == 200
+            body = "".join(r.iter_text())
+
+    assert "[ERROR]" not in body
+    assert "Kael is the ember-bearer." in body
+    assert "[STATUS] reading bible/characters/kael.md" in body
+
+    turn2 = [b for b in requests_seen if b.get("stream")][-1]
+    use = next(blk for m in turn2["messages"] if m["role"] == "assistant"
+               for blk in m["content"] if blk.get("type") == "tool_use")
+    res = next(blk for m in turn2["messages"] if m["role"] == "user"
+               for blk in m["content"] if blk.get("type") == "tool_result")
+    assert use["id"] == "toolu_1"
+    assert res["tool_use_id"] == "toolu_1"
+    assert "# Kael" in res["content"]
+    # The tool result rides in a USER turn (the shape demands it).
+    assert turn2["messages"][-1]["role"] == "user"
+
+
+def test_the_dialect_alias_anthropic_still_selects_the_same_shape(monkeypatch: pytest.MonkeyPatch):
+    """`anthropic` stays accepted so an env written before the rename works."""
+    monkeypatch.setattr(up, "MUSE_API", up.ANTHROPIC)
+    monkeypatch.setattr(up, "MUSE_API_BASE", "https://api.example.test/provider/v1")
+    assert up.is_messages() is True
+    assert up.chat_url() == "https://api.example.test/provider/v1/messages"

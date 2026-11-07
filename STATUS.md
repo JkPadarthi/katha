@@ -66,6 +66,15 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.3** — delete + revive. A chapter or a whole book can be removed from the
+  rail (a hover `×` on the chapter row, `×` beside the book selector), behind a
+  dialog that says exactly what would go — chapters, words, revision snapshots,
+  margin notes, Muse threads, files, size — with one deliberate red button. It is
+  never an erase: the files move into `archive/.katha/trash/` with a manifest, and
+  **Settings → Trash** brings any entry back to precisely where it was (revision
+  counter and all, `series.json` included when the last book of a series goes).
+  Restore refuses rather than clobber a path that has been reused since. The app
+  forgets immediately: index rows dropped, search rebuilt, rail refreshed.
 - **2.2** — the door. One password (`KATHA_PASSWORD`, hashed at boot with scrypt)
   in front of everything except the login page: the PWA shell, every `/api` route
   including the Muse SSE streams, and the built assets. Signed `HttpOnly`

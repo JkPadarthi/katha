@@ -128,9 +128,20 @@ def list_chapter_index(book_id: str) -> list[dict]:
 
 
 def delete_book_index(book_id: str):
+    """Forget a book entirely: its rows, its chapters, and its revision metadata."""
     conn = connect()
     conn.execute("DELETE FROM chapters WHERE book_id=?", (book_id,))
+    conn.execute("DELETE FROM revisions WHERE book_id=?", (book_id,))
     conn.execute("DELETE FROM books WHERE id=?", (book_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_chapter_index(book_id: str, chapter_id: str):
+    """Forget one chapter and its revision metadata (2.3, trash D33)."""
+    conn = connect()
+    conn.execute("DELETE FROM chapters WHERE book_id=? AND id=?", (book_id, chapter_id))
+    conn.execute("DELETE FROM revisions WHERE book_id=? AND chapter_id=?", (book_id, chapter_id))
     conn.commit()
     conn.close()
 

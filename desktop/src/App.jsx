@@ -8,6 +8,7 @@ import DiffOverlay from './components/DiffOverlay.jsx'
 import SweepPanel from './components/SweepPanel.jsx'
 import BiblePanel from './components/BiblePanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
+import ConfirmDeleteDialog from './components/ConfirmDeleteDialog.jsx'
 import NewBookDialog from './components/NewBookDialog.jsx'
 import * as api from './lib/api.js'
 import { getSetting, setSetting } from './lib/settings.js'
@@ -18,6 +19,7 @@ export default function App() {
   const { theme, choose } = useTheme()
 
   const [archive, setArchive] = useState(null)
+  const [confirmTarget, setConfirmTarget] = useState(null)   // delete → confirm (2.3)
   const [series, setSeries] = useState(null)
   const [activeChapter, setActiveChapter] = useState(null)
   const [railCollapsed, setRailCollapsed] = useState(false)
@@ -185,6 +187,29 @@ export default function App() {
     } catch { /* the archive refresh will surface any failure */ }
   }
 
+  // Deleting moves the files to the trash (D33). The rail must forget them at
+  // once, and if we deleted what was open, land on whatever is left.
+  const onDeleted = async (manifest) => {
+    setConfirmTarget(null)
+    const wasActive = manifest.kind === 'chapter' && manifest.chapter_id === activeChapter
+    const wasOpenBook = manifest.kind === 'book'
+    await refreshArchive()
+    if (!wasActive && !wasOpenBook) return
+    try {
+      const tree = await api.loadArchive()
+      const s = tree.find((x) => x.name === manifest.series) || tree.find((x) => x.books.some((b) => b.chapters.length))
+      const b = s?.books.find((x) => x.id === manifest.book_id && x.chapters.length) ||
+                s?.books.find((x) => x.chapters.length)
+      if (s && b) {
+        selectBook(s.name, b.id)
+        if (b.chapters[0]) {
+          setActiveChapter(b.chapters[0].id)
+          setSelection(null)
+        }
+      }
+    } catch { /* the refresh above already surfaced any failure */ }
+  }
+
   // --- rewrite flow ------------------------------------------------------
   const runRewrite = async (sel, style) => {
     if (!sel || !sel.text) return
@@ -332,6 +357,8 @@ export default function App() {
                     onNewBook={() => setNewBookOpen(true)}
                     onOpenBible={(name) => setBibleName(name || '')}
                     onNewChapter={newChapter}
+                    onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
+                    onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, label: series.title || series.name })}
                   />
                 </div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
@@ -377,6 +404,8 @@ export default function App() {
                 onNewBook={() => setNewBookOpen(true)}
                 onOpenBible={(name) => setBibleName(name || '')}
                 onNewChapter={newChapter}
+                onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
+                onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, label: series.title || series.name })}
               />
             )}
             {pageNode}
@@ -436,10 +465,18 @@ export default function App() {
           nudge={nudgeOn}
           onNudge={(v) => { setNudgeOn(v); setSetting('nudge', v) }}
           onClose={() => setSettingsOpen(false)}
+          onRestored={refreshArchive}
         />
       )}
       {newBookOpen && (
         <NewBookDialog onClose={() => setNewBookOpen(false)} onCreated={onBookCreated} />
+      )}
+      {confirmTarget && (
+        <ConfirmDeleteDialog
+          target={confirmTarget}
+          onClose={() => setConfirmTarget(null)}
+          onDeleted={onDeleted}
+        />
       )}
     </div>
   )

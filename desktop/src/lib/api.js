@@ -190,6 +190,35 @@ export function museModels() {
   return req('/muse/models')
 }
 
+// --- the trash (2.3) ------------------------------------------------------
+// Delete is a move, not an erase (D33): the chapter/book lands in the archive's
+// trash and `restoreTrash` puts it back. `impact` is what the confirm dialog
+// shows before anything happens.
+
+export function chapterImpact(series, bookId, chapterId) {
+  return req(`/books/${series}/${bookId}/chapters/${chapterId}/impact`)
+}
+
+export function bookImpact(series, bookId) {
+  return req(`/books/${series}/${bookId}/impact`)
+}
+
+export function deleteChapter(series, bookId, chapterId) {
+  return req(`/books/${series}/${bookId}/chapters/${chapterId}`, { method: 'DELETE' })
+}
+
+export function deleteBook(series, bookId) {
+  return req(`/books/${series}/${bookId}`, { method: 'DELETE' })
+}
+
+export function listTrash() {
+  return req('/trash')
+}
+
+export function restoreTrash(entry) {
+  return req(`/trash/${encodeURIComponent(entry)}/restore`, { method: 'POST' })
+}
+
 // Persisted conversation for a chapter (`series/book/ch-NN`) — restored when
 // the chapter is reopened.
 export function museThread(chapterId) {

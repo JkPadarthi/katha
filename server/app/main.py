@@ -25,6 +25,7 @@ from . import auth
 from . import db
 from . import epub
 from . import stats
+from . import trash
 from .config import (
     ARCHIVE_ROOT,
     COOKIE_NAME,
@@ -519,6 +520,140 @@ async def muse_sweep(payload: MuseSweepRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------- trash: delete + revive (2.3, D33) ------------------------------
+# Deletion is a MOVE, never an unlink: the files land under
+# archive/.katha/trash/<stamp>-<kind>-<slug>/ with a manifest, and restore puts
+# every one of them back where it came from. The app forgets (index rows + search
+# docs dropped) so the rail never shows a ghost — but the prose survives.
+
+def _reindex_book_meta(bdir: Path) -> None:
+    """Re-assert a book's index rows from disk (after a restore)."""
+    meta = ar._read_book_json(bdir)
+    db.upsert_book(bdir.name, bdir.parent.name, meta.get("title") or bdir.name)
+    for c in ar.list_chapters(bdir):
+        db.upsert_chapter({
+            "id": c["id"], "book_id": bdir.name, "title": c.get("title") or c["id"],
+            "path": c.get("path") or "", "words": c.get("words") or 0,
+            "revision": c.get("revision") or 0,
+        })
+
+
+def _chapter_impact(bdir: Path, chapter_id: str) -> dict:
+    """Exactly what a chapter delete would take — the confirm dialog's numbers."""
+    paths = trash.chapter_paths(bdir, chapter_id)
+    files, size = trash.size_of(paths)
+    chapter = ar.get_chapter(bdir, chapter_id)
+    return {
+        "chapter_id": chapter_id,
+        "title": ar._chapter_title(chapter) if chapter else chapter_id,
+        "words": ar.body_words(chapter) if chapter else 0,
+        "revisions": len(ar.list_revisions(bdir, chapter_id)),
+        "notes": len(ar.read_notes(bdir, chapter_id) or []),
+        "threads": trash.count_threads(chapter_id),
+        "files": files,
+        "bytes": size,
+    }
+
+
+def _book_impact(bdir: Path) -> dict:
+    """Everything a book delete would take, chapter by chapter."""
+    chapters = ar.list_chapters(bdir)
+    files, size = trash.size_of([bdir])
+    try:
+        bible_files = len(list(ar._iter_bible_files(bdir / "bible")))
+    except Exception:
+        bible_files = 0
+    return {
+        "book_id": bdir.name,
+        "title": ar._read_book_json(bdir).get("title") or bdir.name,
+        "chapters": len(chapters),
+        "revisions": sum(len(ar.list_revisions(bdir, c["id"])) for c in chapters),
+        "notes": sum(len(ar.read_notes(bdir, c["id"]) or []) for c in chapters),
+        "threads": sum(trash.count_threads(c["id"]) for c in chapters),
+        "words": sum(int(c.get("words") or 0) for c in chapters),
+        "bible_files": bible_files,
+        "files": files,
+        "bytes": size,
+    }
+
+
+@app.get("/api/books/{series}/{book_id}/impact", tags=["trash"])
+def book_impact(series: str, book_id: str):
+    return _book_impact(_resolve_book_path(series, book_id))
+
+
+@app.get("/api/books/{series}/{book_id}/chapters/{chapter_id}/impact", tags=["trash"])
+def chapter_impact(series: str, book_id: str, chapter_id: str):
+    bdir = _resolve_book_path(series, book_id)
+    if not ar.is_chapter_id(chapter_id) or ar.get_chapter(bdir, chapter_id) is None:
+        raise HTTPException(404, "chapter not found")
+    return _chapter_impact(bdir, chapter_id)
+
+
+@app.delete("/api/books/{series}/{book_id}/chapters/{chapter_id}", tags=["trash"])
+def delete_chapter(series: str, book_id: str, chapter_id: str):
+    """Move one chapter (and its revisions, notes, thread) to the trash."""
+    bdir = _resolve_book_path(series, book_id)
+    if not ar.is_chapter_id(chapter_id) or ar.get_chapter(bdir, chapter_id) is None:
+        raise HTTPException(404, "chapter not found")
+    impact = _chapter_impact(bdir, chapter_id)
+    manifest = trash.move_to_trash(
+        trash.chapter_paths(bdir, chapter_id),
+        kind="chapter", label=impact["title"], series=bdir.parent.name,
+        book_id=bdir.name, chapter_id=chapter_id, words=impact["words"],
+    )
+    db.delete_chapter_index(bdir.name, chapter_id)
+    reindex_search()
+    manifest["impact"] = impact
+    return manifest
+
+
+@app.delete("/api/books/{series}/{book_id}", tags=["trash"])
+def delete_book(series: str, book_id: str):
+    """Move a whole book (chapters, bible, notes, threads) to the trash.
+
+    When it is the last book in its series, `series.json` goes too — otherwise
+    the rail is left with a series that contains no books.
+    """
+    bdir = _resolve_book_path(series, book_id)
+    impact = _book_impact(bdir)
+    paths = [bdir]
+    if trash.is_last_book(series, bdir.name):
+        paths.append(trash.series_json_path(series))
+    manifest = trash.move_to_trash(
+        paths, kind="book", label=impact["title"], series=bdir.parent.name,
+        book_id=bdir.name, words=impact["words"],
+    )
+    db.delete_book_index(bdir.name)
+    reindex_search()
+    manifest["impact"] = impact
+    return manifest
+
+
+@app.get("/api/trash", tags=["trash"])
+def trash_list():
+    """Everything that can be brought back, newest first."""
+    return {"entries": trash.list_trash()}
+
+
+@app.post("/api/trash/{entry_id}/restore", tags=["trash"])
+def trash_restore(entry_id: str):
+    """Put a trashed chapter/book back where it came from.
+
+    409 when the entry is gone, or when something now occupies its path (a
+    chapter id can be reused after a delete — clobbering the new chapter to
+    resurrect the old one would be the worst possible outcome).
+    """
+    data = trash.restore(entry_id)
+    if data is None:
+        raise HTTPException(409, "cannot restore: the entry is gone, or its path is occupied again")
+    reindex_search()
+    bdir = ARCHIVE_ROOT / data.get("series", "") / data.get("book_id", "")
+    if bdir.is_dir():
+        _reindex_book_meta(bdir)
+    return data
 
 
 # ---------- static PWA client (same origin, one port) ---------------------

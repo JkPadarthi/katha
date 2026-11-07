@@ -3,7 +3,7 @@ import RitualsCard from './RitualsCard.jsx'
 
 // The CHAPTERS pane. Collapses to icons like a proper IDE; the active chapter
 // glows in the theme accent. Below: the bible tree and the ritual stat.
-export default function Rail({ collapsed, onToggle, active, onSelect, archive, current, onSelectBook, onNewBook, onOpenBible, onNewChapter }) {
+export default function Rail({ collapsed, onToggle, active, onSelect, archive, current, onSelectBook, onNewBook, onOpenBible, onNewChapter, onDeleteChapter, onDeleteBook }) {
   const series = archive.find((s) => s.name === current?.series) || archive[0]
   const book = series?.books?.find((b) => b.id === current?.book) || series?.books?.[0]
   if (!series || !book) return null
@@ -53,6 +53,16 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive, c
             >
               «
             </button>
+            {onDeleteBook && (
+              <button
+                onClick={onDeleteBook}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-mute/50 hover:bg-err/10 hover:text-err"
+                title="Delete this book — moves it to the trash"
+                aria-label="Delete book"
+              >
+                ×
+              </button>
+            )}
           </>
         )}
       </div>
@@ -68,11 +78,11 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive, c
           {book.chapters.map((c) => {
             const isActive = c.id === active
             return (
-              <li key={c.id}>
+              <li key={c.id} className="group flex items-center gap-0.5">
                 <button
                   onClick={() => onSelect(c.id)}
                   className={
-                    'flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors ' +
+                    'flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors ' +
                     (isActive
                       ? 'bg-panel-2 text-ink ring-1 ring-accent/40'
                       : 'text-mute hover:bg-panel-2/60 hover:text-ink')
@@ -91,6 +101,16 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive, c
                     </>
                   )}
                 </button>
+                {!collapsed && onDeleteChapter && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDeleteChapter(c) }}
+                    className="shrink-0 rounded px-1 text-[13px] leading-none text-mute opacity-0 transition-opacity hover:text-err group-hover:opacity-70"
+                    title={`Delete “${c.title}” — moves it to the trash`}
+                    aria-label={`Delete ${c.title}`}
+                  >
+                    ×
+                  </button>
+                )}
               </li>
             )
           })}

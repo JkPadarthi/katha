@@ -119,6 +119,29 @@ If a `chapter_id` (`series/book/ch-NN`) is supplied, the system prompt is
 prefixed with the current chapter plus up to 4 FTS5-ranked bible hits, capped at
 `MUSECONTEXT_MAX_TOKENS`.
 
+## D33 — Delete is a move, and it can be undone (2.3)
+The author can now remove a chapter or a whole book from the app. Because the
+archive is the only copy of the novel, **delete never unlinks anything**: the
+files move to `archive/.katha/trash/<stamp>-<kind>-<slug>/` beside a `trash.json`
+manifest listing every path that moved, and Settings → Trash restores each one to
+exactly where it came from (chapter md, every revision snapshot, the `.rev`
+counter, the notes sidecar, the chapter's Muse thread — and `series.json` when the
+last book of a series goes, or the rail is left with a series containing no
+books).
+
+`.katha/` is already git-ignored, hidden from `list_books()` and skipped by the
+search indexer, so nothing in the trash can leak back into the UI while a misclick
+stays recoverable. Nothing ages out on its own: markdown weighs nothing, and an
+unexpected deletion is the thing this exists to prevent.
+
+The app forgets immediately — index rows dropped, FTS rebuilt from disk, rail
+refreshed. Restore **refuses (409) rather than overwrite** a path that something
+else has taken since (a chapter id can be reused), and the confirm dialog asks the
+server what would actually go (`…/impact` → chapters, words, revision snapshots,
+notes, threads, files, bytes) so the delete is one deliberate click, never a
+surprise.
+
+
 ## D32 — One password in front of everything (supersedes D12)
 D12 said "single user, Tailscale, no auth — Tailscale is the boundary". That held
 while Katha only ever ran on a tailnet. It now sits in front of the novels on a

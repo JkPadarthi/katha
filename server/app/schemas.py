@@ -34,6 +34,7 @@ class ChapterMeta(BaseModel):
     words: int = 0
     path: str | None = None          # relative md path
     revision: int = 0                # current revision number
+    updated_at: str | None = None    # last write, used to resume where the author left off
 
 
 class ChapterOut(ChapterMeta):

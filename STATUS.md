@@ -67,6 +67,12 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.8** — the app opens where you were, not at chapter one. A refresh (or reopening the
+  installed app) now resumes the chapter you last had open, and the remembered book with it.
+  With no memory to go on it opens the chapter **written most recently** — `updated_at` now rides
+  in the chapter list, every save response and the accept response — instead of `chapters[0]`.
+  The rail keeps its story order (asserted by a test); only the landing chapter moved. Deleting
+  the open chapter lands on the newest survivor. 203 tests.
 - **3.0.7** — spacing reverted to the originals, at the author's request. Read mode is back to
   line 1.95 with a 12px paragraph gap, the writing surface to 1.85 (focus 1.95), the review
   pane to 1.85/1.8 — proven by an empty `git diff` against the pre-experiment commit for two of

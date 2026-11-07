@@ -295,6 +295,10 @@ def list_chapters(book: Path) -> list[dict]:
             "words": body_words(f),
             "path": f.relative_to(ARCHIVE_ROOT).as_posix(),
             "revision": _read_revision_marker(f),
+            # Last write. The app lands on the chapter the author was in (or the newest
+            # one) instead of the first in the rail (3.0.8, D52). Reading order here is
+            # unchanged — the rail must stay in story order.
+            "updated_at": _mtime(f),
         })
     return out
 
@@ -343,6 +347,9 @@ def _chapter_meta(book: Path, cid: str, title: str, path: Path) -> dict:
         "words": body_words(path),
         "path": path.relative_to(ARCHIVE_ROOT).as_posix(),
         "revision": _read_revision_marker(path),
+        # When this chapter was last written. The app resumes where the author left off
+        # and falls back to the most recently written chapter (3.0.8, D52).
+        "updated_at": _mtime(path),
     }
 
 

@@ -133,6 +133,29 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D52 — the app opens where the author was, not at chapter one (3.0.8)
+"on refresh, it should open the latest ch, not the first." A refresh — or reopening the
+installed app — always selected `chapters[0]`, so the chapter actually being written sat at the
+bottom of the rail while the introduction filled the screen.
+
+* **The open chapter is remembered** (the existing `localStorage` settings store, key
+  `lastChapter` = series/book/chapter) and restored on boot. The remembered *book* reopens the
+  same way, so "where I was" means the whole position, not just the chapter.
+* **The fallback is the chapter written most recently**, not the first in the list:
+  `updated_at` (the file's mtime) now rides in the chapter list, in every save response, and in
+  the proposal/accept response. Newest wins. `_chapter_meta`, the list builder and the save path
+  all carry it — three places, because the API answers the rail, the editor and the review pane
+  from three different code paths, and a field that exists in only one of them is a field the
+  app cannot rely on.
+* **Reading order is untouched.** The rail still lists chapters in story order — a test asserts
+  it — because resuming must not renumber or reorder someone's book. Only the landing chapter
+  changes.
+* **Deleting the open chapter lands on the newest survivor**, not on the first.
+* The picker is a pure module (`desktop/src/lib/resume.js`) checked against fixtures: a
+  surviving memory, a deleted one, another book, no timestamps at all, and an empty book.
+  Timestamps are parsed, not string-compared: Python's `isoformat()` omits the microseconds when
+  they are exactly zero, so the strings are not always the same width.
+
 ## D51 — typography is the author's, and a revert must be provable (3.0.7)
 Tonight's spacing experiment (line 1.95 -> 1.55, paragraph gap 12px -> 1.70em, across reading
 mode, the writing surface and the review pane) is **reverted at the author's request**: read

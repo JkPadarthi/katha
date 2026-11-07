@@ -14,6 +14,7 @@ import NewBookDialog from './components/NewBookDialog.jsx'
 import BookDetailsDialog from './components/BookDetailsDialog.jsx'
 import * as api from './lib/api.js'
 import { getSetting, setSetting } from './lib/settings.js'
+import { pickChapter, pickSeries, newestChapter } from './lib/resume.js'
 import { useMediaQuery } from './lib/useMediaQuery.js'
 import { useTheme } from './lib/useTheme.js'
 
@@ -71,12 +72,13 @@ export default function App() {
       .then((a) => {
         if (!alive) return
         setArchive(a)
-        const firstWithChapters = a.find((s) => s.books?.some((b) => b.chapters?.length))
-        const s0 = firstWithChapters || a[0]
-        if (s0 && s0.books[0]) {
-          const b = s0.books[0]
-          setSeries({ series: s0.name, book: b.id })
-          setActiveChapter(b.chapters[0]?.id || null)
+        // Land where the author actually was: the chapter they last had open, else the
+        // one written most recently — never simply the first in the rail (3.0.8, D52).
+        const remembered = getSetting('lastChapter', null)
+        const target = pickSeries({ archive: a, remembered })
+        if (target) {
+          setSeries(target)
+          setActiveChapter(pickChapter({ archive: a, ...target, remembered }))
         }
         // An empty archive is a legitimate state, not a failure: `archive` stays
         // set (to []) and the render shows the empty panel below. Reporting it as
@@ -88,6 +90,14 @@ export default function App() {
       })
     return () => { alive = false }
   }, [])
+
+  // Remember where the author is, so a refresh (or reopening the installed app) resumes
+  // there instead of jumping to the first chapter.
+  useEffect(() => {
+    if (series && activeChapter) {
+      setSetting('lastChapter', { series: series.series, book: series.book, id: activeChapter })
+    }
+  }, [series, activeChapter])
 
   // Re-fetch the tree without disturbing the current selection.
   const refreshArchive = useCallback(async () => {
@@ -239,7 +249,7 @@ export default function App() {
       if (s && b) {
         selectBook(s.name, b.id)
         if (b.chapters[0]) {
-          setActiveChapter(b.chapters[0].id)
+          setActiveChapter(newestChapter(b.chapters))
           setSelection(null)
         }
       } else {

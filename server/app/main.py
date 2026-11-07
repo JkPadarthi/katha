@@ -306,6 +306,8 @@ def _write_chapter_text(series: str, bdir: Path, chapter: Path, title: str,
         "path": chapter.relative_to(ARCHIVE_ROOT).as_posix(),
         "revision": rev,
         "content": content,
+        # every save reports when it happened, so the app can resume here after a refresh
+        "updated_at": ar._mtime(chapter),
     }
 
 

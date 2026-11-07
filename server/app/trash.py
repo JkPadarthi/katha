@@ -27,7 +27,7 @@ import shutil
 import time
 from pathlib import Path
 
-from .archive import slugify
+from . import archive as ar
 from .config import ARCHIVE_ROOT
 
 MANIFEST = "trash.json"
@@ -54,7 +54,7 @@ def _rel(path: Path) -> str:
 
 
 def _entry_id(kind: str, label: str) -> str:
-    slug = slugify(label or "") or kind
+    slug = ar.slugify(label or "") or kind
     root = trash_root()
     candidate = f"{_stamp()}-{kind}-{slug}"
     n = 1
@@ -206,9 +206,10 @@ def restore(entry_id: str) -> dict | None:
 
 # --- "what exactly will go?" (the confirm dialog reads these) ----------------
 
-def count_threads(chapter_id: str) -> int:
-    """Exchanges in a chapter's Muse thread (one `<!-- katha:user -->` each)."""
-    path = ARCHIVE_ROOT / ".katha" / "muse" / f"{chapter_id}.md"
+def count_threads(book_id: str, chapter_id: str) -> int:
+    """Exchanges in a chapter's book-scoped Muse thread
+    (one `<!-- katha:user -->` each). Counts only what a delete would move."""
+    path = ARCHIVE_ROOT / ".katha" / "muse" / f"{book_id}-{chapter_id}.md"
     if not path.is_file():
         return 0
     try:
@@ -217,14 +218,66 @@ def count_threads(chapter_id: str) -> int:
         return 0
 
 
+def thread_path_for(book_id: str, chapter_id: str) -> Path:
+    """Where a chapter's Muse thread lives (book-scoped, 2.4)."""
+    return ARCHIVE_ROOT / ".katha" / "muse" / f"{book_id}-{chapter_id}.md"
+
+
 def chapter_paths(book: Path, chapter_id: str) -> list[Path]:
-    """Every file that belongs to one chapter and must move together."""
+    """Every file that belongs to one chapter and must move together.
+
+    The Muse thread is the *book-scoped* name (`<book>-<chapter>.md`, 2.4). The
+    legacy chapter-only files are deliberately left alone: their names are shared
+    across books, so moving one could steal another book's conversation.
+    """
     chapters = book / "chapters"
     out = [p for p in chapters.glob(f"{chapter_id}*") if p.is_file()]
-    thread = ARCHIVE_ROOT / ".katha" / "muse" / f"{chapter_id}.md"
+    thread = thread_path_for(book.name, chapter_id)
     if thread.is_file():
         out.append(thread)
     return sorted(out)
+
+
+def book_thread_paths(book: Path) -> list[Path]:
+    """Book-scoped Muse threads for every chapter of `book`."""
+    chapters = book / "chapters"
+    if not chapters.is_dir():
+        return []
+    out = []
+    for f in ar.chapter_files(chapters):
+        p = thread_path_for(book.name, f.stem)
+        if p.is_file():
+            out.append(p)
+    return out
+
+
+def bible_paths(book: Path, name: str) -> list[Path]:
+    """The bible file — or whole bible folder — at a *validated* relative path.
+
+    `ar.safe_bible_path()` is the same guard the editor writes through, so a
+    path that escapes the archive, hides in a dot-dir, or isn't markdown simply
+    resolves to nothing.
+    """
+    p = ar.safe_bible_path(book, name)
+    return [p] if p is not None and p.exists() else []
+
+
+def series_paths(series: str) -> list[Path]:
+    """A whole series: its directory (books + series.json) and every book-scoped
+    Muse thread belonging to it."""
+    sd = ARCHIVE_ROOT / series
+    out: list[Path] = [sd]
+    if sd.is_dir():
+        for b in sorted(p for p in sd.iterdir() if p.is_dir() and not p.name.startswith(".")):
+            out.extend(book_thread_paths(b))
+    return out
+
+
+def series_books(series: str) -> list[Path]:
+    sd = ARCHIVE_ROOT / series
+    if not sd.is_dir():
+        return []
+    return [p for p in sorted(sd.iterdir()) if p.is_dir() and not p.name.startswith(".")]
 
 
 def series_json_path(series: str) -> Path:
@@ -246,6 +299,43 @@ def is_last_book(series: str, book_id: str) -> bool:
         if p.is_dir() and not p.name.startswith(".") and p.name != book_id
     ]
     return not others
+
+
+def purge(entry_id: str) -> dict | None:
+    """Erase ONE trash entry for real. Returns what was freed, or None if the
+    entry is unknown.
+
+    The only place in Katha that destroys anything (D36): delete moves, and this
+    is the deliberate second step someone has to ask for, per entry or wholesale.
+    """
+    path = entry_dir(entry_id)
+    data = read_manifest(entry_id)
+    if path is None or data is None or not path.exists():
+        return None
+    files, size = size_of([path])
+    shutil.rmtree(path)
+    return {
+        "entry": entry_id,
+        "kind": data.get("kind"),
+        "label": data.get("label"),
+        "series": data.get("series"),
+        "book_id": data.get("book_id"),
+        "files": files,
+        "bytes": size,
+    }
+
+
+def purge_all() -> dict:
+    """Empty the trash: erase every entry, report the total freed."""
+    entries = list_trash()
+    freed = 0
+    files = 0
+    for e in entries:
+        got = purge(e["entry"])
+        if got:
+            freed += got["bytes"]
+            files += got["files"]
+    return {"purged": len(entries), "files": files, "bytes": freed}
 
 
 def size_of(paths: list[Path]) -> tuple[int, int]:

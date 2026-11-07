@@ -81,7 +81,8 @@ def _make_revisions(n: int = 3) -> None:
 
 
 def _write_thread(exchanges: int = 1) -> Path:
-    path = ARCHIVE_ROOT / ".katha" / "muse" / f"{CH}.md"
+    """Write a chapter's Muse thread under its BOOK-SCOPED name (2.4)."""
+    path = trash.thread_path_for(BOOK, CH)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:      # replace, so counts are exact
         for i in range(exchanges):
@@ -314,3 +315,207 @@ def test_trash_list_reports_what_is_restorable():
     assert mine[0]["files"] == expected
     assert mine[0]["bytes"] > 0
     assert mine[0]["deleted_at"]
+
+
+# --- the bible (2.4) -------------------------------------------------------
+
+def test_bible_impact_counts_the_file_that_would_go():
+    kael = _book_dir() / "bible" / "characters" / "kael.md"
+    assert kael.is_file()
+    impact = client.get(f"/api/books/{SERIES}/{BOOK}/bible/characters/kael.md/impact").json()
+    assert impact["path"] == "characters/kael.md"
+    assert impact["files"] == 1
+    assert impact["bytes"] == kael.stat().st_size
+    assert impact["words"] > 0
+
+
+def test_bible_files_are_deleted_one_at_a_time_never_a_folder():
+    """The bible tree is deleted file by file: `safe_bible_path()` resolves only
+    `.md` files, so no path shape can take a whole folder (or the whole bible)."""
+    bdir = _book_dir()
+    folder = bdir / "bible" / "characters"
+    assert folder.is_dir()
+
+    for pathish in ("characters", "characters/", "bible", ""):
+        assert ar.safe_bible_path(bdir, pathish) is None, pathish
+        assert client.get(f"/api/books/{SERIES}/{BOOK}/bible/{pathish}/impact").status_code == 404, pathish
+        assert client.delete(f"/api/books/{SERIES}/{BOOK}/bible/{pathish}").status_code == 404, pathish
+
+    # the folder and every file in it are still there, and nothing was trashed
+    assert folder.is_dir()
+    assert sorted(p.name for p in folder.glob("*.md"))
+    assert (bdir / "bible" / "places.md").is_file()
+    assert not trash.list_trash()
+
+
+def test_bible_file_delete_and_restore():
+    bdir = _book_dir()
+    kael = bdir / "bible" / "characters" / "kael.md"
+    original = kael.read_bytes()
+
+    manifest = client.delete(f"/api/books/{SERIES}/{BOOK}/bible/characters/kael.md").json()
+    assert manifest["kind"] == "bible"
+    assert not kael.exists()
+    assert (bdir / "bible" / "places.md").is_file()          # siblings untouched
+    assert (bdir / "bible" / "characters" / "the-innkeeper.md").is_file()
+    # the app forgot him, everywhere it can see
+    hits = client.get("/api/search", params={"q": "Kael"}).json()["hits"]
+    assert not any(h["doc_id"] == "characters/kael.md" for h in hits)
+    files = client.get(f"/api/books/{SERIES}/{BOOK}/bible").json()["files"]
+    assert "characters/kael.md" not in files
+
+    restored = client.post(f"/api/trash/{manifest['entry']}/restore").json()
+    assert f"{SERIES}/{BOOK}/bible/characters/kael.md" in restored["moved"]
+    assert kael.read_bytes() == original
+
+
+def test_bible_paths_outside_the_bible_are_refused():
+    bdir = _book_dir()
+    for bad in ("../series.json", "../../etc/passwd", ".katha/notes", "places.txt", ""):
+        assert ar.safe_bible_path(bdir, bad) is None, bad
+    # over HTTP, nothing moves — whatever the encoding or the reason
+    for bad in ("..%2Fseries.json", "places.txt", "nope.md"):
+        assert client.delete(f"/api/books/{SERIES}/{BOOK}/bible/{bad}").status_code == 404, bad
+        assert client.get(f"/api/books/{SERIES}/{BOOK}/bible/{bad}/impact").status_code == 404, bad
+    assert (ARCHIVE_ROOT / SERIES / "series.json").is_file()
+    assert not trash.list_trash()
+
+
+# --- a whole series (2.4) --------------------------------------------------
+
+def _add_book(title: str, series: str = "The Ember Throne") -> tuple[str, str]:
+    r = client.post("/api/books", json={"series": series, "title": title})
+    assert r.status_code == 201, r.text
+    data = r.json()
+    return data["series"], data["id"]
+
+
+def test_series_impact_sums_its_books():
+    _write_thread(2)
+    series, extra = _add_book("Second Flame")
+    try:
+        impact = client.get(f"/api/series/{series}/impact").json()
+        assert impact["series"] == series
+        assert impact["books"] == 2                      # the seeded book + the new one
+        assert impact["chapters"] >= 4
+        assert impact["threads"] >= 2                    # the thread we wrote
+        assert impact["bible_files"] >= 4
+        assert impact["files"] > impact["bible_files"]
+        assert impact["bytes"] > 0
+    finally:
+        entry = client.delete(f"/api/books/{series}/{extra}").json()["entry"]
+        client.delete(f"/api/trash/{entry}")             # and this is purge's own test
+
+
+def test_series_delete_takes_everything_and_restores():
+    _write_thread(1)
+    series, extra = _add_book("Second Flame")
+    two = f"{series}/{extra}"
+    assert (ARCHIVE_ROOT / two).is_dir()
+
+    manifest = client.delete(f"/api/series/{series}").json()
+    assert manifest["kind"] == "series"
+    assert not (ARCHIVE_ROOT / series).exists()          # the whole tree is gone
+    assert not (ARCHIVE_ROOT / ".katha" / "muse" / f"{BOOK}-ch-01.md").exists()
+    # the rail can no longer see it (the shared test archive holds other series)
+    listing = client.get("/api/books").json()
+    assert not any(s["series"] == series for s in listing), listing
+    hits = client.get("/api/search", params={"q": "Kael"}).json()["hits"]
+    assert not any(h["series"] == series for h in hits), hits
+
+    restored = client.post(f"/api/trash/{manifest['entry']}/restore").json()
+    assert series in restored["moved"]                             # the tree travelled whole
+    assert any(m.startswith(".katha/muse/") for m in restored["moved"])   # …its conversations too
+    assert (ARCHIVE_ROOT / two).is_dir()                          # the second book came back
+    assert (ARCHIVE_ROOT / two / "bible").is_dir()                # scaffolded bible included
+    assert (ARCHIVE_ROOT / two / "book.json").is_file()
+    assert (ARCHIVE_ROOT / BOOK and ARCHIVE_ROOT / series / BOOK / "chapters" / "ch-01.md").is_file()
+    assert (ARCHIVE_ROOT / series / "series.json").is_file()   # the series itself came back
+    assert client.get("/api/books").json()                    # and the rail can see it again
+
+    # tidy up: the extra book goes away for good
+    entry = client.delete(f"/api/books/{series}/{extra}").json()["entry"]
+    client.delete(f"/api/trash/{entry}")
+
+
+def test_series_slug_is_a_path_boundary_for_delete():
+    # plain traversal never reaches the router (the HTTP client normalizes it
+    # away); the ENCODED form does, and the slug guard has to refuse it.
+    for bad in ("%2E%2E", "%2E%2E%2Fetc", "a%2Fb", ".hidden", "The Ember Throne"):
+        r = client.delete(f"/api/series/{bad}")
+        assert r.status_code in (400, 404, 405, 422), (bad, r.status_code)
+        assert client.get(f"/api/series/{bad}/impact").status_code in (400, 404, 405, 422), bad
+    assert (ARCHIVE_ROOT / SERIES / BOOK).is_dir()
+    assert not trash.list_trash()
+
+
+# --- erasing for real (2.4, D36) -------------------------------------------
+
+def test_purge_erases_one_entry_for_good():
+    series, book = _add_book("Purge Me", series="Trash Tests")
+    bdir = ARCHIVE_ROOT / series / book
+    assert bdir.is_dir()
+
+    entry = client.delete(f"/api/books/{series}/{book}").json()["entry"]
+    assert not bdir.exists()                                  # it moved…
+    assert (ARCHIVE_ROOT / series).exists() is False           # …last book took the series dir
+
+    got = client.delete(f"/api/trash/{entry}").json()
+    assert got["entry"] == entry and got["files"] > 0 and got["bytes"] > 0
+    assert not (ARCHIVE_ROOT / ".katha" / "trash" / entry).exists()
+    # gone is gone: restoring it now is impossible
+    assert client.post(f"/api/trash/{entry}/restore").status_code == 409
+    assert trash.list_trash() == []
+    assert not bdir.exists()
+
+
+def test_empty_trash_clears_everything():
+    series, book = _add_book("Purge Me Too", series="Trash Tests")
+    client.delete(f"/api/books/{series}/{book}")
+    chapter_entry = client.delete(f"/api/books/{SERIES}/{BOOK}/chapters/{CH}").json()["entry"]
+    assert len(trash.list_trash()) == 2
+
+    out = client.delete("/api/trash").json()
+    assert out["purged"] == 2 and out["bytes"] > 0 and out["files"] > 0
+    assert trash.list_trash() == []
+    assert not (ARCHIVE_ROOT / series).exists()
+    # the chapter that was erased is really gone — the fixture has to rebuild the book
+    assert not (_book_dir() / "chapters" / f"{CH}.md").exists()
+    from seed import seed
+    seed(quiet=True)
+
+
+def test_purge_unknown_entry_is_404():
+    assert client.delete("/api/trash/nope-not-here").status_code == 404
+    # `%2E` reaches the route as "." (a bare "." in the URL is normalized away),
+    # and the entry-id guard refuses it: single segment, not dots-only.
+    for bad in ("..", "a/b", "%2E", "%2E%2E"):
+        assert client.delete(f"/api/trash/{bad}").status_code in (404, 405), bad
+
+
+# --- the thread name is a per-book boundary (2.4) --------------------------
+
+def test_a_chapter_delete_does_not_touch_another_books_thread():
+    """`ch-01` exists in every book, so a chapter-scoped thread name would make
+    one book's delete steal another book's conversation."""
+    other_series = "other-series"
+    other_book = "other-book"
+    other_chapters = ARCHIVE_ROOT / other_series / other_book / "chapters"
+    other_chapters.mkdir(parents=True, exist_ok=True)
+    (other_chapters / f"{CH}.md").write_text(f"# Other\n\nbody\n", encoding="utf-8")
+
+    mine = _write_thread(1)
+    theirs = trash.thread_path_for(other_book, CH)
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text("<!-- katha:user -->theirs\n\n<!-- katha:end -->\n", encoding="utf-8")
+
+    entry = client.delete(f"/api/books/{SERIES}/{BOOK}/chapters/{CH}").json()["entry"]
+    manifest = trash.read_manifest(entry)
+    assert manifest is not None
+    assert any(mine.name in m for m in manifest["moved"])
+    assert theirs.is_file()
+    assert "theirs" in theirs.read_text(encoding="utf-8")
+
+    client.post(f"/api/trash/{entry}/restore")
+    import shutil as _shutil
+    _shutil.rmtree(ARCHIVE_ROOT / other_series, ignore_errors=True)

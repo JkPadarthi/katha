@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
@@ -604,16 +605,25 @@ async def _load_canon_context(chapter_id: str, user_prompt: str = "") -> str:
 
 # --- thread persistence (D19) --------------------------------------------
 
-def _thread_path(chapter_id: str) -> Path | None:
+def _thread_path(chapter_id: str, *, legacy: bool = False) -> Path | None:
+    """Where a chapter's Muse conversation lives.
+
+    Named `<book>-<chapter>.md`, NOT `<chapter>.md`: chapter ids repeat across
+    books (`ch-01` exists in every book), so a chapter-only name means two books
+    silently share one conversation log — and deleting a chapter would take the
+    other book's history with it. The legacy chapter-only name is still *read*
+    (see `read_thread`) and carried over on first write, so the author's existing
+    threads keep working.
+    """
     parsed = _parse_chapter_id(chapter_id)
     if not parsed:
         return None
-    _, _, cid = parsed
-    return _MUSE_ROOT / f"{cid}.md"
+    _series, book, cid = parsed
+    return _MUSE_ROOT / (f"{cid}.md" if legacy else f"{book}-{cid}.md")
 
 
 def _persist_thread(chapter_id: str, user_messages: list[dict], assistant_text: str) -> None:
-    """Append ONE exchange to `archive/.katha/muse/<chapter>.md`.
+    """Append ONE exchange to this chapter's thread file.
 
     Only the final user turn is written — the client already re-sends the
     whole thread on every request, so persisting all of it grew the file
@@ -624,6 +634,15 @@ def _persist_thread(chapter_id: str, user_messages: list[dict], assistant_text: 
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            # First write under the book-scoped name: carry a legacy
+            # (chapter-only) log over so the conversation doesn't look reset.
+            legacy = _thread_path(chapter_id, legacy=True)
+            if legacy is not None and legacy.is_file():
+                try:
+                    shutil.copy2(legacy, path)
+                except OSError:
+                    pass
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         last_user = next(
             (m for m in reversed(user_messages) if m.get("role") == "user"),
@@ -707,11 +726,15 @@ async def _load_style_summary(book_slug: str, bdir: Path) -> str:
 
 
 def read_thread(chapter_id: str) -> str:
-    """Return the persisted thread for `chapter_id` (empty if none)."""
-    path = _thread_path(chapter_id)
-    if path is None or not path.is_file():
-        return ""
-    return path.read_text(encoding="utf-8")
+    """Return the persisted thread for `chapter_id` (empty if none).
+
+    Prefers the book-scoped file; falls back to the legacy chapter-only name so
+    conversations written before 2.4 still restore when a chapter opens.
+    """
+    for path in (_thread_path(chapter_id), _thread_path(chapter_id, legacy=True)):
+        if path is not None and path.is_file():
+            return path.read_text(encoding="utf-8")
+    return ""
 
 
 _THREAD_TURN_RE = re.compile(

@@ -26,6 +26,9 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(() => getSetting('focus', false))
   const [loadError, setLoadError] = useState('')
+  // Bumped when a bible file is deleted: the panel re-reads from the server
+  // rather than guessing at the new list.
+  const [bibleKey, setBibleKey] = useState(0)
 
   const [sweepOpen, setSweepOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -62,9 +65,11 @@ export default function App() {
           const b = s0.books[0]
           setSeries({ series: s0.name, book: b.id })
           setActiveChapter(b.chapters[0]?.id || null)
-        } else if (a.length === 0) {
-          setLoadError('Server returned an empty archive.')
         }
+        // An empty archive is a legitimate state, not a failure: `archive` stays
+        // set (to []) and the render shows the empty panel below. Reporting it as
+        // a load error told the author the server was down when it had answered
+        // perfectly — and hid the Trash, which is where a deleted book waits.
       })
       .catch((err) => {
         if (alive) setLoadError(`${err.message || err}`)
@@ -188,13 +193,20 @@ export default function App() {
   }
 
   // Deleting moves the files to the trash (D33). The rail must forget them at
-  // once, and if we deleted what was open, land on whatever is left.
+  // once, and if we deleted what was open, land on whatever is left — or on the
+  // empty-archive panel if that was the last thing in the archive.
   const onDeleted = async (manifest) => {
     setConfirmTarget(null)
+    if (manifest.kind === 'bible') {
+      // The book's tree is unchanged — only the bible panel needs to re-read.
+      setBibleKey((k) => k + 1)
+      refreshArchive()
+      return
+    }
     const wasActive = manifest.kind === 'chapter' && manifest.chapter_id === activeChapter
-    const wasOpenBook = manifest.kind === 'book'
+    const tookOpenBook = manifest.kind === 'book' || manifest.kind === 'series'
     await refreshArchive()
-    if (!wasActive && !wasOpenBook) return
+    if (!wasActive && !tookOpenBook) return
     try {
       const tree = await api.loadArchive()
       const s = tree.find((x) => x.name === manifest.series) || tree.find((x) => x.books.some((b) => b.chapters.length))
@@ -206,6 +218,10 @@ export default function App() {
           setActiveChapter(b.chapters[0].id)
           setSelection(null)
         }
+      } else {
+        setSeries(null)
+        setActiveChapter(null)
+        setSelection(null)
       }
     } catch { /* the refresh above already surfaced any failure */ }
   }
@@ -358,7 +374,7 @@ export default function App() {
                     onOpenBible={(name) => setBibleName(name || '')}
                     onNewChapter={newChapter}
                     onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
-                    onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, label: series.title || series.name })}
+                    onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
                   />
                 </div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
@@ -405,7 +421,7 @@ export default function App() {
                 onOpenBible={(name) => setBibleName(name || '')}
                 onNewChapter={newChapter}
                 onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
-                onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, label: series.title || series.name })}
+                onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
               />
             )}
             {pageNode}
@@ -414,11 +430,30 @@ export default function App() {
         )
       ) : loadError ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center text-mute">
-          <div className="text-[12px] text-err">Failed to load archive</div>
+          <div className="text-[12px] text-err">Couldn't load the archive</div>
           <div className="text-[10.5px] text-mute/70">{loadError}</div>
           <div className="text-[10px] text-mute/50">
-            Server at <code className="text-ink">{window.location.origin}</code> didn't respond.
+            Tried <code className="text-ink">{window.location.origin}</code>.
             Open DevTools (F12) → Network for details.
+          </div>
+        </div>
+      ) : archive ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+          <div className="text-[12px] text-ink">Your archive is empty</div>
+          <div className="max-w-sm text-[10.5px] leading-relaxed text-mute/70">
+            Nothing here yet. Start a series and a book — that's the whole setup; the
+            chapter list, the bible and the Muse all hang off it.
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setNewBookOpen(true)}
+              className="rounded-md border border-accent/40 px-2.5 py-1 text-[11px] text-accent transition-colors hover:bg-accent/10"
+            >
+              New book / series
+            </button>
+          </div>
+          <div className="text-[10px] text-mute/50">
+            Deleted something? It is waiting in Settings → Trash.
           </div>
         </div>
       ) : (
@@ -456,6 +491,16 @@ export default function App() {
           initial={bibleName}
           onClose={() => setBibleName(null)}
           onChanged={refreshArchive}
+          refreshKey={bibleKey}
+          onDeleteFile={(name) =>
+            setConfirmTarget({
+              kind: 'bible',
+              series: series.series,
+              book: series.book,
+              path: name,
+              label: name
+            })
+          }
         />
       )}
       {settingsOpen && (
@@ -476,6 +521,16 @@ export default function App() {
           target={confirmTarget}
           onClose={() => setConfirmTarget(null)}
           onDeleted={onDeleted}
+          onDeleteSeries={
+            confirmTarget.kind === 'book'
+              ? () =>
+                  setConfirmTarget({
+                    kind: 'series',
+                    series: confirmTarget.series,
+                    label: confirmTarget.seriesTitle || confirmTarget.series
+                  })
+              : undefined
+          }
         />
       )}
     </div>

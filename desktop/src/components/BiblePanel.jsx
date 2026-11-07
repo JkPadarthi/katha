@@ -32,7 +32,7 @@ const characterTemplate = (name) =>
 const slugify = (s) =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 
-export default function BiblePanel({ series, initial, onClose, onChanged }) {
+export default function BiblePanel({ series, initial, onClose, onChanged, refreshKey = 0, onDeleteFile }) {
   const [files, setFiles] = useState({})       // name → content
   const [active, setActive] = useState(null)
   const [draft, setDraft] = useState('')
@@ -57,7 +57,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged }) {
       })
       .catch((e) => alive && setError(e.message || 'failed to load bible'))
     return () => { alive = false }
-  }, [series.series, series.book])
+  }, [series.series, series.book, refreshKey])
 
   const names = Object.keys(files).sort()
   // Group nested files (characters/kael.md) by their first folder.
@@ -195,6 +195,31 @@ export default function BiblePanel({ series, initial, onClose, onChanged }) {
     }
   }
 
+  // One bible file: click to edit, × to send it to the trash. Deleting goes
+  // through the shared confirm dialog (App owns it), which prints what exactly
+  // would go; the panel re-reads from the server afterwards (refreshKey), so the
+  // file list never drifts from disk.
+  const FileRow = ({ name, indent }) => (
+    <div className="group flex items-center gap-0.5">
+      <button
+        onClick={() => select(name)}
+        className={rowClass(name, indent) + ' min-w-0 flex-1'}
+      >
+        {indent ? name.split('/').slice(1).join('/') : name}
+      </button>
+      {onDeleteFile && (
+        <button
+          onClick={() => onDeleteFile(name)}
+          title={`Delete ${name} — moves it to the trash`}
+          aria-label={`Delete ${name}`}
+          className="shrink-0 rounded px-1 py-0.5 text-[11px] leading-none text-transparent transition-colors hover:text-err group-hover:text-mute/60"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+
   const cancelCreate = () => { setCreating(null); setNewName('') }
 
   const createInput = (placeholder, onCreate) => (
@@ -251,7 +276,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged }) {
               )}
               {loose.map((n) => (
                 <li key={n}>
-                  <button onClick={() => select(n)} className={rowClass(n, false)}>{n}</button>
+                  <FileRow name={n} indent={false} />
                 </li>
               ))}
               {Object.entries(groups)
@@ -264,9 +289,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged }) {
                     <ul className="space-y-0.5">
                       {items.map((n) => (
                         <li key={n}>
-                          <button onClick={() => select(n)} className={rowClass(n, true)}>
-                            {n.split('/').slice(1).join('/')}
-                          </button>
+                          <FileRow name={n} indent />
                         </li>
                       ))}
                     </ul>

@@ -551,7 +551,7 @@ def _chapter_impact(bdir: Path, chapter_id: str) -> dict:
         "words": ar.body_words(chapter) if chapter else 0,
         "revisions": len(ar.list_revisions(bdir, chapter_id)),
         "notes": len(ar.read_notes(bdir, chapter_id) or []),
-        "threads": trash.count_threads(chapter_id),
+        "threads": trash.count_threads(bdir.name, chapter_id),
         "files": files,
         "bytes": size,
     }
@@ -571,12 +571,48 @@ def _book_impact(bdir: Path) -> dict:
         "chapters": len(chapters),
         "revisions": sum(len(ar.list_revisions(bdir, c["id"])) for c in chapters),
         "notes": sum(len(ar.read_notes(bdir, c["id"]) or []) for c in chapters),
-        "threads": sum(trash.count_threads(c["id"]) for c in chapters),
+        "threads": sum(trash.count_threads(bdir.name, c["id"]) for c in chapters),
         "words": sum(int(c.get("words") or 0) for c in chapters),
         "bible_files": bible_files,
         "files": files,
         "bytes": size,
     }
+
+
+def _bible_impact(bdir: Path, name: str) -> dict:
+    """What a bible delete would take: exactly one file.
+
+    `ar.safe_bible_path()` is the guard, and it only ever resolves `.md` *files*
+    — a folder name resolves to nothing, so the bible tree is deleted file by
+    file. That is deliberate: the same guard the editor writes through stays a
+    security boundary, and there is no path shape that takes the whole bible.
+    """
+    paths = trash.bible_paths(bdir, name)
+    files, size = trash.size_of(paths)
+    p = ar.safe_bible_path(bdir, name)
+    words = ar.body_words(p) if (p is not None and p.is_file()) else 0
+    return {"path": name, "files": files, "bytes": size, "words": words}
+
+
+def _series_impact(series: str) -> dict:
+    """Everything a series delete would take, summed over its books."""
+    sd = ARCHIVE_ROOT / series
+    books = trash.series_books(series)
+    files, size = trash.size_of([sd])
+    totals = {"chapters": 0, "revisions": 0, "notes": 0, "threads": 0,
+              "words": 0, "bible_files": 0}
+    for b in books:
+        impact = _book_impact(b)
+        for key in totals:
+            totals[key] += impact[key]
+    totals.update({
+        "series": series,
+        "title": ar._read_series_title(sd) if sd.is_dir() else series,
+        "books": len(books),
+        "files": files,
+        "bytes": size,
+    })
+    return totals
 
 
 @app.get("/api/books/{series}/{book_id}/impact", tags=["trash"])
@@ -632,6 +668,76 @@ def delete_book(series: str, book_id: str):
     return manifest
 
 
+@app.get("/api/books/{series}/{book_id}/bible/{name:path}/impact", tags=["trash"])
+def bible_impact(series: str, book_id: str, name: str):
+    bdir = _resolve_book_path(series, book_id)
+    if not trash.bible_paths(bdir, name):
+        raise HTTPException(404, "bible file not found")
+    return _bible_impact(bdir, name)
+
+
+@app.delete("/api/books/{series}/{book_id}/bible/{name:path}", tags=["trash"])
+def delete_bible(series: str, book_id: str, name: str):
+    """Move a bible file — or a whole bible folder — to the trash.
+
+    The path goes through `ar.safe_bible_path()`, the same guard the editor
+    writes through, so the model-free client can't escape the archive with it.
+    """
+    bdir = _resolve_book_path(series, book_id)
+    paths = trash.bible_paths(bdir, name)
+    if not paths:
+        raise HTTPException(404, "bible file not found")
+    impact = _bible_impact(bdir, name)
+    manifest = trash.move_to_trash(
+        paths, kind="bible", label=name, series=series, book_id=bdir.name,
+    )
+    reindex_search()
+    manifest["impact"] = impact
+    return manifest
+
+
+@app.get("/api/series/{series}/impact", tags=["trash"])
+def series_impact(series: str):
+    if not ar.is_slug(series) or not (ARCHIVE_ROOT / series).is_dir():
+        raise HTTPException(404, "series not found")
+    return _series_impact(series)
+
+
+@app.delete("/api/series/{series}", tags=["trash"])
+def delete_series(series: str):
+    """Move an entire series to the trash: every book, the bible, series.json
+    and the books' own Muse threads."""
+    sd = ARCHIVE_ROOT / series
+    if not ar.is_slug(series) or not sd.is_dir():
+        raise HTTPException(404, "series not found")
+    books = trash.series_books(series)
+    impact = _series_impact(series)
+    manifest = trash.move_to_trash(
+        trash.series_paths(series), kind="series", label=impact["title"],
+        series=series, book_id="", words=impact["words"],
+    )
+    for b in books:
+        db.delete_book_index(b.name)
+    reindex_search()
+    manifest["impact"] = impact
+    return manifest
+
+
+@app.delete("/api/trash/{entry_id}", tags=["trash"])
+def purge_trash_entry(entry_id: str):
+    """Erase ONE trash entry for real. There is no way back from this."""
+    data = trash.purge(entry_id)
+    if data is None:
+        raise HTTPException(404, "no such trash entry")
+    return data
+
+
+@app.delete("/api/trash", tags=["trash"])
+def purge_trash():
+    """Empty the trash for real."""
+    return trash.purge_all()
+
+
 @app.get("/api/trash", tags=["trash"])
 def trash_list():
     """Everything that can be brought back, newest first."""
@@ -650,9 +756,15 @@ def trash_restore(entry_id: str):
     if data is None:
         raise HTTPException(409, "cannot restore: the entry is gone, or its path is occupied again")
     reindex_search()
-    bdir = ARCHIVE_ROOT / data.get("series", "") / data.get("book_id", "")
-    if bdir.is_dir():
-        _reindex_book_meta(bdir)
+    # Re-assert index rows from disk: one book for a chapter/book/bible restore,
+    # every book for a restored series.
+    base = ARCHIVE_ROOT / (data.get("series") or "")
+    book_id = data.get("book_id") or ""
+    if book_id and (base / book_id).is_dir():
+        _reindex_book_meta(base / book_id)
+    elif base.is_dir():
+        for b in sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")):
+            _reindex_book_meta(b)
     return data
 
 

@@ -119,6 +119,39 @@ If a `chapter_id` (`series/book/ch-NN`) is supplied, the system prompt is
 prefixed with the current chapter plus up to 4 FTS5-ranked bible hits, capped at
 `MUSECONTEXT_MAX_TOKENS`.
 
+## D37 — An empty archive is a state, not an error (2.4)
+`GET /api/books` returning `[]` is a legitimate answer. The client used to set
+`loadError = 'Server returned an empty archive.'`, which rendered as *"Failed to
+load archive — server didn't respond"* — a lie about the server, and it buried the
+thing the author actually needed (the trash). Now the tree is just fetched, and an
+empty archive renders an empty panel that offers to create a book/series and says
+where deleted things wait.
+
+## D36 — Erasing is a separate, deliberate act (2.4)
+`DELETE /api/trash/{entry}` and `DELETE /api/trash` (empty) are the **only** code
+that destroys anything in Katha. Delete stays a move (D33); erasing is what you
+ask for afterwards, per entry or wholesale, and the UI always routes it through a
+red confirm that says the restore is gone for good. Nothing ages out on its own.
+
+## D35 — Muse threads are book-scoped (2.4)
+Thread files are `archive/.katha/muse/<book>-<chapter>.md`, not `<chapter>.md`.
+Chapter ids repeat across books (`ch-01` exists in every one of them), so the
+chapter-only name silently shared one conversation between two books — and made a
+chapter delete take the wrong book's history. Legacy chapter-only files are still
+*read* (fallback) and are copied over on the first write under the new name, so the
+author's existing conversations survive and don't look reset. Deletes move only the
+book-scoped file: the legacy name is shared, so it is never moved.
+
+## D34 — Bible files and whole series are deletable, through the same trash (2.4)
+`DELETE /api/books/{s}/{b}/bible/{name}` and `DELETE /api/series/{series}`, each
+with an `/impact` sibling the confirm dialog reads first. The bible is deleted
+**file by file** by design: `ar.safe_bible_path()` — the guard the editor writes
+through — resolves only real `.md` files, so a folder name resolves to nothing and
+no request shape can take the whole bible. Keeping that boundary intact is worth
+more than the convenience (D33 holds the trash semantics). A series moves as one
+tree: its directory (books + `series.json`) plus every book-scoped Muse thread that
+belongs to it, and restore puts all of it back.
+
 ## D33 — Delete is a move, and it can be undone (2.3)
 The author can now remove a chapter or a whole book from the app. Because the
 archive is the only copy of the novel, **delete never unlinks anything**: the

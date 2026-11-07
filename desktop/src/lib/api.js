@@ -219,6 +219,34 @@ export function restoreTrash(entry) {
   return req(`/trash/${encodeURIComponent(entry)}/restore`, { method: 'POST' })
 }
 
+// Erasing for real (D36). Delete is a move — these are the only two calls that
+// destroy anything, and both are behind a red confirm in Settings.
+export function purgeTrash(entry) {
+  return req(`/trash/${encodeURIComponent(entry)}`, { method: 'DELETE' })
+}
+
+export function emptyTrash() {
+  return req('/trash', { method: 'DELETE' })
+}
+
+// Bible files are deletable too (2.4): same trash, same revive.
+export function bibleImpact(series, bookId, name) {
+  return req(`/books/${series}/${bookId}/bible/${encodeURI(name)}/impact`)
+}
+
+export function deleteBible(series, bookId, name) {
+  return req(`/books/${series}/${bookId}/bible/${encodeURI(name)}`, { method: 'DELETE' })
+}
+
+// …and so is a whole series (2.4): every book, the bible, series.json, threads.
+export function seriesImpact(series) {
+  return req(`/series/${series}/impact`)
+}
+
+export function deleteSeries(series) {
+  return req(`/series/${series}`, { method: 'DELETE' })
+}
+
 // Persisted conversation for a chapter (`series/book/ch-NN`) — restored when
 // the chapter is reopened.
 export function museThread(chapterId) {

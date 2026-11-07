@@ -20,6 +20,7 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
   const [trash, setTrash] = useState(null)     // null = still reading
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  const [confirmPurge, setConfirmPurge] = useState(null)   // entry id, or '*' for all
 
   const load = async () => {
     try {
@@ -42,6 +43,23 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
       if (onRestored) await onRestored()
     } catch (e) {
       setError(e.message || 'could not restore that')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  // Erasing for real (D36). Delete is a move; this is the second, deliberate
+  // step — so it always goes through the red confirm strip above the list.
+  const purge = async (entry) => {
+    setBusy(entry)
+    setError('')
+    try {
+      if (entry === '*') await api.emptyTrash()
+      else await api.purgeTrash(entry)
+      setConfirmPurge(null)
+      await load()
+    } catch (e) {
+      setError(e.message || 'could not erase that')
     } finally {
       setBusy('')
     }
@@ -80,16 +98,55 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
         <div className="border-t hairline pt-3">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-mute">Trash</span>
-            {trash && trash.length > 0 && (
-              <span className="text-[10px] text-mute/60">
-                {trash.length} item{trash.length === 1 ? '' : 's'}
-              </span>
-            )}
+            <span className="flex items-center gap-2">
+              {trash && trash.length > 0 && (
+                <span className="text-[10px] text-mute/60">
+                  {trash.length} item{trash.length === 1 ? '' : 's'}
+                </span>
+              )}
+              {trash && trash.length > 0 && (
+                <Button
+                  size="sm"
+                  onClick={() => setConfirmPurge('*')}
+                  disabled={!!busy}
+                  title="Erase everything in the trash — not recoverable"
+                >
+                  Empty trash
+                </Button>
+              )}
+            </span>
           </div>
           <p className="mt-0.5 text-[10px] text-mute/60">
-            Deleted chapters and books wait here. Restoring puts every file back where
-            it was — nothing is ever erased.
+            Deleted chapters, books, bible files and whole series wait here. Restoring
+            puts every file back where it was. Erasing is the only thing in Katha that
+            destroys anything — and it asks first.
           </p>
+
+          {confirmPurge && (
+            <div className="mt-2 rounded-md border border-err/40 bg-err/5 px-2 py-2">
+              <p className="text-[10.5px] text-ink">
+                {confirmPurge === '*'
+                  ? 'Erase everything in the trash for good?'
+                  : 'Erase this entry for good?'}
+                <span className="mt-0.5 block text-[10px] text-mute/70">
+                  It will no longer be possible to restore.
+                </span>
+              </p>
+              <div className="mt-1.5 flex justify-end gap-2">
+                <Button size="sm" onClick={() => setConfirmPurge(null)} disabled={!!busy}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => purge(confirmPurge)}
+                  disabled={!!busy}
+                  className="border border-err/50 text-err hover:bg-err/10"
+                >
+                  {busy ? 'Erasing…' : confirmPurge === '*' ? 'Erase everything' : 'Erase for good'}
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className="mt-2 max-h-56 space-y-1 overflow-y-auto">
             {trash === null && <p className="text-[11px] text-mute/60">Reading the trash…</p>}
@@ -119,6 +176,15 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
                 >
                   {busy === e.entry ? 'Restoring…' : 'Restore'}
                 </Button>
+                <button
+                  onClick={() => { setError(''); setConfirmPurge(e.entry) }}
+                  disabled={!!busy}
+                  title="Erase for good — not recoverable"
+                  aria-label={`Erase ${e.label}`}
+                  className="shrink-0 rounded px-1 py-0.5 text-[11px] leading-none text-mute/40 transition-colors hover:text-err disabled:opacity-40"
+                >
+                  ×
+                </button>
               </div>
             ))}
           </div>

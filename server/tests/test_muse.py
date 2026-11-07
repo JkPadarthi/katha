@@ -384,7 +384,8 @@ def test_style_digest_is_cached_and_reused(tmp_path, monkeypatch):
 
 def test_thread_is_persisted_to_archive_dot_katha(tmp_path, monkeypatch):
     """When a Muse call carries a chapter_id, the exchange must be appended to
-    `archive/.katha/muse/<chapter-slug>.md`."""
+    `archive/.katha/muse/<book>-<chapter>.md` (book-scoped since 2.4: `ch-01`
+    exists in every book, so a chapter-only name would collide)."""
     import json as _json
 
     import httpx
@@ -394,7 +395,7 @@ def test_thread_is_persisted_to_archive_dot_katha(tmp_path, monkeypatch):
 
     series_slug = ar.slugify("The Ember Throne")
     book_slug = ar.slugify("The First Flame")
-    thread_path = ARCHIVE_ROOT / ".katha" / "muse" / "ch-01.md"
+    thread_path = ARCHIVE_ROOT / ".katha" / "muse" / f"{book_slug}-ch-01.md"
 
     # Clean any pre-existing file from earlier test runs.
     if thread_path.exists():
@@ -431,6 +432,80 @@ def test_thread_is_persisted_to_archive_dot_katha(tmp_path, monkeypatch):
     body = thread_path.read_text(encoding="utf-8")
     assert "hello" in body
     assert "katha:assistant" in body
+
+
+def test_thread_paths_are_scoped_per_book():
+    """The same chapter id in two books must not share one conversation file."""
+    from app import muse as muse_mod
+
+    a = muse_mod._thread_path("series-a/book-a/ch-01")
+    b = muse_mod._thread_path("series-a/book-b/ch-01")
+    assert a is not None and b is not None and a != b
+    assert a.name == "book-a-ch-01.md"
+    assert b.name == "book-b-ch-01.md"
+    # unparsable ids have no home at all
+    assert muse_mod._thread_path("nonsense") is None
+    assert muse_mod._thread_path("") is None
+
+
+def test_legacy_chapter_only_thread_is_still_read_and_carried_over(monkeypatch):
+    """Threads written before 2.4 are named `<chapter>.md`. They must still be
+    read — and the first write under the new name must carry them over, so an
+    old conversation can't appear to reset."""
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
+
+    series_slug = "muse-tests"
+    book_slug = "legacy-book"
+    chapter_id = f"{series_slug}/{book_slug}/ch-01"
+
+    muse_root = ARCHIVE_ROOT / ".katha" / "muse"
+    muse_root.mkdir(parents=True, exist_ok=True)
+    legacy = muse_root / "ch-01.md"
+    scoped = muse_root / f"{book_slug}-ch-01.md"
+    for path in (legacy, scoped):
+        if path.exists():
+            path.unlink()
+    legacy.write_text(
+        "<!-- katha:user -->older question\n\n"
+        "<!-- katha:assistant -->older answer\n\n"
+        "<!-- katha:end -->\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        got = client.get("/api/muse/thread", params={"chapter_id": chapter_id}).json()
+    assert [m["text"] for m in got["messages"]] == ["older question", "older answer"]
+
+    _patch_ollama(
+        monkeypatch,
+        _ollama_chat_ndjson(
+            {"model": "gemma4:12b", "message": {"role": "assistant", "content": "new answer"}, "done": True}
+        ),
+    )
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/muse/chat",
+            json={"messages": [{"role": "user", "content": "new question"}], "chapter_id": chapter_id},
+        ) as r:
+            assert r.status_code == 200
+            list(r.iter_lines())
+
+    assert scoped.is_file(), "the first write must go to the book-scoped name"
+    carried = scoped.read_text(encoding="utf-8")
+    assert "older question" in carried and "older answer" in carried
+    assert "new question" in carried
+
+    # …and the old file is no longer preferred, so nothing is read twice
+    with TestClient(app) as client:
+        again = client.get("/api/muse/thread", params={"chapter_id": chapter_id}).json()
+    assert [m["text"] for m in again["messages"]] == [
+        "older question", "older answer", "new question", "new answer",
+    ]
+
+    scoped.unlink()
+    legacy.unlink()
 
 
 def test_muse_persistence_dir_excluded_from_books_listing():
@@ -759,7 +834,8 @@ def test_thread_roundtrip_survives_markdown_separators():
     from app.config import ARCHIVE_ROOT
 
     chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-02"
-    path = ARCHIVE_ROOT / ".katha" / "muse" / "ch-02.md"
+    path = muse_mod._thread_path(chapter_id)      # book-scoped (2.4)
+    assert path is not None
     path.unlink(missing_ok=True)
     reply = "A line.\n\n---\n\n## Heading\n\n<!-- not a marker -->\n\n**USER**: prose"
     try:
@@ -792,7 +868,8 @@ def test_thread_persistence_stores_only_the_last_exchange(tmp_path, monkeypatch)
     from app.config import ARCHIVE_ROOT
 
     chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01"
-    thread_path = ARCHIVE_ROOT / ".katha" / "muse" / "ch-01.md"
+    thread_path = muse_mod._thread_path(chapter_id)   # book-scoped (2.4)
+    assert thread_path is not None
     thread_path.unlink(missing_ok=True)
 
     def _handler(request: httpx.Request) -> httpx.Response:

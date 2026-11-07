@@ -66,6 +66,23 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.4** — the rest of the tree, and the door out. **Bible files** can be deleted
+  from the bible panel (a `×` on each row) and a whole **series** can be taken out
+  in one move, both through the same move-to-trash machinery as chapters and books
+  (D33) — the confirm dialog asks the server what would actually go (books,
+  chapters, words, revision snapshots, margin notes, Muse threads, bible files,
+  files, size) before it offers the red button. A bible file is deleted one file at
+  a time, on purpose: the guard the editor writes through only resolves real `.md`
+  files, so no path shape exists that takes the whole bible (D34). A series travels
+  as one tree — books, `series.json`, and the books' own Muse conversations — and
+  comes back whole. **Erasing is now possible**: Settings → Trash can `Erase for
+  good` one entry or `Empty trash`, which is the only code path in Katha that
+  destroys anything, and it always asks twice (D36). Under the hood the Muse thread
+  files are now book-scoped — `ch-01.md` exists in every book, so the old
+  chapter-only name meant two books shared one conversation and a delete could
+  steal the other book's history (D35). Also fixed: an empty archive was reported
+  as *"Failed to load archive — server didn't respond"*, which was both false and
+  hid the trash; the empty state now offers to start a book or series (D37).
 - **2.3** — delete + revive. A chapter or a whole book can be removed from the
   rail (a hover `×` on the chapter row, `×` beside the book selector), behind a
   dialog that says exactly what would go — chapters, words, revision snapshots,

@@ -448,64 +448,84 @@ def test_thread_paths_are_scoped_per_book():
     assert muse_mod._thread_path("") is None
 
 
-def test_legacy_chapter_only_thread_is_still_read_and_carried_over(monkeypatch):
-    """Threads written before 2.4 are named `<chapter>.md`. They must still be
-    read — and the first write under the new name must carry them over, so an
-    old conversation can't appear to reset."""
+def test_legacy_chapter_only_thread_is_adopted_by_the_book_that_owns_it():
+    """Pre-2.4 thread files were named after the chapter alone. At boot each one
+    is attributed to the single book the archive says owns that chapter id — so
+    the author's old conversation shows up under the right book."""
     from app import muse as muse_mod
     from app.config import ARCHIVE_ROOT
 
-    series_slug = "muse-tests"
-    book_slug = "legacy-book"
-    chapter_id = f"{series_slug}/{book_slug}/ch-01"
+    book_chapters = ARCHIVE_ROOT / "muse-tests" / "adopt-book" / "chapters"
+    book_chapters.mkdir(parents=True, exist_ok=True)
+    (book_chapters / "ch-91.md").write_text("# Nineteen\n\nbody\n", encoding="utf-8")
 
     muse_root = ARCHIVE_ROOT / ".katha" / "muse"
     muse_root.mkdir(parents=True, exist_ok=True)
-    legacy = muse_root / "ch-01.md"
-    scoped = muse_root / f"{book_slug}-ch-01.md"
-    for path in (legacy, scoped):
-        if path.exists():
-            path.unlink()
-    legacy.write_text(
-        "<!-- katha:user -->older question\n\n"
-        "<!-- katha:assistant -->older answer\n\n"
-        "<!-- katha:end -->\n",
-        encoding="utf-8",
-    )
+    legacy = muse_root / "ch-91.md"
+    legacy.write_text("<!-- katha:user -->older question\n\n<!-- katha:end -->\n", encoding="utf-8")
+    scoped = muse_root / "adopt-book-ch-91.md"
+    scoped.unlink(missing_ok=True)
 
-    with TestClient(app) as client:
-        got = client.get("/api/muse/thread", params={"chapter_id": chapter_id}).json()
-    assert [m["text"] for m in got["messages"]] == ["older question", "older answer"]
+    out = muse_mod.migrate_legacy_threads()
+    assert "adopt-book-ch-91.md" in out["adopted"]
+    assert not legacy.exists()                     # moved, not copied
+    assert "older question" in scoped.read_text(encoding="utf-8")
+    # …and the book it belongs to reads it back
+    assert "older question" in muse_mod.read_thread("muse-tests/adopt-book/ch-91")
 
-    _patch_ollama(
-        monkeypatch,
-        _ollama_chat_ndjson(
-            {"model": "gemma4:12b", "message": {"role": "assistant", "content": "new answer"}, "done": True}
-        ),
-    )
-    with TestClient(app) as client:
-        with client.stream(
-            "POST",
-            "/api/muse/chat",
-            json={"messages": [{"role": "user", "content": "new question"}], "chapter_id": chapter_id},
-        ) as r:
-            assert r.status_code == 200
-            list(r.iter_lines())
+    import shutil
+    scoped.unlink(missing_ok=True)
+    shutil.rmtree(ARCHIVE_ROOT / "muse-tests", ignore_errors=True)
 
-    assert scoped.is_file(), "the first write must go to the book-scoped name"
-    carried = scoped.read_text(encoding="utf-8")
-    assert "older question" in carried and "older answer" in carried
-    assert "new question" in carried
 
-    # …and the old file is no longer preferred, so nothing is read twice
-    with TestClient(app) as client:
-        again = client.get("/api/muse/thread", params={"chapter_id": chapter_id}).json()
-    assert [m["text"] for m in again["messages"]] == [
-        "older question", "older answer", "new question", "new answer",
-    ]
+def test_an_ambiguous_legacy_thread_is_kept_but_never_served():
+    """Two books claiming the same chapter id means the file has no single owner:
+    it is kept (nothing is destroyed) but no book is served it."""
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
 
-    scoped.unlink()
-    legacy.unlink()
+    for book in ("claim-a", "claim-b"):
+        (ARCHIVE_ROOT / "muse-tests" / book / "chapters").mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "muse-tests" / book / "chapters" / "ch-92.md").write_text(
+            "# Shared id\n\nbody\n", encoding="utf-8"
+        )
+
+    muse_root = ARCHIVE_ROOT / ".katha" / "muse"
+    legacy = muse_root / "ch-92.md"
+    legacy.write_text("<!-- katha:user -->whodis\n\n<!-- katha:end -->\n", encoding="utf-8")
+
+    out = muse_mod.migrate_legacy_threads()
+    assert "ch-92.md" in out["set_aside"]
+    assert not legacy.exists()
+    assert (muse_root / "legacy" / "ch-92.md").is_file()      # kept, not deleted
+    for book in ("claim-a", "claim-b"):
+        assert muse_mod.read_thread(f"muse-tests/{book}/ch-92") == ""
+
+    import shutil
+    shutil.rmtree(ARCHIVE_ROOT / "muse-tests", ignore_errors=True)
+    shutil.rmtree(muse_root / "legacy", ignore_errors=True)
+
+
+def test_one_books_chapter_never_reads_another_books_chat():
+    """The author's report, pinned down: `ch-01` in one book must not surface
+    another book's conversation when the chapter is opened."""
+    from app import muse as muse_mod
+
+    mine = f"isolation-tests/book-a/ch-01"
+    theirs = f"isolation-tests/book-b/ch-01"
+    mine_path = muse_mod._thread_path(mine)
+    theirs_path = muse_mod._thread_path(theirs)
+    assert mine_path is not None and theirs_path is not None
+    mine_path.parent.mkdir(parents=True, exist_ok=True)
+    mine_path.write_text("<!-- katha:user -->book A's chat\n\n<!-- katha:end -->\n", encoding="utf-8")
+
+    try:
+        assert "book A's chat" in muse_mod.read_thread(mine)
+        assert muse_mod.read_thread(theirs) == ""
+        assert muse_mod.thread_messages(theirs) == []
+    finally:
+        mine_path.unlink(missing_ok=True)
+        theirs_path.unlink(missing_ok=True)
 
 
 def test_muse_persistence_dir_excluded_from_books_listing():

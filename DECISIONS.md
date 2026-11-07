@@ -133,14 +133,32 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
-## D35 — Muse threads are book-scoped (2.4)
+## D35 — Muse threads are book-scoped (2.4, reads + adoption in 2.4.1)
 Thread files are `archive/.katha/muse/<book>-<chapter>.md`, not `<chapter>.md`.
 Chapter ids repeat across books (`ch-01` exists in every one of them), so the
-chapter-only name silently shared one conversation between two books — and made a
-chapter delete take the wrong book's history. Legacy chapter-only files are still
-*read* (fallback) and are copied over on the first write under the new name, so the
-author's existing conversations survive and don't look reset. Deletes move only the
-book-scoped file: the legacy name is shared, so it is never moved.
+chapter-only name silently shared one conversation between two books — open
+`ch-01` in a second book and you were reading the first book's chat, and a chapter
+delete could take the wrong book's history. Writes became book-scoped in 2.4;
+**reads follow the same name and nothing else** (2.4.1), so no book can ever be
+handed another book's conversation.
+Pre-2.4 files are handled once, at boot, by `muse.migrate_legacy_threads()`: a
+legacy `<chapter>.md` is adopted by the single book the archive says owns that
+chapter id — counting books sitting in the **trash** too, so a book the author has
+deleted and can restore still claims its own log. If two books claim it (or none
+does) the file moves to `.katha/muse/legacy/`: kept, never served. Deletes move
+only the book-scoped file; the legacy name is shared, so it is never moved.
+
+## D38 — The sample story is planted once, never re-planted (2.4.1)
+`Dockerfile CMD` ran `python seed.py` on **every** container start, and `seed()`
+re-creates whatever is missing — so an author who deleted every book found the
+sample story back after any restart, and therefore after every deploy (it looked
+exactly like a deleted book coming back from the dead). Booting an empty archive is
+a legitimate state now: `seed.py --once` plants the sample only when there is no
+book AND no `.katha/seeded` marker, and it writes the marker whenever it finds an
+archive that already has books (so an upgrade from ≤2.4 is *recorded* as seeded
+rather than re-seeded). `cd-deploy.sh` no longer refuses an empty archive for the
+same reason — it refuses only a *missing* directory, which would mean
+`KATHA_ARCHIVE_DIR` is mis-set.
 
 ## D34 — Bible files and whole series are deletable, through the same trash (2.4)
 `DELETE /api/books/{s}/{b}/bible/{name}` and `DELETE /api/series/{series}`, each

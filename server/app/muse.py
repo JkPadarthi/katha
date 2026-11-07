@@ -634,15 +634,6 @@ def _persist_thread(chapter_id: str, user_messages: list[dict], assistant_text: 
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            # First write under the book-scoped name: carry a legacy
-            # (chapter-only) log over so the conversation doesn't look reset.
-            legacy = _thread_path(chapter_id, legacy=True)
-            if legacy is not None and legacy.is_file():
-                try:
-                    shutil.copy2(legacy, path)
-                except OSError:
-                    pass
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         last_user = next(
             (m for m in reversed(user_messages) if m.get("role") == "user"),
@@ -728,13 +719,65 @@ async def _load_style_summary(book_slug: str, bdir: Path) -> str:
 def read_thread(chapter_id: str) -> str:
     """Return the persisted thread for `chapter_id` (empty if none).
 
-    Prefers the book-scoped file; falls back to the legacy chapter-only name so
-    conversations written before 2.4 still restore when a chapter opens.
+    **Book-scoped only.** A chapter id is not unique across books (`ch-01` is in
+    every one of them), so there is deliberately no fallback to the old
+    chapter-only name: that fallback meant a *different* book's ch-01 was served
+    the first book's conversation. Pre-2.4 files are attributed to their book
+    once, at boot, by `migrate_legacy_threads()`.
     """
-    for path in (_thread_path(chapter_id), _thread_path(chapter_id, legacy=True)):
-        if path is not None and path.is_file():
-            return path.read_text(encoding="utf-8")
-    return ""
+    path = _thread_path(chapter_id)
+    if path is None or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+# Where un-attributable pre-2.4 threads are kept. Kept — never deleted — but
+# never served either.
+_LEGACY_DIR = _MUSE_ROOT / "legacy"
+
+
+def _chapter_claimants(cid: str) -> set[str]:
+    """Every book id that has a chapter `<cid>` — in the archive *and* the trash.
+
+    The trash lives inside the archive (`.katha/trash/`), so one scan covers
+    both. That matters: a book the author has deleted (and can restore) must
+    still be able to claim its own conversation, and a book that no longer exists
+    claims nothing.
+    """
+    owners: set[str] = set()
+    for chapters in ARCHIVE_ROOT.glob("**/chapters"):
+        if not chapters.is_dir():
+            continue
+        if (chapters / f"{cid}.md").is_file() and chapters.parent.name != "chapters":
+            owners.add(chapters.parent.name)
+    return owners
+
+
+def migrate_legacy_threads() -> dict:
+    """Give pre-2.4 chapter-only threads a home under the book that owns them.
+
+    Before 2.4 a thread file was named after the chapter alone (`ch-01.md`), so
+    every book's ch-01 shared one file. Each legacy file is adopted by the single
+    book the archive says owns that chapter id; when two books claim it (or none
+    does) the file is moved to `.katha/muse/legacy/` — kept, but never handed to
+    a book that might not own it.
+    """
+    result: dict = {"adopted": [], "set_aside": []}
+    if not _MUSE_ROOT.is_dir():
+        return result
+    for legacy in sorted(_MUSE_ROOT.glob("ch-*.md")):
+        cid = legacy.stem
+        owners = _chapter_claimants(cid)
+        if len(owners) == 1:
+            dest = _MUSE_ROOT / f"{next(iter(owners))}-{cid}.md"
+            if not dest.exists():
+                shutil.move(str(legacy), str(dest))
+                result["adopted"].append(dest.name)
+                continue
+        _LEGACY_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(_LEGACY_DIR / legacy.name))
+        result["set_aside"].append(legacy.name)
+    return result
 
 
 _THREAD_TURN_RE = re.compile(

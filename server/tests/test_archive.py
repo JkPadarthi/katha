@@ -2,6 +2,10 @@
 
 Uses FastAPI TestClient against the real app with KATHA_ARCHIVE pointed at a
 temp dir, so the md files on disk are genuinely exercised (source of truth).
+
+Seeding is pinned down here too (2.4.1): the sample story is planted **once**,
+never re-planted because the archive happens to be empty — an author who deletes
+every book must not find the sample back after the next restart.
 """
 
 from __future__ import annotations
@@ -41,8 +45,53 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "2.4.0"
+    assert body["version"] == "2.4.1"
     assert body["db_ok"] is True
+
+
+# --- seeding is a first-run act, not a resurrection spell (2.4.1) ----------
+
+def test_seed_once_plants_the_sample_then_never_again(tmp_path, monkeypatch):
+    """The regression this exists for: the container ran `python seed.py` on
+    EVERY start, so an author who deleted every book got the sample story back
+    on the next restart — and on every deploy."""
+    import seed as seed_mod
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    monkeypatch.setattr(seed_mod, "ARCHIVE_ROOT", archive)
+    planted: list = []
+    monkeypatch.setattr(seed_mod, "ar", type("Stub", (), {"list_books": staticmethod(lambda: [])})())
+    monkeypatch.setattr(seed_mod, "seed", lambda **kw: (planted.append(kw), ["a"])[1])
+
+    assert seed_mod.seed_once(quiet=True) is True
+    assert len(planted) == 1
+    assert (archive / seed_mod.SEED_MARKER_NAME).is_file()
+
+    # The author deletes everything; the marker survives. Nothing is re-planted.
+    assert seed_mod.seed_once(quiet=True) is False
+    assert len(planted) == 1
+
+
+def test_seed_once_only_records_an_archive_that_already_has_books(tmp_path, monkeypatch):
+    """Upgrade path: an archive with the author's work but no marker must not be
+    seeded — it is merely marked as already seeded."""
+    import seed as seed_mod
+
+    archive = tmp_path / "archive"
+    (archive / "some-series" / "some-book").mkdir(parents=True)
+    monkeypatch.setattr(seed_mod, "ARCHIVE_ROOT", archive)
+    monkeypatch.setattr(
+        seed_mod, "ar",
+        type("Stub", (), {"list_books": staticmethod(lambda: [{"series": "some-series"}])})(),
+    )
+    monkeypatch.setattr(
+        seed_mod, "seed",
+        lambda **kw: pytest.fail("must not plant the sample into a populated archive"),
+    )
+
+    assert seed_mod.seed_once(quiet=True) is False
+    assert (archive / seed_mod.SEED_MARKER_NAME).is_file()
 
 
 def test_books_tree_seeded():

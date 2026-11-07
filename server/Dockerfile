@@ -26,5 +26,7 @@ ENV KATHA_WEB_DIR=/srv/web
 RUN mkdir -p /data/archive /data/index
 
 EXPOSE 4901
-# Seed then serve. Seeding is cheap and idempotent.
-CMD ["sh", "-c", "python seed.py && uvicorn app.main:app --host 0.0.0.0 --port 4901"]
+# Seed ONCE, then serve (2.4.1): the sample story is a first-run act. Re-running
+# plain `seed.py` here re-planted the sample story into an archive the author had
+# deliberately emptied — on every restart, and therefore on every deploy.
+CMD ["sh", "-c", "python seed.py --once && uvicorn app.main:app --host 0.0.0.0 --port 4901"]

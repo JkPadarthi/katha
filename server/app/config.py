@@ -28,7 +28,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 
 # --- Muse upstream (0.3 Muse, D16/D19; dialect switch 2.1, D20-D23) -----------
 # Which wire dialect the Muse talks. "ollama" is the LAN box (unchanged

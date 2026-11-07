@@ -67,6 +67,11 @@ async def lifespan(_app: FastAPI):
     # app boots even before seed.py has run.
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     ar.migrate_archive()
+    # Pre-2.4 Muse threads were named after the chapter alone, so different books
+    # shared one conversation. Attribute each of them to its book once (2.4.1).
+    adopted = muse_mod.migrate_legacy_threads()
+    if adopted["adopted"] or adopted["set_aside"]:
+        print(f"muse threads: adopted {adopted['adopted']}, set aside {adopted['set_aside']}")
     reindex_search()
     yield
 

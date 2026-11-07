@@ -115,10 +115,16 @@ else
 fi
 git pull --ff-only --quiet origin main 2>>"$LOG" || true
 
-# --- the novels must not be collateral: verify the binds resolve, and are not empty ---
-if [ ! -d "$ARCHIVE_DIR" ] || [ -z "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
-    log "REFUSING: $ARCHIVE_DIR missing or empty — a deploy would re-seed an empty archive"
+# --- the novels must not be collateral: verify the binds resolve ---
+# An EMPTY archive is legitimate since 2.4.1 (seeding is a first-run act, and the
+# author is allowed to delete everything), so only a MISSING directory — a
+# mis-set KATHA_ARCHIVE_DIR — is fatal. Emptiness gets a note, not a refusal.
+if [ ! -d "$ARCHIVE_DIR" ]; then
+    log "REFUSING: $ARCHIVE_DIR is missing — check KATHA_ARCHIVE_DIR in server/.env"
     exit 1
+fi
+if [ -z "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
+    log "note: $ARCHIVE_DIR is empty — deploying anyway (nothing will be re-seeded, 2.4.1)"
 fi
 cfg="$(cd "$COMPOSE_DIR" && docker compose config 2>>"$LOG")" || { log "REFUSING: docker compose config failed"; exit 1; }
 

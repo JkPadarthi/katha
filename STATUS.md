@@ -66,6 +66,19 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.4.1** — two bugs that both amounted to *"it came back"*. (1) The sample
+  story was re-planted on **every** container start (`Dockerfile CMD` ran
+  `python seed.py`, which re-creates whatever is missing), so deleting every book
+  lasted only until the next restart or deploy — and the resurrected sample looked
+  exactly like the deleted book. Seeding is now a first-run act (`seed.py --once`
+  + a `.katha/seeded` marker), an empty archive is legitimate, and the deploy
+  guard refuses only a *missing* archive dir (D38). (2) Muse threads were
+  book-scoped for writing in 2.4 but still *read* the old chapter-only name, so
+  `ch-01` in a new book showed the first book's conversation; reads are now
+  book-scoped with no fallback, and pre-2.4 threads are adopted once at boot by
+  the book that owns that chapter id — counting books sitting in the trash, so a
+  deleted-then-restored book still gets its own chat back. Un-attributable legacy
+  files are kept in `.katha/muse/legacy/`, never served (D35).
 - **2.4** — the rest of the tree, and the door out. **Bible files** can be deleted
   from the bible panel (a `×` on each row) and a whole **series** can be taken out
   in one move, both through the same move-to-trash machinery as chapters and books

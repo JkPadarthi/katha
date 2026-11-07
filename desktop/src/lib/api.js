@@ -5,11 +5,38 @@
 
 export const BASE = ''
 
+// --- the door (2.2) -------------------------------------------------------
+// The app is password-locked. When a session expires (or is dropped in another
+// tab) every call answers 401 — walk the author to the login screen with where
+// to come back to, instead of surfacing a raw error they can't act on.
+let _bouncing = false
+
+function handleAuth(res) {
+  if (res.status !== 401) return
+  if (!_bouncing) {
+    _bouncing = true
+    const next = window.location.pathname + window.location.search
+    window.location.replace(`/login?next=${encodeURIComponent(next)}`)
+  }
+  const err = new Error('session expired — sign in again')
+  err.status = 401
+  err.auth = true
+  throw err
+}
+
+export async function signOut() {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' })
+  } catch { /* logging out must never fail loudly */ }
+  window.location.replace('/login')
+}
+
 async function req(path, options = {}) {
   const res = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options
   })
+  handleAuth(res)
   if (!res.ok) {
     const err = new Error(`${res.status} ${res.statusText} — ${path}`)
     err.status = res.status
@@ -103,6 +130,7 @@ async function streamSse(path, body, { onDelta, onStatus, signal }) {
     body: JSON.stringify(body),
     signal
   })
+  handleAuth(res)
   if (!res.ok || !res.body) {
     throw new Error(`${res.status} ${res.statusText} — ${path}`)
   }

@@ -7,16 +7,33 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
+from urllib.parse import quote
 
 from . import archive as ar
+from . import auth
 from . import db
 from . import epub
 from . import stats
-from .config import ARCHIVE_ROOT, CORS_ORIGINS, DAILY_GOAL, VERSION, WEB_DIR
+from .config import (
+    ARCHIVE_ROOT,
+    COOKIE_NAME,
+    CORS_ORIGINS,
+    DAILY_GOAL,
+    SESSION_SECONDS,
+    VERSION,
+    WEB_DIR,
+)
 from .schemas import (
     BibleOut,
     BibleUpdate,
@@ -28,6 +45,7 @@ from .schemas import (
     ChapterOut,
     ChapterUpdate,
     HealthOut,
+    LoginIn,
     MuseChatRequest,
     MuseRewriteRequest,
     MuseSweepRequest,
@@ -62,6 +80,59 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------- the door (2.2, D32) ----------
+# One password in front of EVERYTHING except the login page: the PWA shell, every
+# /api route (including the Muse SSE streams) and the built client's assets. The
+# manifest/icons/service worker stay public because a browser fetches them
+# without credentials and they carry no story data; /api/health stays public
+# because the container's own healthcheck calls it from inside, with no cookie —
+# a 401 there would mark every deploy unhealthy and trip the CD rollback.
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    if (not auth.enabled()
+            or request.method == "OPTIONS"      # CORS preflight carries no cookie
+            or auth.is_public(request.url.path)):
+        return await call_next(request)
+    if auth.valid_token(request.cookies.get(COOKIE_NAME, "")):
+        return await call_next(request)
+    # API/SSE callers get a real 401 so the client can show an error; page
+    # requests are walked to the login screen with a same-origin `next`.
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "unauthorized — sign in"}, status_code=401)
+    return RedirectResponse(
+        f"/login?next={quote(request.url.path, safe='/')}", status_code=303
+    )
+
+
+@app.get("/login", include_in_schema=False)
+def login_page():
+    """The one public page — self-contained, because the SPA bundle (and its
+    assets) are behind the lock."""
+    return HTMLResponse(auth.LOGIN_HTML, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auth/login", tags=["auth"])
+def login(payload: LoginIn, request: Request, response: Response):
+    """Exchange the password for a signed session cookie."""
+    ip = request.client.host if request.client else "?"
+    if auth.blocked(ip):
+        raise HTTPException(429, "too many attempts — wait a few minutes")
+    if not auth.verify(payload.password):
+        auth.record_failure(ip)
+        raise HTTPException(401, "that password didn't work")
+    auth.clear_failures(ip)
+    response.set_cookie(value=auth.issue_token(), **auth.cookie_kwargs(request))
+    return {"ok": True, "session_days": SESSION_SECONDS // 86400}
+
+
+@app.post("/api/auth/logout", tags=["auth"])
+def logout(response: Response):
+    """Drop the session. Public on purpose: logging out must never 401."""
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True}
 
 
 def reindex_search():

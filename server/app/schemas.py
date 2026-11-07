@@ -141,3 +141,9 @@ class NoteIn(BaseModel):
 
 class NotesUpdate(BaseModel):
     notes: list[NoteIn]
+
+
+# --- the door (2.2) -------------------------------------------------------
+
+class LoginIn(BaseModel):
+    password: str

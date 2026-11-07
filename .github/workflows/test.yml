@@ -1,0 +1,44 @@
+name: CI
+
+# The gate the deploy script refuses to cross: a red commit never reaches the Pi.
+# Client build is checked here too, so a broken JSX fails in seconds instead of
+# during a deploy build.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  server:
+    name: pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt pytest
+      - name: Offline test suite (no network, no upstream)
+        run: python -m pytest -q
+
+  client:
+    name: client build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Build the PWA
+        run: npm run build

@@ -54,6 +54,30 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   a real `[ERROR]` in the Muse instead of freezing it for 300s — that freeze was
   the first thing the dormant jenga box exposed.
 
+- **2.1.1 / 2.2.0** — the pipeline and the door (shipped together as **2.2.0**).
+  **Pipeline**: a GitHub Actions gate (pytest + client build) on every push, and a
+  pull-based CD timer on the prod host (`katha-cd.timer`, every 5 min) that
+  deploys only when `origin/main` moves and the pushed SHA's checks are green
+  (unauthenticated check-runs — the repo is public), builds before replacing
+  anything, tags each deploy per-SHA, health-gates it and auto-rolls back to the
+  last good tag. **Growth path**: `KATHA_ARCHIVE_DIR`/`KATHA_INDEX_DIR` moved the
+  archive and index *outside* the checkout, so a deploy pull can never touch the
+  novels and prod can live on a different host (`~/katha/archive` +
+  `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
+  `katha-archive-backup.timer`: a daily snapshot of the md archive and a
+  consistent copy of the index, keeping 14.
+- **2.2** — the door. One password (`KATHA_PASSWORD`, hashed at boot with scrypt)
+  in front of everything except the login page: the PWA shell, every `/api` route
+  including the Muse SSE streams, and the built assets. Signed `HttpOnly`
+  SameSite 30-day session cookie whose key derives from the password (rotating it
+  signs everyone out); failed attempts throttled; `/api/health`, the PWA
+  manifest/icons and the service worker stay public (browsers and the container's
+  own healthcheck fetch them without credentials). An empty password means no
+  lock, so dev and the test suite boot as before. The login page is
+  self-contained and themed with the app's three token sets; an expired session
+  bounces the SPA to `/login` instead of showing a mystery error, and there is a
+  `lock` button in the title bar.
+
 ## Next
 - Dogfood the full loop (write → autosave/revisions → Muse tools → rewrite diff
   → sweep → reading + notes → EPUB); browser-verify the three themes + mobile.
@@ -61,9 +85,11 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
 - Later: a settings affordance for the Muse dialect (today it's env-only).
 
 ## Verify
-- Server: `cd server && .venv/bin/python -m pytest -q` (70 tests).
+- Server: `cd server && .venv/bin/python -m pytest -q` (86 tests).
 - Client: `cd desktop && npm run build`.
 - Install: build, serve via the Pi, open over `tailscale serve` HTTPS, Install app.
+- Deploy: `katha-cd.timer` (every 5 min) on the prod host; decisions land in
+  `~/katha/logs/cd.log`. Manual: `scripts/cd-deploy.sh --force`.
 
 ## Open
 - The Muse upstream must be reachable: the LAN Ollama box (`KATHA_MUSE_API=ollama`,

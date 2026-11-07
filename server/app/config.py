@@ -8,6 +8,7 @@ Design (D6, D9, D14):
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -27,7 +28,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 # --- Muse upstream (0.3 Muse, D16/D19; dialect switch 2.1, D20-D23) -----------
 # Which wire dialect the Muse talks. "ollama" is the LAN box (unchanged
@@ -71,6 +72,21 @@ MUSE_STYLE_PROSE_CHAPTERS = int(os.environ.get("MUSE_STYLE_PROSE_CHAPTERS", "3")
 # seconds and surface as an SSE `[ERROR]`, not freeze the Muse for 300s (D23).
 MUSE_UPSTREAM_TIMEOUT = float(os.environ.get("MUSE_UPSTREAM_TIMEOUT", "300"))
 MUSE_UPSTREAM_CONNECT_TIMEOUT = float(os.environ.get("MUSE_UPSTREAM_CONNECT_TIMEOUT", "10"))
+
+# --- The door (2.2, D32 — supersedes D12's "Tailscale is the boundary") -------
+# One password in front of everything except the login page. EMPTY = no lock, so
+# dev/tailnet installs boot exactly like 2.0.x and the test suite stays open by
+# default. The password is hashed at boot (scrypt) — never compared in plaintext.
+PASSWORD = os.environ.get("KATHA_PASSWORD", "")
+# Cookie signing key. Unset ⇒ derived from the password, which means one secret
+# to manage and rotating the password invalidates every existing session.
+SECRET_KEY = os.environ.get("KATHA_SECRET_KEY", "")
+# How long a session lasts before the password is asked again (30 days).
+SESSION_SECONDS = int(os.environ.get("KATHA_SESSION_SECONDS", str(30 * 24 * 3600)))
+COOKIE_NAME = os.environ.get("KATHA_COOKIE_NAME", "katha_session")
+# "auto" (default) sets Secure on the cookie only when the login arrived over
+# TLS; "1" forces it (use behind a TLS-terminating proxy); "0" never.
+COOKIE_SECURE = os.environ.get("KATHA_COOKIE_SECURE", "auto").strip().lower()
 
 # Allowed browser origins (comma-separated env). The old wildcard let ANY
 # website the author visits read/rewrite the archive cross-origin. "null"

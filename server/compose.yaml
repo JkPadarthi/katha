@@ -26,9 +26,13 @@ services:
       # The built client (copied into the image).
       KATHA_WEB_DIR: /srv/web
     volumes:
-      # md archive (source of truth) + sqlite index both persist on the host.
-      - ./archive:/data/archive
-      - ./data:/data/index
+      # md archive (source of truth) + sqlite index both persist on the host —
+      # and deliberately OUTSIDE this checkout (D25): a `git pull` during a
+      # deploy must never be able to touch the novels. Point both at the host's
+      # data root in server/.env (deploy host: ~/katha/archive + ~/katha/index);
+      # the ./defaults keep a fresh clone/CI working.
+      - ${KATHA_ARCHIVE_DIR:-./archive}:/data/archive
+      - ${KATHA_INDEX_DIR:-./data}:/data/index
     # healthcheck mirrors the heartbeat endpoint.
     healthcheck:
       test: ["CMD", "python", "-c",

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Button, IconButton } from '../ui/Button.jsx'
+import { signOut } from '../lib/api.js'
 import ThemePicker from './ThemePicker.jsx'
 
 // The quiet top strip: brand, theme picker, settings, focus (desktop only), an
@@ -40,6 +41,13 @@ export default function TitleBar({ focus, onToggleFocus, onOpenSettings, theme, 
           {focus ? 'exit focus' : 'focus'}
         </button>
         <IconButton onClick={onOpenSettings} title="Settings">⚙</IconButton>
+        <button
+          onClick={signOut}
+          className="hidden rounded-md border hairline px-2 py-0.5 text-[10.5px] text-mute hover:text-ink md:block"
+          title="Sign out and lock the archive again"
+        >
+          lock
+        </button>
         {installEvt && (
           <Button variant="accent" size="sm" onClick={install} title="Install Katha as an app">
             Install app

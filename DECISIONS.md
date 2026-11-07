@@ -119,6 +119,75 @@ If a `chapter_id` (`series/book/ch-NN`) is supplied, the system prompt is
 prefixed with the current chapter plus up to 4 FTS5-ranked bible hits, capped at
 `MUSECONTEXT_MAX_TOKENS`.
 
+## D32 — One password in front of everything (supersedes D12)
+D12 said "single user, Tailscale, no auth — Tailscale is the boundary". That held
+while Katha only ever ran on a tailnet. It now sits in front of the novels on a
+host that can be exposed beyond it, so: **one password**, and everything except
+the login page is behind it — the PWA shell, every `/api` route (Muse SSE
+included) and the built assets. Public by necessity: `/login` itself, the PWA
+manifest/icons/service worker (browsers fetch these without credentials, and they
+carry no story data) and `/api/health` (the container's own healthcheck calls it
+with no cookie — a 401 there would mark every deploy unhealthy and trip the CD
+rollback).
+
+`KATHA_PASSWORD` (plaintext env) is hashed at boot with the house scrypt helper;
+the session is a signed cookie, `HttpOnly`, `SameSite=Lax`, 30 days, whose signing
+key is derived from the password — so **rotating the password signs every session
+out**. Empty password = no lock at all, which keeps dev/tailnet installs and the
+test suite booting exactly like 2.0.x. `Secure` is set automatically when the
+login arrived over TLS, or forced with `KATHA_COOKIE_SECURE=1`; plain http on the
+tailnet (already WireGuard-encrypted) stays usable. Failed logins are throttled
+(8 per 15 min per IP). The login page is self-contained and themed with the same
+three token sets as the app (Hermes/Paper/Slate), following the same rule as the
+shell: the OS decides until the author chooses.
+
+## D31 — The archive gets a local snapshot; the card is an accepted risk
+`katha-archive-backup.timer` (03:30 daily) tars the md archive and takes a
+consistent SQLite copy of the index via SQLite's own backup API, keeping 14, all
+on the deploy host — the same shape wedding-cards and shop-inventory use. The
+off-box (gdrive/rclone) leg was considered and declined for now: the novels then
+live on **one** SD card with same-card snapshots. That protects against a bad
+edit, a bad deploy and index corruption — not against the card dying.
+
+## D30 — Deploys happen any time; quiet hours are opt-in
+`touch ~/katha/logs/night_only` restricts deploys to 22:00–00:00 IST for a period
+the author wants frozen. Nothing is protected by default: a container restart
+reconnects the PWA in seconds, and the author asked for deploys when they happen.
+
+## D29 — A failed deploy never breaks a running one
+The build runs before anything is replaced (a failed build exits with the running
+version untouched), every deploy is tagged per-SHA (`katha:<sha>`) for rollback,
+and after `up` the container's own healthcheck plus the `/api/health` version is
+polled for 90 s — unhealthy ⇒ automatic rollback to `last_good`.
+
+## D28 — The CI gate is real, and needs no secret on this host
+`.github/workflows/test.yml` runs pytest (server) and a client build on every
+push. The deploy script refuses to cross unless the pushed SHA's check-runs are
+green, reading them via `gh` → `~/katha/secrets/github_ci_token` → **plain
+unauthenticated curl** (the repo is public). Only if all three are unavailable
+does it proceed with a loud WARN rather than silently skipping the gate.
+
+## D27 — CI tests; the host builds
+GitHub runners are x86 and this image must be arm64 — emulating that build with
+qemu turns a ~80 s native build into ~10 minutes. So Actions runs the tests, and
+the deploy host builds the image it will actually run.
+
+## D26 — Dev and prod are different hosts *and* different directories
+**abhi** runs prod: a deploy clone at `~/Projects/katha` that CD owns (main only,
+never hand-edited), matching recruit / shop-inventory / wedding-cards.
+`~/Projects/Katha` on bharat stays the workshop — branches, experiments, and
+never the live archive — so uncommitted work can neither block a deploy nor be
+shuffled by one.
+
+## D25 — Data lives outside every checkout
+`KATHA_ARCHIVE_DIR` / `KATHA_INDEX_DIR` (compose interpolation from
+`server/.env`) point at `~/katha/archive` and `~/katha/index` on the deploy host;
+the compose defaults stay `./archive` / `./data` so a fresh clone still boots. A
+deploy `git pull` therefore cannot touch the novels, and no checkout owns the
+truth. The deploy script refuses to deploy if those binds don't resolve or if the
+archive is empty — a deploy that seeded an empty archive would look exactly like
+the library was lost.
+
 ## D24 — Tool calls are translated, not dumbed down
 The agentic Muse (D-tools: `list_story_files` / `read_story_file` / `search_story`)
 must work on both dialects. Ollama and OpenAI disagree on the shape: OpenAI tool

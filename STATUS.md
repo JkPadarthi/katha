@@ -76,7 +76,10 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   circle — because the whole lighting model is a single `t = (x + y)` ramp, which
   is literally what an SVG `linearGradient` (0,0)→(1,1) is (D41). It now shows in
   the title bar, the login card and the browser tab; `/logo.svg` is public
-  *exactly* (never as a prefix) so the locked card can display it.
+  *exactly* (never as a prefix) so the locked card can display it. (2.6.1, after
+  looking at it in place: the title-bar mark goes to 18px — 16 is the floor of
+  legibility for a looped glyph — and the login mark drops 1px to sit level with
+  the wordmark.)
 - **2.5.1** — the door and the map. **Settings** now holds the two controls the
   title bar kept to itself: the three-way **theme** choice (with swatches, same
   setting the picker writes, so they stay in sync) and **Lock now** — which never

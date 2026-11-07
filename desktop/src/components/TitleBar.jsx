@@ -30,9 +30,9 @@ export default function TitleBar({ focus, onToggleFocus, onOpenSettings, theme, 
         <img
           src="/logo.svg"
           alt=""
-          width="16"
-          height="16"
-          className="h-4 w-4 rounded-[4px]"
+          width="18"
+          height="18"
+          className="h-[18px] w-[18px] rounded-[5px]"
         />
         <span className="text-[11px] font-medium tracking-wide text-mute">Katha</span>
       </div>

@@ -233,7 +233,8 @@ LOGIN_HTML = """<!doctype html>
     box-shadow:0 18px 50px rgba(0,0,0,.28);
   }
   .mark { display:flex; align-items:center; gap:10px; margin-bottom:2px; }
-  .mark img { width:28px; height:28px; border-radius:7px; display:block; }
+  /* the tile reads a hair high next to a cap-height wordmark: nudge it down */
+  .mark img { width:28px; height:28px; border-radius:7px; display:block; transform:translateY(1px); }
   .mark b { color:var(--accent); font-size:10px; }
   h1 { font-family:var(--serif); font-size:23px; font-weight:600; margin:0; letter-spacing:.4px; }
   p.hint { color:var(--mute); font-size:12px; margin:6px 0 20px; }

@@ -10,6 +10,7 @@ Layout under ARCHIVE_ROOT:
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from datetime import datetime, timezone
@@ -113,6 +114,8 @@ def list_books() -> list[dict]:
                 "title": meta.get("title", b.name),
                 "chapter_count": len(chapters),
                 "words": words,
+                "author": meta.get("author", ""),
+                "has_cover": cover_path(b) is not None,
             })
         tree[series_dir.name] = books
     # flatten into list of {series, title, books}
@@ -160,6 +163,116 @@ def ensure_book(series: str, book_title: str) -> dict:
         p.write_text(json.dumps(meta, indent=2))
         return meta
     return _read_book_json(bdir)
+
+
+# ---------- the book's face: author + cover (2.8, D43) ----------
+
+# The cover is the AUTHOR's file, normalised once on upload and stored inside the
+# book directory — so it travels with the book through trash → restore → backup
+# with no extra machinery, and the EPUB can embed it without a second lookup.
+COVER_NAME = "cover.jpg"
+COVER_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+COVER_MAX_BYTES = 8 * 1024 * 1024
+COVER_MAX_W, COVER_MAX_H = 1600, 2560      # the 1:1.6 shape e-readers expect
+
+
+def write_book_json(book: Path, meta: dict) -> None:
+    book_json_path(book).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def set_book_author(book: Path, author: str) -> dict:
+    """Set (or clear) a book's author. An empty name removes the key."""
+    meta = _read_book_json(book)
+    author = (author or "").strip()
+    if author:
+        meta["author"] = author
+    else:
+        meta.pop("author", None)
+    write_book_json(book, meta)
+    return meta
+
+
+def cover_path(book: Path) -> Path | None:
+    """The book's cover file, whatever extension it ended up with."""
+    for ext in COVER_EXTS:
+        p = book / f"cover{ext}"
+        if p.is_file():
+            return p
+    return None
+
+
+def normalise_cover(data: bytes) -> tuple[bytes, int, int]:
+    """Sniff, orient, fit and re-encode an uploaded cover → (jpeg, w, h).
+
+    Normalising on upload is what keeps an 8 MB phone photo out of the EPUB and
+    out of the readers: sniff the real format (never trust a filename or the
+    declared content-type), honour EXIF orientation, downscale to fit
+    COVER_MAX_*, flatten alpha onto white, and re-encode as progressive JPEG.
+    Raises ValueError with a message fit to show the author.
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:  # pragma: no cover - the container always has Pillow
+        raise ValueError("cover support needs Pillow installed on the server")
+
+    if not data:
+        raise ValueError("empty upload")
+    if len(data) > COVER_MAX_BYTES:
+        raise ValueError(
+            f"cover is larger than {COVER_MAX_BYTES // (1024 * 1024)} MB — "
+            "resize it first")
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+    except Exception as exc:  # noqa: BLE001 - any decoder failure means "not an image"
+        raise ValueError(f"that doesn't look like an image ({type(exc).__name__})")
+
+    fmt = (img.format or "").upper()
+    if fmt not in ("JPEG", "PNG", "WEBP"):
+        raise ValueError(f"{fmt or 'that'} isn't a cover format — use JPEG, PNG or WebP")
+
+    img = ImageOps.exif_transpose(img)
+    if img.mode in ("RGBA", "LA", "P"):
+        rgba = img.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, (255, 255, 255))
+        flat.paste(rgba, mask=rgba.split()[-1])
+        img = flat
+    else:
+        img = img.convert("RGB")
+
+    resample = Image.Resampling.LANCZOS      # Pillow ≥9.1; the module alias is deprecated
+    img.thumbnail((COVER_MAX_W, COVER_MAX_H), resample)  # never upscales
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=88, optimize=True, progressive=True)
+    return buf.getvalue(), img.width, img.height
+
+
+def write_cover(book: Path, data: bytes) -> dict:
+    """Store a normalised cover and record it in book.json. One cover per book."""
+    jpeg, w, h = normalise_cover(data)
+    for ext in COVER_EXTS:
+        stale = book / f"cover{ext}"
+        if stale.is_file():
+            stale.unlink()
+    (book / COVER_NAME).write_bytes(jpeg)
+    meta = _read_book_json(book)
+    meta["cover"] = COVER_NAME
+    meta["cover_w"], meta["cover_h"] = w, h
+    write_book_json(book, meta)
+    return {"cover": COVER_NAME, "cover_w": w, "cover_h": h, "bytes": len(jpeg)}
+
+
+def delete_cover(book: Path) -> bool:
+    """Forget the cover: file and book.json keys. True if a file was removed."""
+    p = cover_path(book)
+    meta = _read_book_json(book)
+    for key in ("cover", "cover_w", "cover_h"):
+        meta.pop(key, None)
+    write_book_json(book, meta)
+    if p is not None:
+        p.unlink()
+        return True
+    return False
 
 
 # ---------- chapters ----------

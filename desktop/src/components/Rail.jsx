@@ -3,7 +3,7 @@ import RitualsCard from './RitualsCard.jsx'
 
 // The CHAPTERS pane. Collapses to icons like a proper IDE; the active chapter
 // glows in the theme accent. Below: the bible tree and the ritual stat.
-export default function Rail({ collapsed, onToggle, active, onSelect, archive, current, onSelectBook, onNewBook, onOpenBible, onNewChapter, onNewPrologue, onDeleteChapter, onDeleteBook }) {
+export default function Rail({ collapsed, onToggle, active, onSelect, archive, current, onSelectBook, onNewBook, onOpenBible, onNewChapter, onNewPrologue, onDeleteChapter, onDeleteBook, onEditBook }) {
   const series = archive.find((s) => s.name === current?.series) || archive[0]
   const book = series?.books?.find((b) => b.id === current?.book) || series?.books?.[0]
   if (!series || !book) return null
@@ -53,6 +53,16 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive, c
             >
               «
             </button>
+            {onEditBook && (
+              <button
+                onClick={onEditBook}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-mute/60 hover:bg-panel-2 hover:text-ink"
+                title="Book details — author and cover"
+                aria-label="Book details"
+              >
+                ✎
+              </button>
+            )}
             {onDeleteBook && (
               <button
                 onClick={onDeleteBook}

@@ -4,3 +4,7 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.3
 pydantic==2.13.4
 httpx==0.28.1
+# 2.8: reading a cover image — sniff the real format (never the filename), EXIF
+# orient, downscale to fit, re-encode JPEG (D43). Worth a dependency; there is no
+# stdlib decoder for JPEG/WebP.
+pillow==13.0.0

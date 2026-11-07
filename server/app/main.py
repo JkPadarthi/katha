@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,12 +40,14 @@ from .schemas import (
     BibleOut,
     BibleUpdate,
     BookCreate,
+    BookMetaIn,
     BooksTreeOut,
     ChapterCreate,
     ChapterListOut,
     ChapterMeta,
     ChapterOut,
     ChapterUpdate,
+    CoverIn,
     HealthOut,
     LoginIn,
     MuseChatRequest,
@@ -192,11 +195,15 @@ def books_tree():
 @app.post("/api/books", response_model=dict, status_code=201, tags=["books"])
 def create_book(payload: BookCreate):
     meta = ar.ensure_book(payload.series, payload.title)
+    bdir = ar.book_dir(payload.series, payload.title)
+    # 2.8: a book can be born with its author (the client prefills the field from
+    # Settings, and a pen name per book must survive the round trip).
+    if (payload.author or "").strip():
+        meta = ar.set_book_author(bdir, payload.author)
     db.upsert_book(meta["id"], meta["series"], meta["title"])
     # Every book starts with the canonical bible shape: one file per main
     # character under characters/, one shared side-characters file, places,
     # and a timeline.
-    bdir = ar.book_dir(payload.series, payload.title)
     ar.scaffold_bible(bdir)
     for name, content in ar.read_bible(bdir).items():
         db.index_doc("bible", meta["series"], bdir.name, name, Path(name).stem, content)
@@ -207,12 +214,15 @@ def create_book(payload: BookCreate):
 def _book_detail(book_id: str, series: str) -> dict:
     bdir = _resolve_book_path(series, book_id)
     chapters = ar.list_chapters(bdir)
+    meta = ar._read_book_json(bdir)
     return {
         "id": book_id,
         "series": series,
         "title": _book_title(bdir),
         "chapter_count": len(chapters),
         "chapters": chapters,
+        "author": meta.get("author", ""),
+        "has_cover": ar.cover_path(bdir) is not None,
     }
 
 
@@ -404,14 +414,86 @@ def get_stats(goal: int | None = None):
     return stats.summary(goal if goal and goal > 0 else DAILY_GOAL)
 
 
+# ---------- the book's face: author + cover (2.8, D43) ---------------------
+
+def _book_face(bdir: Path) -> dict:
+    """The two things a shelf knows about a book, in one shape for the client."""
+    meta = ar._read_book_json(bdir)
+    return {
+        "id": bdir.name,
+        "title": meta.get("title", bdir.name),
+        "author": meta.get("author", ""),
+        "has_cover": ar.cover_path(bdir) is not None,
+        "cover_w": meta.get("cover_w"),
+        "cover_h": meta.get("cover_h"),
+    }
+
+
+@app.put("/api/books/{series}/{book_id}/meta", response_model=dict, tags=["books"])
+def update_book_meta(series: str, book_id: str, payload: BookMetaIn):
+    """Set the author (empty string clears it). The title is not editable here —
+    it is the directory name, so renaming is a move, not a field write."""
+    bdir = _resolve_book_path(series, book_id)
+    ar.set_book_author(bdir, payload.author)
+    return _book_face(bdir)
+
+
+@app.get("/api/books/{series}/{book_id}/cover", tags=["books"])
+def get_cover(series: str, book_id: str):
+    """The stored cover, for the UI preview. Behind the lock like everything else;
+    the EPUB embeds its own copy, so no reader ever needs this route."""
+    bdir = _resolve_book_path(series, book_id)
+    p = ar.cover_path(bdir)
+    if p is None:
+        raise HTTPException(404, "this book has no cover")
+    media = "image/png" if p.suffix.lower() == ".png" else (
+        "image/webp" if p.suffix.lower() == ".webp" else "image/jpeg")
+    return Response(content=p.read_bytes(), media_type=media,
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.put("/api/books/{series}/{book_id}/cover", response_model=dict, tags=["books"])
+def put_cover(series: str, book_id: str, payload: CoverIn):
+    """Store a cover. The bytes are base64 in a JSON body (no multipart dep) and
+    are sniffed + normalised — see `archive.normalise_cover`."""
+    bdir = _resolve_book_path(series, book_id)
+    try:
+        raw = base64.b64decode(payload.data, validate=True)
+    except Exception:  # noqa: BLE001 - every decode failure is the same 400
+        raise HTTPException(400, "cover data must be valid base64")
+    try:
+        info = ar.write_cover(bdir, raw)
+    except ValueError as exc:
+        # The message is written for the author to read, not for a log.
+        raise HTTPException(400, str(exc))
+    return {**_book_face(bdir), **info}
+
+
+@app.delete("/api/books/{series}/{book_id}/cover", response_model=dict, tags=["books"])
+def remove_cover(series: str, book_id: str):
+    bdir = _resolve_book_path(series, book_id)
+    removed = ar.delete_cover(bdir)
+    return {**_book_face(bdir), "removed": removed}
+
+
 # ---------- delivery: EPUB export (1.0) -----------------------------------
 
 @app.get("/api/books/{series}/{book_id}/export.epub", tags=["export"])
 def export_epub(series: str, book_id: str):
-    """Build and return a downloadable EPUB for the book (chapters + bible)."""
+    """Build and return a downloadable EPUB for the book (chapters + bible).
+
+    2.8: the book's author rides in the metadata, and its cover — when one has
+    been uploaded — becomes a real cover page. The cover lives *inside* the book
+    directory, so no extra lookup is needed here.
+    """
     bdir = _resolve_book_path(series, book_id)
     title = _book_title(bdir)
-    data = epub.build_epub(ar._read_series_title(bdir.parent), title, bdir)
+    cover_file = ar.cover_path(bdir)
+    data = epub.build_epub(
+        ar._read_series_title(bdir.parent), title, bdir,
+        author=ar._read_book_json(bdir).get("author", ""),
+        cover=cover_file.read_bytes() if cover_file else None,
+    )
     filename = f"{ar.slugify(title)}.epub"
     return Response(
         content=data,

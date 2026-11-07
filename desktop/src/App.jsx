@@ -10,6 +10,7 @@ import BiblePanel from './components/BiblePanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import ConfirmDeleteDialog from './components/ConfirmDeleteDialog.jsx'
 import NewBookDialog from './components/NewBookDialog.jsx'
+import BookDetailsDialog from './components/BookDetailsDialog.jsx'
 import * as api from './lib/api.js'
 import { getSetting, setSetting } from './lib/settings.js'
 import { useMediaQuery } from './lib/useMediaQuery.js'
@@ -29,6 +30,12 @@ export default function App() {
   // Bumped when a bible file is deleted: the panel re-reads from the server
   // rather than guessing at the new list.
   const [bibleKey, setBibleKey] = useState(0)
+  // The book's face (2.8): author + cover live in the tree, so the dialog reads
+  // them from there and never drifts from what the rail shows.
+  const [bookFace, setBookFace] = useState(false)
+  const currentBook = (archive || [])
+    .flatMap((s) => s.books || [])
+    .find((b) => b.id === series?.book) || null
 
   const [sweepOpen, setSweepOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -388,6 +395,7 @@ export default function App() {
                     onNewPrologue={() => newChapter('prologue')}
                     onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
                     onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
+                    onEditBook={() => setBookFace(true)}
                   />
                 </div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
@@ -438,6 +446,7 @@ export default function App() {
               onNewPrologue={() => newChapter('prologue')}
               onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
               onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
+              onEditBook={() => setBookFace(true)}
             />
             {pageNode}
             {!focusMode && <Muse series={series} chapter={chapter} />}
@@ -532,6 +541,17 @@ export default function App() {
       )}
       {newBookOpen && (
         <NewBookDialog onClose={() => setNewBookOpen(false)} onCreated={onBookCreated} />
+      )}
+      {bookFace && series && (
+        <BookDetailsDialog
+          series={series.series}
+          book={series.book}
+          title={currentBook?.title || series.title || series.name}
+          author={currentBook?.author || ''}
+          hasCover={!!currentBook?.has_cover}
+          onClose={() => setBookFace(false)}
+          onSaved={refreshArchive}
+        />
       )}
       {confirmTarget && (
         <ConfirmDeleteDialog

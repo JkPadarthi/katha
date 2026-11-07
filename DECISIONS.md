@@ -133,6 +133,35 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D43 — the cover is the author's file, normalised once; the author is per book (2.8.0)
+`epub.py` used to emit text only: no cover, no images, and no `<dc:creator>` at
+all — so every export landed in a reader's library as a grey rectangle with no
+author. Both halves of "what a shelf knows about a book" now exist.
+
+- **The cover is uploaded, never generated.** Katha invents no artwork; the
+  author supplies the file and the app writes `cover.jpg` *inside the book
+  directory*, so it travels with the book through trash → restore → backup with
+  no extra machinery. Upload is base64 in a JSON body (no multipart dependency);
+  **Pillow** is the one new dependency and earns it by normalising: sniff the real
+  format (never the filename or the declared content-type), honour EXIF
+  orientation, downscale to fit 1600×2560 (**never upscale**), flatten alpha onto
+  white, re-encode progressive JPEG q88. An 8 MB phone photo must not end up
+  inside an EPUB. `book.json` records `cover`, `cover_w`, `cover_h`.
+- **No cover = no cover page.** Nothing is invented, and no `<dc:creator>` is
+  emitted for an empty author (a library grid showing "Unknown" is worse than
+  showing nothing).
+- **The EPUB wiring is exact, because half of it fails silently**: the image item
+  needs `properties="cover-image"`, `cover.xhtml` must be the **first** spine
+  item (otherwise the book opens at chapter one and the cover only lives in the
+  library grid), the legacy `<meta name="cover" content="cover-image">` is still
+  what Kindle's converter looks for, and a `guide` reference covers EPUB2-era
+  readers. The cover page itself is a plain `<img>` in a centred div — an SVG
+  wrapper scales marginally better but shows nothing on readers that don't render
+  SVG in the spine.
+- **The author lives in `book.json`** and rides into `<dc:creator>`. The value in
+  Settings is a *default that prefills*, never a source of truth: a book keeps
+  its own name, which is what makes a pen name per series possible.
+
 ## D42 — The Muse's third dialect is named after the endpoint, not the vendor (2.7.0)
 `KATHA_MUSE_API` now accepts `messages`: `POST {MUSE_API_BASE}/messages` with an
 `x-api-key` and a version pin — the shape a gateway requires for Claude models.

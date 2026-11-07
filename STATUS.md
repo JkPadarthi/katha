@@ -67,6 +67,22 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.8.0** — the book's face. An EPUB with no cover is a grey rectangle in every
+  reader's library, and Katha's exports had no `<dc:creator>` either, so the shelf
+  could not even say who wrote it. Both now exist, and neither is invented: **the
+  cover is your own image**, normalised on upload (real format sniffed, EXIF
+  orientation honoured, fitted to 1600×2560 without upscaling, alpha flattened,
+  re-encoded JPEG under 8 MB) and stored *inside the book* so it survives delete →
+  restore and rides along in every backup. The EPUB gets the full wiring — image
+  item with `properties="cover-image"`, `cover.xhtml` first in the spine, the
+  legacy `<meta name="cover">`, a `guide` reference — plus **the author**, held per
+  book in `book.json` (a Settings value only prefills; a pen name per series works).
+  Reachable from the rail's ✎ on the book row: author, cover preview/replace/remove,
+  and a *Download EPUB* button right there so you can check the shelf result. New
+  books can be born with their author. 13 new tests (`tests/test_cover.py`) pin the
+  normalisation, the exact EPUB wiring, the no-cover case, the trash round trip and
+  the lock over every new route — and one of them caught a real bug on the way in
+  (CSS braces eaten by a `.format()` template).
 - **2.7.1** — the gateway's two rules, learned the hard way. 2.7.0 shipped the
   dialect and a green test suite; pointing it at the real Claude model then
   answered `400 unsupported_model: … must be called via /messages` (fixed by the

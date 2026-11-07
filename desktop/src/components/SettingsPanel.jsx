@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import * as api from '../lib/api.js'
 import { signOut } from '../lib/api.js'
+import { getSetting, setSetting } from '../lib/settings.js'
 import { THEMES } from '../lib/useTheme.js'
 import { Swatch } from './ThemePicker.jsx'
 import Overlay, { OverlayHeader } from '../ui/Overlay.jsx'
@@ -27,6 +28,10 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [confirmPurge, setConfirmPurge] = useState(null)   // entry id, or '*' for all
+  // The default author (2.8) prefills new books. It is a convenience, never the
+  // source of truth: a book keeps whatever name it was given, so a pen name per
+  // series works.
+  const [defaultAuthor, setDefaultAuthor] = useState(() => getSetting('author', '') || '')
 
   const load = async () => {
     try {
@@ -110,6 +115,15 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
             value={goal}
             onChange={(e) => onGoal(e.target.value)}
             placeholder="500"
+          />
+        </Field>
+
+        <Field label="Default author"
+               hint="Prefills the author on new books, and on the EPUB they export. Each book keeps its own name — set a different one for a pen name.">
+          <TextInput
+            value={defaultAuthor}
+            onChange={(e) => { setDefaultAuthor(e.target.value); setSetting('author', e.target.value) }}
+            placeholder="J. K. Padarthi"
           />
         </Field>
 

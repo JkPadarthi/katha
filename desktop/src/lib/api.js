@@ -104,11 +104,47 @@ export function createChapter(series, bookId, title, content = '', number = null
   })
 }
 
-export function createBook(seriesTitle, bookTitle) {
+export function createBook(seriesTitle, bookTitle, author = '') {
+  const body = { series: seriesTitle, title: bookTitle }
+  if ((author || '').trim()) body.author = author.trim()
   return req('/books', {
     method: 'POST',
-    body: JSON.stringify({ series: seriesTitle, title: bookTitle })
+    body: JSON.stringify(body)
   })
+}
+
+// --- the book's face: author + cover (2.8, D43) ---------------------------
+// The cover is the AUTHOR's own file — Katha never invents artwork. It travels as
+// a data URL (base64 in a JSON body, so the server needs no multipart parser) and
+// comes back normalised: sniffed, EXIF-oriented, fitted to 1600×2560, re-encoded
+// as JPEG. Server error messages are written to be shown to the author as-is.
+export function setBookMeta(series, bookId, { author }) {
+  return req(`/books/${series}/${bookId}/meta`, {
+    method: 'PUT',
+    body: JSON.stringify({ author: author || '' })
+  })
+}
+
+export function uploadCover(series, bookId, dataUrl) {
+  const comma = String(dataUrl || '').indexOf(',')
+  if (comma < 0) return Promise.reject(new Error('that file could not be read'))
+  const head = dataUrl.slice(0, comma)
+  const type = (head.match(/^data:([^;]+)/) || [])[1] || 'image/jpeg'
+  return req(`/books/${series}/${bookId}/cover`, {
+    method: 'PUT',
+    body: JSON.stringify({ data: dataUrl.slice(comma + 1), content_type: type })
+  })
+}
+
+export function deleteCover(series, bookId) {
+  return req(`/books/${series}/${bookId}/cover`, { method: 'DELETE' })
+}
+
+// For the <img> preview. Pass a `bust` value after replacing a cover, or the
+// browser cheerfully shows the old one from cache.
+export function coverUrl(series, bookId, bust = '') {
+  const base = `/api/books/${encodeURIComponent(series)}/${encodeURIComponent(bookId)}/cover`
+  return bust ? `${base}?v=${bust}` : base
 }
 
 export function search(query, limit = 20) {

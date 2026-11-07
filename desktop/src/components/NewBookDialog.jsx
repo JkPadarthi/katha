@@ -1,14 +1,20 @@
 import React, { useState } from 'react'
 import * as api from '../lib/api.js'
+import { getSetting } from '../lib/settings.js'
 import Overlay, { OverlayHeader } from '../ui/Overlay.jsx'
 import { Field, TextInput } from '../ui/Field.jsx'
 import { Button } from '../ui/Button.jsx'
 
 // Create a series + book (POST /api/books). The server slugifies both names;
 // App refreshes the tree and switches to the new book.
+//
+// The author field is prefilled from Settings (2.8) but belongs to the *book* —
+// a pen name per series is the point, so what is typed here is what the EPUB
+// metadata and the shelf get, and it never rewrites the default.
 export default function NewBookDialog({ onClose, onCreated }) {
   const [series, setSeries] = useState('')
   const [title, setTitle] = useState('')
+  const [author, setAuthor] = useState(() => getSetting('author', '') || '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -19,7 +25,7 @@ export default function NewBookDialog({ onClose, onCreated }) {
     setBusy(true)
     setError('')
     try {
-      const created = await api.createBook(series.trim(), title.trim())
+      const created = await api.createBook(series.trim(), title.trim(), author.trim())
       onCreated(created)
     } catch (e) {
       setError(e.message || 'could not create the book')
@@ -53,6 +59,15 @@ export default function NewBookDialog({ onClose, onCreated }) {
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="The First Flame"
+          />
+        </Field>
+        <Field label="Author"
+               hint="Prefilled from Settings. Leave it empty if the book doesn't have one yet — it can be set later in Book details.">
+          <TextInput
+            value={author}
+            onChange={(e) => setAuthor(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="J. K. Padarthi"
           />
         </Field>
 

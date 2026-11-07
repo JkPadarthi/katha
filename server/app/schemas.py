@@ -16,6 +16,8 @@ class BookOut(BaseModel):
     series: str
     title: str
     chapter_count: int = 0
+    author: str = ""
+    has_cover: bool = False
 
 
 class BooksTreeOut(BaseModel):
@@ -68,6 +70,19 @@ class ChapterUpdate(BaseModel):
 class BookCreate(BaseModel):
     series: str = Field(min_length=1)
     title: str = Field(min_length=1)
+    author: str = ""                  # 2.8: prefilled from Settings by the client
+
+
+class BookMetaIn(BaseModel):
+    """Editable per-book metadata (2.8). Author only, on purpose: the title IS the
+    directory name, so renaming a book is a move, not a field edit."""
+    author: str = ""
+
+
+class CoverIn(BaseModel):
+    """A cover upload as base64 JSON (D43) — no multipart dependency needed."""
+    data: str
+    content_type: str = "image/jpeg"   # advisory; the bytes are sniffed anyway
 
 
 class BibleOut(BaseModel):

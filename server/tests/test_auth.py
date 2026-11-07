@@ -33,6 +33,7 @@ os.environ["KATHA_DATA"] = str(Path(_TMP) / "data")
 
 from app import auth  # noqa: E402
 from app import muse as muse_mod  # noqa: E402
+from app.config import WEB_DIR  # noqa: E402
 from app.main import app  # noqa: E402
 
 client = TestClient(app)
@@ -152,8 +153,15 @@ def test_login_sets_a_long_httponly_cookie_and_unlocks_the_api(locked):
 
     # the cookie the client kept now opens the door — API and shell alike
     assert client.get("/api/books").status_code == 200
-    assert client.get("/").status_code == 200
     assert client.get("/api/muse/models").status_code == 200
+    # The shell itself only exists when this checkout has a built client: main.py
+    # skips the static mount when dist/ is absent (CI runs pytest without a build,
+    # so asserting this unconditionally is a false green locally and a false red
+    # in CI — which is exactly how this test first failed).
+    if WEB_DIR.is_dir():
+        assert client.get("/").status_code == 200
+    # the login screen stays reachable even with a session (e.g. to switch user)
+    assert client.get("/login").status_code == 200
 
 
 def test_tampered_cookie_is_rejected(locked):

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Katha">
+  <title>Katha</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17171d"/>
+      <stop offset="1" stop-color="#0e0e12"/>
+    </linearGradient>
+    <!-- Light from the top-left: one (x + y) ramp, exactly as generated. -->
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0.00" stop-color="#ffeba8"/>
+      <stop offset="0.24" stop-color="#ffd660"/>
+      <stop offset="0.52" stop-color="#ffbf00"/>
+      <stop offset="0.78" stop-color="#c48d10"/>
+      <stop offset="1.00" stop-color="#8c5c12"/>
+      <stop offset="0.30" stop-color="#ffe69c"/>
+    </linearGradient>
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="6.1" dy="8.3"
+                    stdDeviation="17.9"
+                    flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="113" fill="url(#tile)"/>
+  <g filter="url(#lift)">
+    <g transform="translate(97.28 376.25) scale(0.38665 -0.38665)">
+      <path d="M821 526H496V365Q517 381 545.0 390.5Q573 400 607 400Q683 400 726.5 355.5Q770 311 770 233Q770 183 751.5 134.5Q733 86 690 34L588 92Q618 125 635.5 158.5Q653 192 653 232Q653 305 588 305Q561 305 537.0 289.5Q513 274 498 249L496 246V0H379V142Q350 123 315.0 112.0Q280 101 239 101Q182 101 136.5 121.5Q91 142 65.0 181.5Q39 221 39 279Q39 363 95.0 409.0Q151 455 251 455Q277 455 301.0 452.5Q325 450 347 445L337 349Q320 353 301.5 355.0Q283 357 263 357Q212 357 184.5 336.0Q157 315 157 276Q157 237 182.0 217.5Q207 198 246 198Q287 198 322.0 218.5Q357 239 379 267V526H0V622H821Z" fill="url(#gold)"/>
+    </g>
+  </g>
+</svg>

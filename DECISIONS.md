@@ -133,6 +133,27 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D41 — The logo is generated, and its light is one gradient (2.6.0)
+The mark is a near-black tile carrying a golden **क** (the first letter of कथा),
+produced by `scripts/make-logo.py` (pillow + fonttools; `scripts/requirements-logo.txt`)
+— generated, never hand-drawn in an editor, so it can be re-made at any size and the
+vector cannot drift from the rasters. The glyph is **Noto Sans Devanagari SemiBold**
+(SIL OFL, so baking the outline into the repo is safe); FreeSans/FreeSerif were
+compared and Apple's Sangam/ITF look finer but are not redistributable.
+Per-size tuning is empirical and matters: ink 62% normally, **48%** for maskable
+(inside the 80% safe circle), 78%/86% for the 32/16px favicons with a heavier glyph
+below 48px — a looped Devanagari glyph at 16px closes up otherwise. Rasters are
+drawn at 4× and downsampled, because PIL's own hinting at 32px destroys the glyph.
+The lighting is ONE ramp along `t = (x + y)`, which is exactly what an SVG
+`linearGradient` from (0,0) to (1,1) is — that is why the vector and the rasters
+agree: same maths, not two hand-tuned things. Stops run champagne → gold → amber
+(0.52 *is* the app's `--color-accent`) with the specular band folded in as an extra
+stop, plus a `feDropShadow` falling away from the light. Two choices came straight
+from looking at the result: the highlight never reaches white (it reads silver) and
+the turn-away end never goes brown (it reads tarnished).
+`/logo.svg` is public **exactly**, not as a prefix, because the login card shows the
+mark before anyone is signed in.
+
 ## D40 — Settings is the second front door; focus keeps a retractable rail (2.5.1)
 The title bar hides `lock` and `focus` below `md` — so on a phone there was no way
 to lock the archive at all, and the theme picker was a small popover nobody would

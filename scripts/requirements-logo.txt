@@ -1,0 +1,7 @@
+# Only needed to run scripts/make-logo.py (the logo assets are committed, so a
+# normal build/deploy never installs this).
+#
+#   python -m venv /tmp/logoenv && /tmp/logoenv/bin/pip install -r scripts/requirements-logo.txt
+#   /tmp/logoenv/bin/python scripts/make-logo.py --font /path/to/NotoSansDevanagari-SemiBold.ttf
+pillow>=10
+fonttools>=4.40

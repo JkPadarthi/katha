@@ -66,6 +66,17 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.6.0** — the mark. Katha has a logo: a near-black tile carrying a golden
+  **क** — the first letter of कथा — rendered as metal lit from the upper-left
+  (champagne where the light strikes, the app's own `#ffbf00` across the surface,
+  amber where it turns away), with a specular band and a soft shadow lifting it
+  off the tile. It is *generated*: `scripts/make-logo.py` writes `logo.svg` and
+  every icon from the same numbers — favicons tuned per size (16/32 are
+  deliberately heavier), 180 for iOS, a maskable 512 that sits inside the safe
+  circle — because the whole lighting model is a single `t = (x + y)` ramp, which
+  is literally what an SVG `linearGradient` (0,0)→(1,1) is (D41). It now shows in
+  the title bar, the login card and the browser tab; `/logo.svg` is public
+  *exactly* (never as a prefix) so the locked card can display it.
 - **2.5.1** — the door and the map. **Settings** now holds the two controls the
   title bar kept to itself: the three-way **theme** choice (with swatches, same
   setting the picker writes, so they stay in sync) and **Lock now** — which never

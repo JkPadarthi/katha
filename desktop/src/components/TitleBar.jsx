@@ -27,7 +27,13 @@ export default function TitleBar({ focus, onToggleFocus, onOpenSettings, theme, 
   return (
     <div className="flex h-9 shrink-0 items-center justify-between border-b hairline bg-base px-3">
       <div className="flex items-center gap-2">
-        <span className="text-[10px] text-accent">●</span>
+        <img
+          src="/logo.svg"
+          alt=""
+          width="16"
+          height="16"
+          className="h-4 w-4 rounded-[4px]"
+        />
         <span className="text-[11px] font-medium tracking-wide text-mute">Katha</span>
       </div>
 

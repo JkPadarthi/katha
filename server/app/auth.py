@@ -53,7 +53,9 @@ PUBLIC_PREFIXES = (
     "/icon",
     "/apple-touch-icon",
 )
-PUBLIC_EXACT = {"/login", "/api/health", "/sw.js", "/manifest.webmanifest"}
+# The mark itself is public too (EXACT, not a prefix): the login card shows it
+# before anyone is signed in, and `/logo.svg/anything` must not inherit that.
+PUBLIC_EXACT = {"/login", "/api/health", "/sw.js", "/manifest.webmanifest", "/logo.svg"}
 
 
 def is_public(path: str) -> bool:
@@ -230,7 +232,8 @@ LOGIN_HTML = """<!doctype html>
     border-radius:10px; padding:26px 24px 22px;
     box-shadow:0 18px 50px rgba(0,0,0,.28);
   }
-  .mark { display:flex; align-items:baseline; gap:8px; margin-bottom:2px; }
+  .mark { display:flex; align-items:center; gap:10px; margin-bottom:2px; }
+  .mark img { width:28px; height:28px; border-radius:7px; display:block; }
   .mark b { color:var(--accent); font-size:10px; }
   h1 { font-family:var(--serif); font-size:23px; font-weight:600; margin:0; letter-spacing:.4px; }
   p.hint { color:var(--mute); font-size:12px; margin:6px 0 20px; }
@@ -253,7 +256,7 @@ LOGIN_HTML = """<!doctype html>
 </head>
 <body>
   <main class="card">
-    <div class="mark"><b>●</b><h1>Katha</h1></div>
+    <div class="mark"><img src="/logo.svg" alt="" width="28" height="28"><h1>Katha</h1></div>
     <p class="hint">The archive is locked. Enter the password to continue.</p>
     <form id="f" autocomplete="on">
       <label for="p">Password</label>

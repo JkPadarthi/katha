@@ -223,3 +223,15 @@ def test_repeated_failures_are_throttled(locked):
     assert r.status_code == 429
     # and the throttle does not hand out a session
     assert COOKIE not in r.cookies
+
+
+def test_the_mark_is_public_and_nothing_else_is():
+    """The login card renders `/logo.svg` before anyone is signed in, so that one
+    path is public. It is matched EXACTLY: a path that merely starts with it must
+    not inherit the exemption."""
+    assert auth.is_public("/logo.svg")
+    assert auth.is_public("/icons/favicon-32.png")      # the PWA needs these too
+    assert auth.is_public("/manifest.webmanifest")
+    assert not auth.is_public("/logo.svg/anything")
+    assert not auth.is_public("/api/books")
+    assert not auth.is_public("/")

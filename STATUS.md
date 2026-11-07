@@ -67,6 +67,14 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.3** — page rhythm. Reading mode had a line spacing of 1.95 and a paragraph gap of
+  12px — the gap was *less than half a line*, so paragraphs ran together. Both directions
+  now: lines tightened to 1.7 and paragraph gaps widened to 1.25em (~0.7 of a line, up from
+  0.36), headings given more room above them, blockquotes the same treatment. Writing mode
+  tightened to 1.7 (1.78 in focus) and the review pane matches, so prose reads the same
+  wherever it appears. (A textarea has no paragraph model — its blank line *is* the gap, and
+  it scales with the line height — so "more paragraph spacing" is only available in reading
+  mode.)
 - **3.0.2** — the review pane scrolls. It was the one fixed-height overlay in the app
   without the `flex h-full flex-col` wrapper, so its body grew instead of scrolling and the
   card's `overflow-hidden` clipped it: eleven changes, of which you could see the first few

@@ -67,6 +67,10 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.9.2** — a revision is announced only when the turn is finished. Parts can arrive
+  across rounds, so announcing as soon as the first part lands would let you accept a
+  third of a chapter; the marker is now collected during the turn and emitted at the end.
+  (Caught while reading the parts code, before anyone hit it.)
 - **2.9.1** — room to write a chapter. 2.9.0's handover worked on short chapters and
   failed silently on real ones: ch-01 is 4,775 words ≈ 7k tokens, but the chat's output
   ceiling was 4096, so the tool arguments were **truncated mid-JSON** — they parsed to

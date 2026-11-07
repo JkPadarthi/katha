@@ -635,6 +635,11 @@ async def chat(
 
     full_text_parts: list[str] = []
     hit_limit = False
+    # These live OUTSIDE the round loop: a revision can span several tool calls (and
+    # therefore several rounds), and it is announced once the whole turn is finished.
+    pending_announce: list[str] = []
+    announced: set = set()
+    turn: dict = {}
     for _round in range(MUSE_MAX_TOOL_ROUNDS):
         holder: dict = {}
         async for delta in _stream_turn(payload, holder):
@@ -647,10 +652,6 @@ async def chat(
         hit_limit = True
         # Echo the assistant's tool-call turn, then answer each call.
         payload["messages"].append({"role": "assistant", "content": "", "tool_calls": calls})
-        # Shared by every tool call in THIS turn, so a long revision can arrive in
-        # parts: the second call appends to the proposal the first one parked.
-        turn: dict = {}
-        announced: set = set()
         for tc in calls:
             fn = tc.get("function") or {}
             name = fn.get("name") or ""
@@ -677,8 +678,13 @@ async def chat(
             pid = turn.get("proposal_id")
             if pid and pid not in announced:
                 announced.add(pid)
-                # The client turns this marker into the "review the diff" affordance.
-                yield Proposal(pid)
+                # Announced only once the turn is over: a revision that arrives in
+                # parts must not raise the "review diff" banner while it is still
+                # half-sent, or the author could accept a third of a chapter (2.9.2).
+                pending_announce.append(pid)
+
+    for pid in pending_announce:
+        yield Proposal(pid)
 
     if hit_limit:
         # Ran out of rounds mid-fetch: force a final answer with no tools.

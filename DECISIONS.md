@@ -156,6 +156,10 @@ author read, and why the chapter never moved.
 * **Proposals die with their book** (`delete_proposals_for`, called from both delete
   routes) — found by leaving one behind during verification: a revision about a chapter
   sitting in the trash is a banner nobody can act on.
+* **A revision is announced only when the turn is finished (2.9.2).** Parts may arrive
+  across several rounds, so the `[PROPOSAL]` marker is collected during the turn and
+  emitted after the last round — otherwise the banner appears while the chapter is still
+  half-sent and the author can accept a third of it.
 
 ## D45 — the Muse proposes, the author disposes (2.9.0)
 The Muse's tools are still read-only. What changed is that it can now put a

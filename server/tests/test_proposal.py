@@ -417,3 +417,55 @@ def test_proposals_die_with_the_book(monkeypatch: pytest.MonkeyPatch):
 
     # put the book back for whatever runs next, and clear the trash properly
     client.post(f"/api/trash/{r.json()['entry']}/restore")
+
+
+def test_parts_across_rounds_join_one_revision_and_are_announced_at_the_end(monkeypatch: pytest.MonkeyPatch):
+    """A long chapter may arrive as one part per round. Those parts must join ONE
+    revision, and the banner must only be raised once the turn is finished — else the
+    author can accept a third of a chapter (2.9.2)."""
+    part1 = "# The Long Chapter\n\n" + ("The ember guttered in the ash. " * 12)
+    part2 = "Morning came grey over the harbour. " * 12
+    bodies: list[dict] = []
+    state = {"round": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        bodies.append(body)
+        if not body.get("stream"):
+            return httpx.Response(200, json={"message": {"role": "assistant", "content": "terse."}})
+        state["round"] += 1
+        if state["round"] == 1:
+            return httpx.Response(200, content=_ndjson({"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"function": {"name": "propose_chapter_rewrite",
+                                             "arguments": {"content": part1}}}]}, "done": True}))
+        if state["round"] == 2:
+            return httpx.Response(200, content=_ndjson({"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"function": {"name": "propose_chapter_rewrite",
+                                             "arguments": {"content": part2}}}]}, "done": True}))
+        return httpx.Response(200, content=_ndjson({"message": {
+            "role": "assistant", "content": "That is the whole chapter — review it."},
+            "done": True}))
+
+    real = muse_mod._client
+    monkeypatch.setattr(muse_mod, "_client",
+                        httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                                          timeout=real.timeout))
+    with TestClient(app) as c:
+        with c.stream("POST", "/api/muse/chat", json={
+            "messages": [{"role": "user", "content": "hand me the whole chapter"}],
+            "chapter_id": f"{SID}/{BID}/{_chapter_id()}",
+        }) as r:
+            assert r.status_code == 200
+            sse = "".join(r.iter_text())
+
+    proposals = [ln for ln in sse.split("\n") if ln.startswith("data: [PROPOSAL]")]
+    assert len(proposals) == 1, f"one revision, announced once: {proposals}"
+    pid = proposals[0][16:].strip()
+    stored = muse_mod.read_proposal(pid)
+    assert stored is not None
+    assert "ember guttered" in stored["content"]     # part 1
+    assert "grey over the harbour" in stored["content"]   # part 2, appended
+    # Announced after the assistant's final words, not between the parts.
+    assert sse.index("[PROPOSAL]") > sse.index("That is the whole chapter")

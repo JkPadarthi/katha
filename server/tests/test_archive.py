@@ -45,7 +45,7 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "3.0.1"
+    assert body["version"] == "3.0.2"
     assert body["db_ok"] is True
 
 

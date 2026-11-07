@@ -67,6 +67,11 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.2** — the review pane scrolls. It was the one fixed-height overlay in the app
+  without the `flex h-full flex-col` wrapper, so its body grew instead of scrolling and the
+  card's `overflow-hidden` clipped it: eleven changes, of which you could see the first few
+  and reach no further. Now it matches BiblePanel and SweepPanel, which never had the
+  problem. Keyboard moves between changes (`n`/`p`) scroll the pane too.
 - **3.0.1** — an accept is only valid against the text the Muse read. Found on real data:
   ch-01 had been saved (226 words) *after* the waiting revision was written, and accepting
   would have merged it over prose the Muse never saw. Accepting now refuses with 409 and

@@ -45,24 +45,29 @@ export default function ProposalReview({
   )
   const pending = hunks.length - accepted.length
 
-  const jump = (dir) => {
-    if (!hunks.length) return
-    setAt((n) => (n + dir + hunks.length) % hunks.length)
-    const el = document.getElementById(`hunk-${dir > 0 ? (at + 1) % hunks.length : (at - 1 + hunks.length) % hunks.length}`)
+  // The overlay is a fixed-height card; with `flex h-full flex-col` around the children the
+  // middle can shrink and scroll (without it the body just grows and gets clipped — the
+  // review could not be scrolled at all).
+  const move = (dir) =>
+    setAt((n) => (hunks.length ? (n + dir + hunks.length) % hunks.length : 0))
+
+  useEffect(() => {
+    if (!at) return
+    const el = document.getElementById(`hunk-${hunks[at]?.id}`)
     if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }
+  }, [at, hunks])
 
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         onAccept(accepted.length === hunks.length ? null : accepted.map((h) => h.id))
       }
-      if (e.key === 'n' || e.key === 'N') jump(1)
-      if (e.key === 'p' || e.key === 'P') jump(-1)
+      if (e.key === 'n' || e.key === 'N') move(1)
+      if (e.key === 'p' || e.key === 'P') move(-1)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  })
+  }, [accepted, hunks, onAccept])
 
   // The text between hunks is the author's, untouched: walk the base by offsets.
   const segments = useMemo(() => {
@@ -86,6 +91,9 @@ export default function ProposalReview({
 
   return (
     <Overlay onClose={onClose} width={880} padTop="6vh" height="86vh">
+      {/* The house pattern for a fixed-height overlay: a full-height flex column, so the
+          middle pane can shrink and scroll while the header and footer stay put. */}
+      <div className="flex h-full flex-col">
       <OverlayHeader
         icon="◆"
         title="The Muse's revision"
@@ -214,6 +222,7 @@ export default function ProposalReview({
               : `Accept ${accepted.length} of ${hunks.length}`}
           </Button>
         </div>
+      </div>
       </div>
     </Overlay>
   )

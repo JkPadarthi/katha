@@ -157,6 +157,12 @@ Two things forced it, both worth remembering:
   Streaming is `text_delta` + `input_json_delta` fragments, reassembled into the
   same complete internal call list the OpenAI path produces, so the agentic tool
   loop never learns which dialect it is on.
+* **Sampling parameters are not portable — do not forward them blind (2.7.1).**
+  The internal payload carries `temperature: 0.8`; passing it through made every
+  request a `400 invalid_request_error: temperature is deprecated for this
+  model`. Current Claude models refuse sampling parameters, and the shape treats
+  them as optional, so the messages dialect drops `temperature` on the floor. A
+  lost knob beats a lost answer.
 
 ## D41 — The logo is generated, and its light is one gradient (2.6.0)
 The mark is a near-black tile carrying a golden **क** (the first letter of कथा),

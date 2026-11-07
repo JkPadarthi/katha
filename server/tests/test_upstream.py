@@ -459,7 +459,8 @@ def test_messages_payload_hoists_system_and_keeps_max_tokens(monkeypatch: pytest
     assert [m["role"] for m in body["messages"]] == ["user"]
     assert body["messages"][0]["content"] == [{"type": "text", "text": "who is Kael?"}]
     assert body["max_tokens"] == 1024
-    assert body["temperature"] == 0.8
+    # `temperature` must NOT reach the wire: current Claude models 400 on it.
+    assert "temperature" not in body
     assert body["stream"] is True
     assert "options" not in body
     assert body["tools"][0] == {

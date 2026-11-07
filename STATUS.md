@@ -67,20 +67,28 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
-- **2.7.0** — the Muse learns a third dialect, and switches brain. `app/upstream.py`
+- **2.7.1** — the gateway's two rules, learned the hard way. 2.7.0 shipped the
+  dialect and a green test suite; pointing it at the real Claude model then
+  answered `400 unsupported_model: … must be called via /messages` (fixed by the
+  dialect itself), and after that `400 invalid_request_error: temperature is
+  deprecated for this model`. Current Claude models **refuse sampling
+  parameters**, so the messages dialect no longer forwards `temperature` — a
+  lost knob beats a lost answer. Verified live afterwards, through the gateway,
+  with a real tool call: `[STATUS] reading …`, `tool_use` blocks streamed as
+  `input_json_delta` fragments, `stop_reason: tool_use`, and the rewrite slot
+  answering on the second model setting.
+- **2.7.0** — the Muse learns a third dialect. `app/upstream.py`
   now speaks the **Messages shape** (`POST {base}/messages`, `x-api-key` + a
   version pin) alongside Ollama-native and OpenAI-compatible — which is what a
   gateway requires for Claude models, and the only way to reach one that is not
-  the vendor itself. Verified end to end against commandcode:
-  `claude-sonnet-5-5` on both the agent and rewrite slots, tools included. System
-  turns become the top-level `system` field, `max_tokens` is always sent (the
-  shape demands it), tools flatten to `input_schema`, tool results ride in *user*
-  turns paired to their `tool_use` by id, and streaming `text_delta` /
-  `input_json_delta` fragments reassemble into exactly the internal events the
-  agentic loop already consumed — so not one line of `muse.py` changed (D42). The
-  net grew 12 → 22 tests in `test_upstream.py`, including one that pins the exact
-  failure that started it (a gateway refusing the model must surface its message
-  as `[ERROR]`, not stream nothing).
+  the vendor itself. System turns become the top-level `system` field,
+  `max_tokens` is always sent (the shape demands it), tools flatten to
+  `input_schema`, tool results ride in *user* turns paired to their `tool_use` by
+  id, and streaming `text_delta` / `input_json_delta` fragments reassemble into
+  exactly the internal events the agentic loop already consumed — so not one line
+  of `muse.py` changed (D42). The net grew 12 → 22 tests in `test_upstream.py`,
+  including one that pins the failure that started it (a gateway refusing the
+  model must surface its message as `[ERROR]`, not stream nothing).
 - **2.6.0** — the mark. Katha has a logo: a near-black tile carrying a golden
   **क** — the first letter of कथा — rendered as metal lit from the upper-left
   (champagne where the light strikes, the app's own `#ffbf00` across the surface,

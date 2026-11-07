@@ -293,8 +293,12 @@ def to_anthropic_payload(payload: dict) -> dict:
     }
     if system:
         body["system"] = system
-    if "temperature" in opts:
-        body["temperature"] = opts["temperature"]
+    # `temperature` is deliberately NOT forwarded, even though the internal
+    # payload carries one. Current Claude models reject sampling parameters
+    # outright — `400 invalid_request_error: temperature is deprecated for this
+    # model` — and the Messages shape treats them as optional anyway. Losing the
+    # knob is better than losing the answer. (If a gateway ever wants it back,
+    # this is the one line to restore.)
     if payload.get("tools"):
         # Internally OpenAI-shaped ({"type": "function", "function": …}); the
         # Messages shape flattens it and calls the schema `input_schema`.

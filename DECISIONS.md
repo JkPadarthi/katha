@@ -133,6 +133,30 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D46 — a whole chapter needs room to be written, and a truncated tool call must say so (2.9.1)
+`propose_chapter_rewrite` shipped in 2.9.0 with the chat still on `MUSE_NUM_PREDICT`
+(4096 tokens). The author's ch-01 is 4,775 words ≈ 7k tokens, so the tool arguments
+arrived **cut off mid-JSON**: `json.loads` failed, the arguments fell back to `{}`,
+and the tool reported "only 0 characters". The Muse retried the same doomed call five
+times and then told the author it had "gone out empty" — which is exactly what the
+author read, and why the chapter never moved.
+
+* **The agentic chat gets its own ceiling** — `MUSE_AGENT_MAX_TOKENS`, default 32000
+  (env-overridable). It is the only call that may have to write a whole chapter into
+  an argument. The gateway accepts at least 64k and only *generated* tokens cost
+  anything, so a generous bound is free insurance; rewrite (4096) and digest (400)
+  keep their small budgets.
+* **Truncated arguments are named as such.** A tool call whose argument string will not
+  parse now carries `__malformed`, and the tool answers "your arguments arrived as
+  invalid JSON — they were cut off … send it in PARTS". A model that knows why it
+  failed can adapt; a model told "0 characters" simply retries.
+* **Parts are real.** Inside one turn, a second `propose_chapter_rewrite` call appends
+  to the revision the first one parked, so a chapter too long for any single response
+  can still be handed over whole. The tool description says so.
+* **Proposals die with their book** (`delete_proposals_for`, called from both delete
+  routes) — found by leaving one behind during verification: a revision about a chapter
+  sitting in the trash is a banner nobody can act on.
+
 ## D45 — the Muse proposes, the author disposes (2.9.0)
 The Muse's tools are still read-only. What changed is that it can now put a
 whole-chapter revision *in front of* the author instead of only talking about one.

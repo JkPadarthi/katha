@@ -39,6 +39,7 @@ from . import db
 from . import upstream as up_mod
 from .config import (
     ARCHIVE_ROOT,
+    MUSE_AGENT_MAX_TOKENS,
     MUSE_AGENT_MODEL,
     MUSE_MAX_TOOL_ROUNDS,
     MUSE_NUM_PREDICT,
@@ -366,6 +367,19 @@ def delete_proposal(pid: str) -> bool:
     return True
 
 
+def delete_proposals_for(book: str = "", series: str = "") -> int:
+    """Drop pending revisions for a book or a whole series (2.9.1).
+
+    A proposal for a chapter that no longer exists is a banner nobody can act on, so
+    it goes with the book. (Found by leaving one behind during verification.)
+    """
+    gone = 0
+    for meta in list_proposals():
+        if (book and meta["book"] == book) or (series and meta["series"] == series):
+            gone += 1 if delete_proposal(meta["id"]) else 0
+    return gone
+
+
 def _prune_proposals(book: str, cid: str) -> None:
     """Keep the newest PROPOSAL_KEEP revisions for one chapter.
 
@@ -403,10 +417,9 @@ def _propose_rewrite(ctx: _ToolCtx, content: str, out: dict | None) -> str:
     rewrites the author's prose unattended.
     """
     text = (content or "").strip()
-    if len(text) < PROPOSAL_MIN_CHARS:
-        return (f"ERROR: that is only {len(text)} characters — not a chapter. Send "
-                f"the COMPLETE revision (at least {PROPOSAL_MIN_CHARS} characters) in "
-                "markdown, including its `# Title` line. Nothing was handed over.")
+    if not text:
+        return ("ERROR: nothing arrived. Send the COMPLETE revision in markdown, "
+                "including its `# Title` line. Nothing was handed over.")
     if not ctx.cid:
         return "ERROR: no chapter in context — nothing was handed over."
 
@@ -414,6 +427,27 @@ def _propose_rewrite(ctx: _ToolCtx, content: str, out: dict | None) -> str:
     if chapter is None:
         return (f"ERROR: {ctx.cid} is not in this book any more — nothing was "
                 "handed over.")
+
+    # A later part of the same revision, inside the same turn: append instead of
+    # starting over. This is what makes "send it in parts" real for chapters that are
+    # too long to fit in one response.
+    existing_id = (out or {}).get("proposal_id")
+    if existing_id:
+        prior = read_proposal(existing_id)
+        if prior:
+            merged = (prior.get("content") or "").rstrip() + "\n\n" + text
+            prior["content"] = merged
+            prior["words"] = ar_mod._count_words(merged)
+            (_PROPOSAL_ROOT / f"{existing_id}.json").write_text(
+                json.dumps(prior, indent=2), encoding="utf-8")
+            return (f"Part appended — the revision now stands at {prior['words']} "
+                    "words. Send the next part if the chapter is not finished, "
+                    "otherwise tell the author it is ready to review.")
+
+    if len(text) < PROPOSAL_MIN_CHARS:
+        return (f"ERROR: that is only {len(text)} characters — not a chapter. Send "
+                f"the COMPLETE revision (at least {PROPOSAL_MIN_CHARS} characters) in "
+                "markdown, including its `# Title` line. Nothing was handed over.")
 
     current = chapter.read_text(encoding="utf-8")
     if " ".join(text.split()) == " ".join(current.split()):
@@ -448,6 +482,14 @@ def _propose_rewrite(ctx: _ToolCtx, content: str, out: dict | None) -> str:
 
 def _run_tool(ctx: _ToolCtx, name: str, args: dict, out: dict | None = None) -> str:
     args = args or {}
+    if args.get("__malformed"):
+        # Truncated tool arguments: say so plainly instead of reporting an empty
+        # handover, or the model retries the same doomed call (it did, five times).
+        return ("ERROR: your tool arguments arrived as invalid JSON — they were cut off "
+                "before the end, which happens when a long single response runs out of "
+                "output room. Nothing was handed over. If the revision is long, send it "
+                "in PARTS: call this tool once per part, in order, and each call appends "
+                "to the same revision.")
     if name == "list_story_files":
         return _list_story_files(ctx)
     if name == "read_story_file":
@@ -492,9 +534,11 @@ _TOOLS = [
             "restructure or clean up the whole chapter. It is NOT saved and you "
             "cannot save it: the author is shown a word-level diff and accepting it "
             "creates a normal revision snapshot. Send the entire chapter in "
-            "markdown, including its `# Title` line, and do NOT also paste the "
-            "chapter into the chat — afterwards just tell them it is ready to "
-            "review."),
+            "markdown, including its `# Title` line. One call is enough for a normal "
+            "chapter; for a very long one, send it in PARTS — call this tool once per "
+            "part, in order, and each call appends to the same revision. Do NOT also "
+            "paste the chapter into the chat — afterwards just tell them it is ready "
+            "to review."),
         "parameters": {
             "type": "object",
             "properties": {
@@ -582,7 +626,9 @@ async def chat(
     payload: dict = {
         "model": MUSE_AGENT_MODEL,
         "messages": [*sys_parts, *messages],
-        "options": {"num_predict": MUSE_NUM_PREDICT, "temperature": 0.8},
+        # MUSE_AGENT_MAX_TOKENS, not MUSE_NUM_PREDICT: this turn may have to write a
+        # whole chapter into a tool argument (2.9.1).
+        "options": {"num_predict": MUSE_AGENT_MAX_TOKENS, "temperature": 0.8},
     }
     if ctx is not None:
         payload["tools"] = _TOOLS
@@ -601,6 +647,10 @@ async def chat(
         hit_limit = True
         # Echo the assistant's tool-call turn, then answer each call.
         payload["messages"].append({"role": "assistant", "content": "", "tool_calls": calls})
+        # Shared by every tool call in THIS turn, so a long revision can arrive in
+        # parts: the second call appends to the proposal the first one parked.
+        turn: dict = {}
+        announced: set = set()
         for tc in calls:
             fn = tc.get("function") or {}
             name = fn.get("name") or ""
@@ -609,9 +659,12 @@ async def chat(
                 try:
                     args = json.loads(args)
                 except json.JSONDecodeError:
-                    args = {}
+                    # The arguments were cut off mid-JSON. That happens when one turn
+                    # runs out of output room to write a whole chapter (~4096 tokens
+                    # before 2.9.1), and it must NOT look like an empty handover to the
+                    # model — it spent five retries doing exactly that, live.
+                    args = {"__malformed": True}
             args = args or {}
-            out: dict = {}
             if name == "propose_chapter_rewrite":
                 # Not a read: the Muse is handing over a whole-chapter revision for
                 # approval (2.9, D45).
@@ -619,11 +672,13 @@ async def chat(
             else:
                 label = args.get("path") or args.get("query") or name
                 yield Status(f"reading {label}…")
-            result = _run_tool(ctx, name, args, out)
+            result = _run_tool(ctx, name, args, turn)
             payload["messages"].append({"role": "tool", "tool_name": name, "content": result})
-            if out.get("proposal_id"):
+            pid = turn.get("proposal_id")
+            if pid and pid not in announced:
+                announced.add(pid)
                 # The client turns this marker into the "review the diff" affordance.
-                yield Proposal(out["proposal_id"])
+                yield Proposal(pid)
 
     if hit_limit:
         # Ran out of rounds mid-fetch: force a final answer with no tools.

@@ -825,6 +825,9 @@ def delete_book(series: str, book_id: str):
     )
     db.delete_book_index(bdir.name)
     reindex_search()
+    # Pending revisions for this book die with it: a proposal about a chapter that is
+    # in the trash is a banner nobody can act on (2.9.1).
+    muse_mod.delete_proposals_for(book=bdir.name)
     manifest["impact"] = impact
     return manifest
 
@@ -880,6 +883,7 @@ def delete_series(series: str):
     for b in books:
         db.delete_book_index(b.name)
     reindex_search()
+    muse_mod.delete_proposals_for(series=series)
     manifest["impact"] = impact
     return manifest
 

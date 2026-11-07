@@ -67,6 +67,15 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.9.1** — room to write a chapter. 2.9.0's handover worked on short chapters and
+  failed silently on real ones: ch-01 is 4,775 words ≈ 7k tokens, but the chat's output
+  ceiling was 4096, so the tool arguments were **truncated mid-JSON** — they parsed to
+  nothing and the Muse was told "0 characters". It retried five times and then reported
+  the failure to the author as "each attempt went out empty", which is what you saw.
+  Now the agentic chat has its own ceiling (`MUSE_AGENT_MAX_TOKENS`, 32k — the gateway
+  allows 64k, and only generated tokens cost), truncated arguments are reported as
+  *cut off* instead of empty, a long revision may arrive in **parts** (each call appends
+  to the same revision), and pending revisions are deleted along with their book.
 - **2.9.0** — the Muse proposes, the author disposes. Asking the Muse to "write the
   chapter" used to produce either prose to copy by hand or, worse, a promise to do
   it later — its tools were read-only and the author was left holding the text. Now

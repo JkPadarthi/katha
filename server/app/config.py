@@ -28,7 +28,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 
 # --- Muse upstream (0.3 Muse, D16/D19; dialect switch 2.1, D20-D23) -----------
 # Which wire dialect the Muse talks. "ollama" is the LAN box (unchanged
@@ -73,6 +73,12 @@ MUSE_MAX_TOOL_ROUNDS = int(os.environ.get("KATHA_MUSE_MAX_TOOL_ROUNDS", "6"))
 # Token budgets. We're well under deepseek-r1's 131K context; cap conservatively.
 MUSECONTEXT_MAX_TOKENS = int(os.environ.get("MUSECONTEXT_MAX_TOKENS", "6000"))
 MUSE_NUM_PREDICT = int(os.environ.get("MUSE_NUM_PREDICT", "4096"))
+# The agentic chat is the one call that may have to write a WHOLE CHAPTER into a tool
+# argument, so it gets its own, much larger, output ceiling: 4096 tokens cannot hold a
+# 5,000-word chapter, and a truncated tool call used to look like an empty handover
+# (2.9.1, D46). Only *generated* tokens cost anything — the ceiling is just a bound.
+# The gateway accepts at least 64k; 32k covers a chapter of roughly 20k words.
+MUSE_AGENT_MAX_TOKENS = int(os.environ.get("MUSE_AGENT_MAX_TOKENS", "32000"))
 MUSE_STYLE_PROSE_CHAPTERS = int(os.environ.get("MUSE_STYLE_PROSE_CHAPTERS", "3"))
 # HTTP timeout for the upstream call. Streaming responses can take long, but the
 # CONNECT step gets its own short budget: a blackholed/dead host must fail in

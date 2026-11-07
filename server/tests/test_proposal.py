@@ -318,3 +318,102 @@ def test_the_proposal_routes_are_behind_the_lock(monkeypatch: pytest.MonkeyPatch
     assert client.get("/api/muse/proposals/anything").status_code == 401
     assert client.post("/api/muse/proposals/anything/accept").status_code == 401
     assert client.delete("/api/muse/proposals/anything").status_code == 401
+
+
+# --- 6. long chapters: room to write, and honesty when it runs out (2.9.1) ---
+
+def _chat_raw(monkeypatch: pytest.MonkeyPatch, tool_calls: list[dict]):
+    """One chat turn whose first assistant message carries an arbitrary tool_calls."""
+    bodies: list[dict] = []
+    state = {"turn": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        bodies.append(body)
+        if not body.get("stream"):
+            return httpx.Response(200, json={"message": {"role": "assistant", "content": "terse."}})
+        state["turn"] += 1
+        if state["turn"] == 1:
+            return httpx.Response(200, content=_ndjson({
+                "message": {"role": "assistant", "content": "", "tool_calls": tool_calls},
+                "done": True,
+            }))
+        return httpx.Response(200, content=_ndjson({
+            "message": {"role": "assistant", "content": "Done."}, "done": True}))
+
+    real = muse_mod._client
+    monkeypatch.setattr(muse_mod, "_client",
+                        httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                                          timeout=real.timeout))
+    with TestClient(app) as c:
+        with c.stream("POST", "/api/muse/chat", json={
+            "messages": [{"role": "user", "content": "fix the chapter"}],
+            "chapter_id": f"{SID}/{BID}/{_chapter_id()}",
+        }) as r:
+            assert r.status_code == 200
+            sse = "".join(r.iter_text())
+    events = []
+    for line in sse.split("\n"):
+        if line.startswith("data: [STATUS]"):
+            events.append(("status", line[14:].strip()))
+        elif line.startswith("data: [PROPOSAL]"):
+            events.append(("proposal", line[16:].strip()))
+    return sse, events, bodies
+
+
+def test_the_agent_turn_has_room_to_write_a_whole_chapter(monkeypatch: pytest.MonkeyPatch):
+    """The bug: 4096 output tokens cannot hold a 5,000-word chapter, so the tool
+    arguments were truncated mid-JSON and looked empty. The chat carries its own,
+    much larger ceiling now."""
+    _, _, bodies = _chat(monkeypatch, NEW_TEXT)
+    streamed = _streamed(bodies)[0]
+    used = streamed["options"]["num_predict"]
+    assert used == muse_mod.MUSE_AGENT_MAX_TOKENS
+    assert used >= 16000, f"a whole chapter needs room: {used}"
+    assert used > muse_mod.MUSE_NUM_PREDICT      # other paths keep the small cap
+
+
+def test_truncated_arguments_are_named_rather_than_looking_empty(monkeypatch: pytest.MonkeyPatch):
+    """A tool call cut off mid-JSON must tell the model WHY, or it retries the same
+    doomed call — which is exactly what it did, five times, live."""
+    truncated = '{"content": "# The New Chapter\\n\\nThe ember had guttered, and Kael'
+    before = len(_mine())                     # earlier tests park their own
+    sse, events, bodies = _chat_raw(monkeypatch, [
+        {"function": {"name": "propose_chapter_rewrite", "arguments": truncated}}])
+    assert "proposal" not in [k for k, _ in events]
+    tool_msg = [m for m in _streamed(bodies)[-1]["messages"] if m["role"] == "tool"][-1]
+    assert "invalid JSON" in tool_msg["content"] and "cut off" in tool_msg["content"]
+    assert "PARTS" in tool_msg["content"]
+    assert len(_mine()) == before, "a truncated call must not park anything"
+
+
+def test_a_long_revision_can_arrive_in_parts(monkeypatch: pytest.MonkeyPatch):
+    """Two calls in one turn append to the same revision, so a chapter too long for a
+    single response can still be handed over whole."""
+    part1 = "# The New Chapter\n\n" + ("The ember guttered in the ash. " * 12)
+    part2 = ("Morning came grey over the harbour. " * 12)
+    sse, events, bodies = _chat_raw(monkeypatch, [
+        {"function": {"name": "propose_chapter_rewrite", "arguments": {"content": part1}}},
+        {"function": {"name": "propose_chapter_rewrite", "arguments": {"content": part2}}},
+    ])
+    pids = [p for k, p in events if k == "proposal"]
+    assert len(set(pids)) == 1, f"parts must share one revision, got {pids}"
+
+    stored = muse_mod.read_proposal(pids[0])
+    assert stored is not None
+    assert "ember guttered" in stored["content"] and "grey over the harbour" in stored["content"]
+    tool_msgs = [m["content"] for m in _streamed(bodies)[-1]["messages"] if m["role"] == "tool"]
+    assert any("Part appended" in m for m in tool_msgs), tool_msgs
+
+
+def test_proposals_die_with_the_book(monkeypatch: pytest.MonkeyPatch):
+    """A pending revision about a chapter in the trash is a banner nobody can act on."""
+    pid = _make_proposal(monkeypatch)
+    assert any(p["id"] == pid for p in _mine())
+
+    r = client.delete(f"/api/books/{SID}/{BID}")
+    assert r.status_code == 200
+    assert muse_mod.read_proposal(pid) is None
+
+    # put the book back for whatever runs next, and clear the trash properly
+    client.post(f"/api/trash/{r.json()['entry']}/restore")

@@ -374,6 +374,22 @@ def delete_proposal(pid: str) -> bool:
     return True
 
 
+def rebase_proposal(pid: str, base_revision: int) -> bool:
+    """After a partial accept the chapter moved, so the revision the proposal was built
+    against is no longer the file. Re-point it (the content is unchanged and still
+    applies) so the remaining hunks stay reviewable and honest about their base."""
+    p = _proposal_path(pid)
+    if p is None:
+        return False
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    meta["base_revision"] = int(base_revision)
+    p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return True
+
+
 def delete_proposals_for(book: str = "", series: str = "") -> int:
     """Drop pending revisions for a book or a whole series (2.9.1).
 

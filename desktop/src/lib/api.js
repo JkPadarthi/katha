@@ -234,8 +234,12 @@ export function getProposal(id) {
   return req(`/muse/proposals/${encodeURIComponent(id)}`)
 }
 
-export function acceptProposal(id) {
-  return req(`/muse/proposals/${encodeURIComponent(id)}/accept`, { method: 'POST' })
+export function acceptProposal(id, hunks = null) {
+  // `hunks` = the ids the author ticked (null = accept the whole revision).
+  return req(`/muse/proposals/${encodeURIComponent(id)}/accept`, {
+    method: 'POST',
+    body: hunks ? JSON.stringify({ hunks }) : undefined
+  })
 }
 
 export function discardProposal(id) {

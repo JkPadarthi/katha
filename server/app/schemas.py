@@ -126,6 +126,12 @@ class MuseRewriteRequest(BaseModel):
 
 # --- canon sweep (0.4) ----------------------------------------------------
 
+class ProposalAcceptIn(BaseModel):
+    """Which hunks of a pending revision to write. Omitted = all of them (an IDE's
+    "accept all"); an empty list is a legitimate "none of it" (3.0, D48)."""
+    hunks: list[int] | None = None
+
+
 class MuseSweepRequest(BaseModel):
     series: str
     book_id: str

@@ -25,6 +25,7 @@ from . import archive as ar
 from . import auth
 from . import db
 from . import epub
+from . import hunks as hunks_mod
 from . import stats
 from . import trash
 from .config import (
@@ -54,6 +55,7 @@ from .schemas import (
     MuseRewriteRequest,
     MuseSweepRequest,
     NoteOut,
+    ProposalAcceptIn,
     NotesOut,
     NotesUpdate,
     RevisionContentOut,
@@ -437,22 +439,25 @@ def get_stats(goal: int | None = None):
 
 @app.get("/api/muse/proposals", response_model=dict, tags=["muse"])
 def list_proposals():
-    """Pending revisions, newest first. Metadata only — the body is one GET away."""
-    return {"proposals": muse_mod.list_proposals()}
+    """Pending revisions, newest first. Metadata only — the body is one GET away, and
+    `hunk_count` is how many separate decisions are waiting (3.0, D48)."""
+    out = []
+    for p in muse_mod.list_proposals():
+        try:
+            bdir = _resolve_book_path(p["series"], p["book"])
+            chapter = ar.get_chapter(bdir, p["chapter"])
+            if chapter is not None:
+                base = _proposal_base(p, bdir, chapter)
+                p["hunk_count"] = len(hunks_mod.hunks(base, _proposal_full(p, chapter)))
+        except Exception:      # a book on its way to the trash must not break the list
+            pass
+        out.append(p)
+    return {"proposals": out}
 
 
 @app.get("/api/muse/proposals/{proposal_id}", response_model=dict, tags=["muse"])
 def read_proposal(proposal_id: str):
-    p = muse_mod.read_proposal(proposal_id)
-    if p is None:
-        raise HTTPException(404, "no such proposal")
-    return p
-
-
-@app.post("/api/muse/proposals/{proposal_id}/accept", response_model=ChapterOut,
-          tags=["muse"])
-def accept_proposal(proposal_id: str):
-    """Apply a proposed revision — as a normal save, so it snapshots a revision."""
+    """A pending revision, cut into hunks so it can be reviewed one place at a time."""
     p = muse_mod.read_proposal(proposal_id)
     if p is None:
         raise HTTPException(404, "no such proposal")
@@ -460,11 +465,85 @@ def accept_proposal(proposal_id: str):
     chapter = ar.get_chapter(bdir, p["chapter"])
     if chapter is None:
         raise HTTPException(404, "that chapter is not in this book any more")
-    # The Muse is asked for the whole chapter *with* its heading; the save path
-    # writes its own heading, so take the one it sent and drop the duplicate.
-    body, title = muse_mod.split_heading(p["content"], ar._chapter_title(chapter))
-    out = _write_chapter_text(p["series"], bdir, chapter, title, body)
-    muse_mod.delete_proposal(proposal_id)
+    base = _proposal_base(p, bdir, chapter)
+    p["base_content"] = base
+    p["current_revision"] = ar._read_revision_marker(chapter)
+    p["hunks"] = hunks_mod.hunks(base, _proposal_full(p, chapter))
+    return p
+
+
+def _proposal_base(p: dict, bdir: Path, chapter: Path) -> str:
+    """The file text the revision was written against.
+
+    If the chapter has moved on since the Muse read it, the snapshot from that moment is the
+    honest base — diffing against today's file would blame the author's own later edits on
+    the Muse.
+    """
+    rev = int(p.get("base_revision") or 0)
+    current = ar._read_revision_marker(chapter)
+    if rev and rev < current:
+        snap = ar.get_revision(bdir, p["chapter"], rev)
+        if snap and snap.get("content"):
+            return snap["content"]
+    return chapter.read_text(encoding="utf-8")
+
+
+def _proposal_full(p: dict, chapter: Path) -> str:
+    """The Muse's revision, in the same shape as the chapter file.
+
+    A revision that arrives without a heading is not "a chapter with the title deleted" —
+    it is a revision of the prose under the author's existing title. Restoring the heading
+    before diffing means the author is never asked to decide a phantom 'deleted the heading'
+    hunk, while a revision that *does* rename the chapter shows up as a real one (3.0, D48).
+    """
+    text = p.get("content") or ""
+    if text.lstrip().startswith("# "):
+        return text
+    return f"# {ar._chapter_title(chapter)}\n\n{text}"
+
+
+@app.post("/api/muse/proposals/{proposal_id}/accept", response_model=ChapterOut,
+          tags=["muse"])
+def accept_proposal(proposal_id: str, body: ProposalAcceptIn | None = None):
+    """Apply a proposed revision — all of it, or just the hunks the author ticked.
+
+    Either way this is a normal save (revision snapshot and all), so a partial accept is as
+    undoable as any edit. Hunks left unticked stay pending: the proposal keeps its content
+    and is re-pointed at the revision that was just written.
+    """
+    p = muse_mod.read_proposal(proposal_id)
+    if p is None:
+        raise HTTPException(404, "no such proposal")
+    bdir = _resolve_book_path(p["series"], p["book"])
+    chapter = ar.get_chapter(bdir, p["chapter"])
+    if chapter is None:
+        raise HTTPException(404, "that chapter is not in this book any more")
+    base = _proposal_base(p, bdir, chapter)
+    proposal_text = _proposal_full(p, chapter)
+    groups = hunks_mod.hunks(base, proposal_text)
+    total = len(groups)
+    wanted = None if body is None or body.hunks is None else body.hunks
+    try:
+        taken = hunks_mod.validate_ids(groups, wanted)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if not taken:
+        # Rejecting every hunk is a legitimate answer, and it must not burn a revision.
+        return ChapterOut(
+            **ar._chapter_meta(bdir, chapter.stem, "", chapter),
+            content=chapter.read_text(encoding="utf-8"),
+        )
+
+    applied = hunks_mod.merge(base, proposal_text, taken)
+    # The Muse is asked for the whole chapter *with* its heading; the save path writes its
+    # own heading, so take the one it sent and drop the duplicate.
+    text, title = muse_mod.split_heading(applied, ar._chapter_title(chapter))
+    out = _write_chapter_text(p["series"], bdir, chapter, title, text)
+    if len(taken) >= total:
+        muse_mod.delete_proposal(proposal_id)
+    else:
+        muse_mod.rebase_proposal(proposal_id, out["revision"])
     return ChapterOut(**out)
 
 

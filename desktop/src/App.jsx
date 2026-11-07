@@ -5,6 +5,7 @@ import Editor, { editorApi } from './components/Editor.jsx'
 import Muse, { museApi } from './components/Muse.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
+import ProposalReview from './components/ProposalReview.jsx'
 import SweepPanel from './components/SweepPanel.jsx'
 import BiblePanel from './components/BiblePanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
@@ -282,6 +283,8 @@ export default function App() {
   // The Muse handed over a whole-chapter revision (2.9, D45). Fetch it together
   // with the chapter as it stands, so the author reads a word-level diff instead of
   // a wall of prose — and nothing is written until they accept.
+  // A revision can be reviewed one change at a time (3.0, D48): the pane needs the prose
+  // the Muse was looking at (`base_content`) and the hunks cut from it.
   const openProposal = async (id) => {
     if (!series || !activeChapter) return
     try {
@@ -289,24 +292,35 @@ export default function App() {
         api.getProposal(id),
         api.getChapter(series.series, series.book, activeChapter)
       ])
-      setProposal({ id, content: p.content || '', original: ch.content || '' })
+      setProposal({
+        id,
+        content: p.content || '',
+        original: p.base_content ?? ch.content ?? '',
+        hunks: p.hunks || []
+      })
     } catch {
       setProposal(null)   // gone or unreadable: no banner, no half-open overlay
     }
   }
 
-  // Accepting is a normal save on the server (revision snapshot and all), so the
-  // editor is loaded from what the server actually stored.
-  const acceptProposal = async () => {
+  // Accepting is a normal save on the server (revision snapshot and all), so the editor is
+  // loaded from what the server actually stored. `ids` narrows it to the changes the author
+  // ticked; anything left unticked stays pending, and the pane reopens on the rest.
+  const acceptProposal = async (ids = null) => {
     if (!proposal) return
     setProposalBusy(true)
     try {
-      const saved = await api.acceptProposal(proposal.id)
+      const saved = await api.acceptProposal(proposal.id, ids)
       if (editorApi.replaceAll) editorApi.replaceAll(saved.content, saved.title)
-      setProposal(null)
+      const left = await api
+        .listProposals()
+        .then((r) => (r.proposals || []).some((p) => p.id === proposal.id))
+        .catch(() => false)
+      if (left) await openProposal(proposal.id)
+      else setProposal(null)
       await refreshArchive()
     } catch {
-      /* leave the diff open — the author can press Accept again */
+      /* leave the review open — the author can accept again */
     } finally {
       setProposalBusy(false)
     }
@@ -543,17 +557,27 @@ export default function App() {
           onClose={onCloseRewrite}
         />
       )}
-      {proposal && (
+      {proposal && (proposal.hunks?.length ? (
+        <ProposalReview
+          id={proposal.id}
+          original={proposal.original}
+          hunks={proposal.hunks}
+          busy={proposalBusy}
+          onAccept={(ids) => acceptProposal(ids)}
+          onDiscard={() => api.discardProposal(proposal.id)}
+          onClose={() => setProposal(null)}
+        />
+      ) : (
         <DiffOverlay
           title="Revision"
           original={proposal.original}
           proposed={proposal.content}
           busy={proposalBusy}
           showStyles={false}
-          onAccept={acceptProposal}
+          onAccept={() => acceptProposal(null)}
           onClose={() => setProposal(null)}
         />
-      )}
+      ))}
       {sweepOpen && series && (
         <SweepPanel series={series} onClose={() => setSweepOpen(false)} />
       )}

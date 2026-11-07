@@ -37,6 +37,7 @@ export default function Muse({ series, chapter, onProposal }) {
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState('')
   const [proposal, setProposal] = useState('')   // a whole-chapter revision, waiting (2.9)
+  const [hunkCount, setHunkCount] = useState(0)  // how many separate changes it holds (3.0)
   const [busy, setBusy] = useState(false)
   const [streaming, setStreaming] = useState('')
   const [error, setError] = useState('')
@@ -91,6 +92,19 @@ export default function Muse({ series, chapter, onProposal }) {
       .catch(() => { /* best-effort: never block the thread on this */ })
     return () => { alive = false }
   }, [chapterId])
+
+  // Say how many changes are waiting, not just that something is. The banner is the only
+  // thing the author sees before opening the review, so it should carry the size of the
+  // decision (3.0, D48).
+  useEffect(() => {
+    if (!proposal) { setHunkCount(0); return }
+    let alive = true
+    api
+      .getProposal(proposal)
+      .then((p) => { if (alive) setHunkCount((p.hunks || []).length) })
+      .catch(() => { if (alive) setHunkCount(0) })
+    return () => { alive = false }
+  }, [proposal])
 
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
@@ -202,10 +216,12 @@ export default function Muse({ series, chapter, onProposal }) {
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-accent">◆</span>
             <span className="min-w-0 flex-1 text-[11px] text-ink">
-              A full-chapter revision is ready — not applied.
+              {hunkCount
+                ? `${hunkCount} ${hunkCount === 1 ? 'change' : 'changes'} proposed — none applied.`
+                : 'A full-chapter revision is ready — not applied.'}
             </span>
             <Button variant="accent" size="sm" onClick={() => onProposal && onProposal(proposal)}>
-              Review diff
+              {hunkCount ? 'Review changes' : 'Review diff'}
             </Button>
             <Button
               size="sm"

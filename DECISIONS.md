@@ -133,6 +133,36 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D48 — the author's decision is not one bit; it is one per place that changed (3.0)
+The Muse hands over a whole chapter, and until now the app asked one question with thirty
+answers in it: today's real revision moved ~138 words across 30 places, and the author got a
+single Accept. That is not a review, it is a lottery. Every AI IDE people actually value
+answers this the same way — cut the proposal into **hunks**, show them where they land, let
+each be accepted or rejected (Cursor's users still ask for the per-change Apply they lost;
+Claude Code users file the same request for VS Code).
+
+* **`app/hunks.py` is the only thing that cuts a revision.** Word-level diff, grouped with a
+  git-style context window (`MERGE_GAP` = 8 unchanged words): near-neighbours are one
+  decision because an author fixes a sentence, not a word. Pure functions, no I/O, so the
+  maths is tested against prose instead of assumed.
+* **Offsets, not re-diffs on the client.** Each hunk carries `before`, `after` and character
+  offsets into both texts, so the pane renders the projection itself and toggling is instant.
+* **A partial accept writes through the normal save path** (`_write_chapter_text`) — it
+  snapshots a revision like any edit, so it stays undoable in the time machine.
+* **What is left keeps waiting.** The proposal keeps its content and is *re-pointed* at the
+  revision just written (`rebase_proposal`); applying the leftovers to what is on disk still
+  reproduces the Muse's revision exactly (asserted over randomised prose).
+* **Rejecting every hunk burns nothing** — no save, no revision, still pending. Discard is a
+  separate, deliberate action.
+* **No phantom hunks.** A revision arriving without a heading is not "a chapter whose title
+  was deleted": the heading is restored before diffing, while a revision that *does* rename
+  the chapter shows up as a real, rejectable hunk.
+* **The title rule stays as 2.9 defined it** (the heading the Muse sends wins; otherwise the
+  author's title stands). The old suite already pinned that; keeping the tested contract
+  beats quietly redefining it.
+* **`hunk_count` rides in the proposal list**, so the banner says "3 changes proposed — none
+  applied" rather than a vague "a revision is ready".
+
 ## D47 — a pending revision must be discoverable, not witnessed (2.9.3)
 The `[PROPOSAL]` SSE marker only ever covers a turn the open tab watched live. A revision
 parked by another tab, by an earlier session, or by the API was therefore **invisible**:

@@ -469,3 +469,121 @@ def test_parts_across_rounds_join_one_revision_and_are_announced_at_the_end(monk
     assert "grey over the harbour" in stored["content"]   # part 2, appended
     # Announced after the assistant's final words, not between the parts.
     assert sse.index("[PROPOSAL]") > sse.index("That is the whole chapter")
+
+
+# --- 7. per-hunk review (3.0, D48) -----------------------------------------
+# The author's decision is not one bit; it is one decision per place that changed.
+
+def _clear_pending() -> None:
+    """These tests share a module-scoped book; start from a known shelf."""
+    for pr in _mine():
+        muse_mod.delete_proposal(pr["id"])
+
+
+def _two_edits(monkeypatch: pytest.MonkeyPatch) -> str:
+    """A revision that changes one thing near the top and one thing near the end — far
+    enough apart to be two separate hunks.
+
+    Built from the chapter *as it now stands*: these tests share one book, and the tests
+    above have already accepted revisions into it.
+    """
+    current = ar._body_text(_chapter_file().read_text(encoding="utf-8"))
+    words = current.split()
+    assert len(words) >= 40, f"fixture too short to make two hunks: {len(words)} words"
+    # Two edits, one near the top and one near the end, far enough apart (>= MERGE_GAP
+    # unchanged words) to be two hunks whatever shape the chapter has by now.
+    edited = (" ".join(words[:3]) + " HUNKALPHA marker. "
+              + " ".join(words[3:-3])
+              + " HUNKOMEGA marker. " + " ".join(words[-3:]))
+    assert edited != current
+    _chat(monkeypatch, edited)
+    mine = _mine()
+    assert mine, "the turn should have parked a revision"
+    return mine[0]["id"]
+
+
+def test_reading_a_revision_hands_over_its_hunks_and_its_base(monkeypatch: pytest.MonkeyPatch):
+    _clear_pending()
+    pid = _two_edits(monkeypatch)
+    r = client.get(f"/api/muse/proposals/{pid}")
+    assert r.status_code == 200
+    p = r.json()
+    hs = p["hunks"]
+    assert len(hs) == 2, [h["after"] for h in hs]
+    # the base is the chapter file as it stands — and the Muse sent no heading, so the
+    # author's title is restored rather than offered as a phantom "deleted the heading"
+    assert p["base_content"] == _chapter_file().read_text(encoding="utf-8")
+    assert "HUNKALPHA" not in p["base_content"]
+    assert not any("# The" in h["before"] for h in hs), "no heading hunk"
+    for h in hs:
+        # a hunk is a replacement, an insertion or a deletion — one side may be empty
+        # (a paragraph break the Muse added is a real, rejectable difference)
+        assert h["before"] or h["after"]
+        assert h["before"] != h["after"]
+        assert p["base_content"][h["base_start"]:h["base_end"]] == h["before"]
+    client.delete(f"/api/muse/proposals/{pid}")
+
+
+def test_accepting_one_hunk_writes_that_one_and_leaves_the_rest_pending(monkeypatch: pytest.MonkeyPatch):
+    _clear_pending()
+    pid = _two_edits(monkeypatch)
+    hs = client.get(f"/api/muse/proposals/{pid}").json()["hunks"]
+    rev_before = ar._read_revision_marker(_chapter_file())
+
+    r = client.post(f"/api/muse/proposals/{pid}/accept", json={"hunks": [hs[0]["id"]]})
+    assert r.status_code == 200
+    body = ar._body_text(_chapter_file().read_text(encoding="utf-8"))
+
+    assert "HUNKALPHA" in body                 # taken
+    assert "HUNKOMEGA" not in body             # still the author's to decide
+    # a partial accept is a normal save: the time machine keeps it (D9/D45)
+    assert ar._read_revision_marker(_chapter_file()) == rev_before + 1
+    # and the revision is still waiting, re-pointed at what was just written
+    still = _mine()
+    assert len(still) == 1 and still[0]["id"] == pid
+    assert still[0]["base_revision"] == rev_before + 1
+    left = client.get(f"/api/muse/proposals/{pid}").json()["hunks"]
+    assert len(left) == 1 and "HUNKOMEGA" in left[0]["after"]
+
+    # ...and the leftover can finish the job
+    r = client.post(f"/api/muse/proposals/{pid}/accept", json={"hunks": [left[0]["id"]]})
+    assert r.status_code == 200
+    body = ar._body_text(_chapter_file().read_text(encoding="utf-8"))
+    assert "HUNKALPHA" in body and "HUNKOMEGA" in body
+    assert _mine() == [], "the revision is consumed once every hunk is decided"
+
+
+def test_rejecting_every_hunk_writes_nothing(monkeypatch: pytest.MonkeyPatch):
+    _clear_pending()
+    pid = _two_edits(monkeypatch)
+    before = _chapter_file().read_text(encoding="utf-8")
+    rev_before = ar._read_revision_marker(_chapter_file())
+
+    r = client.post(f"/api/muse/proposals/{pid}/accept", json={"hunks": []})
+    assert r.status_code == 200
+    assert _chapter_file().read_text(encoding="utf-8") == before
+    assert ar._read_revision_marker(_chapter_file()) == rev_before   # no revision burned
+    assert len(_mine()) == 1                                          # still pending
+    client.delete(f"/api/muse/proposals/{pid}")
+
+
+def test_a_hunk_that_does_not_exist_is_refused(monkeypatch: pytest.MonkeyPatch):
+    _clear_pending()
+    pid = _two_edits(monkeypatch)
+    before = _chapter_file().read_text(encoding="utf-8")
+    r = client.post(f"/api/muse/proposals/{pid}/accept", json={"hunks": [7]})
+    assert r.status_code == 400
+    assert "7" in r.json()["detail"]
+    assert _chapter_file().read_text(encoding="utf-8") == before
+    client.delete(f"/api/muse/proposals/{pid}")
+
+
+def test_accepting_without_a_body_still_takes_everything(monkeypatch: pytest.MonkeyPatch):
+    _clear_pending()
+    """The 2.9 client posted no body at all — that must keep meaning 'accept all'."""
+    pid = _two_edits(monkeypatch)
+    r = client.post(f"/api/muse/proposals/{pid}/accept")
+    assert r.status_code == 200
+    body = ar._body_text(_chapter_file().read_text(encoding="utf-8"))
+    assert "HUNKALPHA" in body and "HUNKOMEGA" in body
+    assert _mine() == []

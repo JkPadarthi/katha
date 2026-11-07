@@ -67,6 +67,14 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.0** — per-hunk review. A whole-chapter revision is no longer one yes/no: it is cut
+  into hunks (word diff, git-style grouping) and reviewed one change at a time, in a pane
+  that walks the chapter — untouched prose, then each change with its old and new lines and
+  a ✓/✗ toggle. Accept some, set others aside: what you set aside stays pending, re-pointed
+  at the revision you just wrote, and the leftovers still add up to the Muse's version
+  exactly. Rejecting everything saves nothing and burns no revision. The banner now says how
+  many decisions are waiting ("3 changes proposed — none applied"). **185 tests**, 18 of them
+  the hunk maths and 5 the per-hunk routes.
 - **2.9.3** — a waiting revision is discoverable. The banner was raised only by the live
   `[PROPOSAL]` marker, so a revision parked in another tab, in an earlier session, or by
   the API was on disk and invisible — the panel showed nothing. It now asks the server

@@ -106,7 +106,13 @@ if [ "$FORCE" -eq 0 ]; then
     esac
 fi
 
-log "${FORCE:+FORCED }deploy ${local_sha:0:7} -> $short"
+# NB `FORCE` is 0 or 1, and `${FORCE:+word}` is true for BOTH (it tests
+# set/non-empty, not numeric) — say it explicitly instead.
+if [ "$FORCE" -eq 1 ]; then
+    log "FORCED deploy ${local_sha:0:7} -> $short"
+else
+    log "deploy ${local_sha:0:7} -> $short"
+fi
 git pull --ff-only --quiet origin main 2>>"$LOG" || true
 
 # --- the novels must not be collateral: verify the binds resolve, and are not empty ---
@@ -115,10 +121,26 @@ if [ ! -d "$ARCHIVE_DIR" ] || [ -z "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
     exit 1
 fi
 cfg="$(cd "$COMPOSE_DIR" && docker compose config 2>>"$LOG")" || { log "REFUSING: docker compose config failed"; exit 1; }
-printf '%s' "$cfg" | grep -q "${ARCHIVE_DIR}:/data/archive" \
-    || { log "REFUSING: compose does not bind ${ARCHIVE_DIR} -> /data/archive (check server/.env)"; exit 1; }
-printf '%s' "$cfg" | grep -q "${INDEX_DIR}:/data/index" \
-    || { log "REFUSING: compose does not bind ${INDEX_DIR} -> /data/index (check server/.env)"; exit 1; }
+
+# `docker compose config` prints volumes in the long form (type/source/target),
+# NEVER as `source:target` — so pair each source with its target instead of
+# grepping for a joined string that does not exist in the output. (Getting this
+# wrong refuses every deploy: the guard fires on a healthy tree.)
+bind_source() {
+    printf '%s' "$cfg" | awk -v want="$1" '
+        /^[[:space:]]*source:/ { src = $2 }
+        /^[[:space:]]*target:/ { if ($2 == want) print src }'
+}
+check_bind() {
+    local target="$1" want="$2" got
+    got="$(bind_source "$target")"
+    if [ "$got" != "$want" ]; then
+        log "REFUSING: ${target} is bound to '${got:-nothing}', expected '${want}' (check server/.env)"
+        exit 1
+    fi
+}
+check_bind /data/archive "$ARCHIVE_DIR"
+check_bind /data/index "$INDEX_DIR"
 
 # --- build (a failed build must leave the running version untouched) ---
 if ! (cd "$COMPOSE_DIR" && docker compose build archive >>"$LOG" 2>&1); then

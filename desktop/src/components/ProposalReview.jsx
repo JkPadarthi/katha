@@ -30,6 +30,7 @@ export default function ProposalReview({
   id,
   original = '',
   hunks = [],
+  stale = false,
   busy,
   onAccept,          // (ids | null) => void   null = every hunk
   onDiscard,
@@ -105,6 +106,16 @@ export default function ProposalReview({
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {stale && (
+          <div className="mb-3 rounded-md border border-err/40 bg-err/5 px-3 py-2">
+            <div className="text-[11px] text-ink">
+              <span className="text-err">This revision is based on an earlier version of your chapter.</span>
+              {' '}You have saved since the Muse read it, and accepting would overwrite prose it
+              never saw — so accepting is closed. Ask the Muse to revise the current chapter
+              (it reads what is on the page now), or discard this revision.
+            </div>
+          </div>
+        )}
         <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-accent/30 bg-accent/5 px-3 py-2">
           <div className="text-[11px] text-ink">
             Nothing is applied until you accept. Unticked changes stay here, waiting.
@@ -196,7 +207,7 @@ export default function ProposalReview({
           <Button
             variant="accent"
             onClick={() => onAccept(accepted.length === hunks.length ? null : accepted.map((h) => h.id))}
-            disabled={busy || !accepted.length}
+            disabled={busy || !accepted.length || stale}
           >
             {accepted.length === hunks.length
               ? `Accept all ${hunks.length}`

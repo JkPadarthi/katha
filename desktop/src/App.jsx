@@ -296,7 +296,8 @@ export default function App() {
         id,
         content: p.content || '',
         original: p.base_content ?? ch.content ?? '',
-        hunks: p.hunks || []
+        hunks: p.hunks || [],
+        stale: !!p.stale
       })
     } catch {
       setProposal(null)   // gone or unreadable: no banner, no half-open overlay
@@ -562,6 +563,7 @@ export default function App() {
           id={proposal.id}
           original={proposal.original}
           hunks={proposal.hunks}
+          stale={proposal.stale}
           busy={proposalBusy}
           onAccept={(ids) => acceptProposal(ids)}
           onDiscard={() => api.discardProposal(proposal.id)}

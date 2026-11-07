@@ -67,6 +67,12 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.1** — an accept is only valid against the text the Muse read. Found on real data:
+  ch-01 had been saved (226 words) *after* the waiting revision was written, and accepting
+  would have merged it over prose the Muse never saw. Accepting now refuses with 409 and
+  says why; the review pane warns before you tick anything. A partial accept is unaffected
+  (it re-points the revision at what it just wrote). Also fixed: the proposal list counted
+  hunks against nothing and reported 1 for an eleven-change revision.
 - **3.0.0** — per-hunk review. A whole-chapter revision is no longer one yes/no: it is cut
   into hunks (word diff, git-style grouping) and reviewed one change at a time, in a pane
   that walks the chapter — untouched prose, then each change with its old and new lines and

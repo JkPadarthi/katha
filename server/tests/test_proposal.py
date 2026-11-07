@@ -587,3 +587,39 @@ def test_accepting_without_a_body_still_takes_everything(monkeypatch: pytest.Mon
     body = ar._body_text(_chapter_file().read_text(encoding="utf-8"))
     assert "HUNKALPHA" in body and "HUNKOMEGA" in body
     assert _mine() == []
+
+
+def test_the_list_counts_the_same_hunks_as_the_detail(monkeypatch: pytest.MonkeyPatch):
+    """The list carries metadata only, so it has to read the revision to count its hunks —
+    it reported 1 for an eleven-change revision, because it diffed against nothing."""
+    _clear_pending()
+    pid = _two_edits(monkeypatch)
+    listed = [p for p in client.get("/api/muse/proposals").json()["proposals"] if p["id"] == pid]
+    assert listed, "the revision should be listed"
+    detail = client.get(f"/api/muse/proposals/{pid}").json()
+    assert listed[0]["hunk_count"] == len(detail["hunks"]) == 2
+    client.delete(f"/api/muse/proposals/{pid}")
+
+
+def test_a_revision_written_before_the_authors_latest_save_cannot_be_accepted(monkeypatch: pytest.MonkeyPatch):
+    """The Muse read one text; the author has since saved another. Merging them behind the
+    author's back is how a writer loses a paragraph — so accepting is refused, out loud."""
+    _clear_pending()
+    pid = _two_edits(monkeypatch)
+    file = _chapter_file()
+
+    # the author keeps writing while the revision sits there
+    body = ar._body_text(file.read_text(encoding="utf-8"))
+    client.put(f"/api/books/{SID}/{BID}/chapters/{_chapter_id()}",
+               json={"title": "The New Chapter", "content": body + "\n\nA line written later.\n"})
+
+    detail = client.get(f"/api/muse/proposals/{pid}").json()
+    assert detail["stale"] is True, "the review must be able to say so up front"
+
+    before = file.read_text(encoding="utf-8")
+    r = client.post(f"/api/muse/proposals/{pid}/accept")
+    assert r.status_code == 409
+    assert "since this revision was written" in r.json()["detail"]
+    assert file.read_text(encoding="utf-8") == before, "the newer prose is untouched"
+    assert len(_mine()) == 1, "and the revision is still there to discard or re-ask"
+    client.delete(f"/api/muse/proposals/{pid}")

@@ -447,8 +447,12 @@ def list_proposals():
             bdir = _resolve_book_path(p["series"], p["book"])
             chapter = ar.get_chapter(bdir, p["chapter"])
             if chapter is not None:
+                # The list carries metadata only — the body has to be read, or this counts
+                # the hunks of a revision that isn't there (which is how it reported 1 for
+                # an eleven-change revision).
+                full = muse_mod.read_proposal(p["id"]) or p
                 base = _proposal_base(p, bdir, chapter)
-                p["hunk_count"] = len(hunks_mod.hunks(base, _proposal_full(p, chapter)))
+                p["hunk_count"] = len(hunks_mod.hunks(base, _proposal_full(full, chapter)))
         except Exception:      # a book on its way to the trash must not break the list
             pass
         out.append(p)
@@ -468,6 +472,10 @@ def read_proposal(proposal_id: str):
     base = _proposal_base(p, bdir, chapter)
     p["base_content"] = base
     p["current_revision"] = ar._read_revision_marker(chapter)
+    # A revision is written against the chapter the Muse *read*. If the author has saved
+    # since, accepting would quietly overwrite prose the Muse never saw — so the review
+    # says so, and the accept route refuses (3.0.1).
+    p["stale"] = int(p.get("base_revision") or 0) != p["current_revision"]
     p["hunks"] = hunks_mod.hunks(base, _proposal_full(p, chapter))
     return p
 
@@ -518,6 +526,18 @@ def accept_proposal(proposal_id: str, body: ProposalAcceptIn | None = None):
     chapter = ar.get_chapter(bdir, p["chapter"])
     if chapter is None:
         raise HTTPException(404, "that chapter is not in this book any more")
+    current_rev = ar._read_revision_marker(chapter)
+    base_rev = int(p.get("base_revision") or 0)
+    if base_rev != current_rev:
+        # Not a conflict to be clever about: the Muse read one text, the author has since
+        # saved another, and merging them silently is how a writer loses a paragraph. The
+        # author's newer prose wins by default, and the Muse can revise it properly.
+        raise HTTPException(409, (
+            "the chapter has been saved since this revision was written "
+            f"(this revision is based on revision {base_rev}, the chapter is at "
+            f"{current_rev}) — ask the Muse to revise the current chapter, or discard "
+            "this revision"
+        ))
     base = _proposal_base(p, bdir, chapter)
     proposal_text = _proposal_full(p, chapter)
     groups = hunks_mod.hunks(base, proposal_text)

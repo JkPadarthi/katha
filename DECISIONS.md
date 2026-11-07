@@ -133,6 +133,30 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D49 — an accept is only valid against the text the Muse read (3.0.1)
+Found on real data, not in a test: the author's ch-01 was at revision 6 while the waiting
+revision had been written against revision 5 — they had saved 226 words into the chapter
+after asking the Muse. Accepting would have merged the revision into a text the Muse never
+saw and overwritten their newest prose. The time machine would have kept a copy, so nothing
+would have been *lost*, but the author would have watched their own paragraph disappear
+under a click labelled "accept".
+
+So accepting now **refuses (409) when the chapter has moved on**, with a message that says
+which revisions are involved and what to do instead (ask the Muse to revise the current
+chapter — it reads the page as it is now — or discard the revision). The review pane says so
+before a single hunk is ticked, and closes its Accept button. A *partial* accept is
+unaffected: it re-points the revision at the revision it just wrote (D48), so the base and
+the chapter agree again by the time the author returns.
+
+The rejected alternative was a silent 3-way merge (base→current vs base→revision, applying
+the revision where they do not overlap). That is the right long-term answer — it is what git
+does — but guessing at overlapping prose on the author's behalf is exactly the class of
+decision D45 exists to prevent. The author's newer words win by default.
+
+Also fixed here: the proposal **list** counted hunks against nothing (it carries metadata
+only, so `content` was missing) and reported 1 for an eleven-change revision. It now reads
+the revision before counting, and a test pins list == detail.
+
 ## D48 — the author's decision is not one bit; it is one per place that changed (3.0)
 The Muse hands over a whole chapter, and until now the app asked one question with thirty
 answers in it: today's real revision moved ~138 words across 30 places, and the author got a

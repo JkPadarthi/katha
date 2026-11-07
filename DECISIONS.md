@@ -133,6 +133,31 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D53 — extended thinking spends the answer's budget, and silence is never an answer (3.0.9)
+The canon sweep returned **nothing**: HTTP 200, a complete SSE stream, zero text. The cause was
+not the prompt, the payload shape, the model, the credentials or the network — it was that this
+gateway runs `claude-sonnet-5-5` with **extended thinking on by default**, thinking spends the
+same `max_tokens` budget as the reply, and the sweep asked for a whole-manuscript audit at a
+**4096** ceiling. The model thought until it ran out (`stop_reason: max_tokens`), wrote no text,
+and the app streamed an empty report. `thinking: {"type": "disabled"}` is refused by the gateway
+(400), so the ceiling is the lever.
+
+Two rules, both general:
+
+* **Reasoning-heavy calls need room for thinking *and* the answer.** `MUSE_NUM_PREDICT` (the
+  rewrite and both sweeps) goes 4096 -> 12000. The agentic chat was already raised to 32000 for
+  the same class of reason (D46) — which is exactly why the chat kept working while the sweep
+  did not, and why the two must not drift apart again.
+* **An empty answer is never streamed as silence.** When a messages-dialect stream ends with no
+  text and no tool calls, the adapter now yields a sentence naming the cause ("spent its entire
+  output budget on reasoning") or a plain "returned an empty reply", instead of a blank panel.
+  A truncated-but-present reply gets no notice.
+
+Diagnosis note worth keeping: the sweep was failing while direct `POST /messages` calls with the
+*same body* succeeded — because those direct calls had a tiny `max_tokens` and a trivial prompt,
+so the model's thinking was short and text still arrived. When a stream is empty, read the
+**whole** stream and check `stop_reason`; the first 800 characters proved nothing.
+
 ## D52 — the app opens where the author was, not at chapter one (3.0.8)
 "on refresh, it should open the latest ch, not the first." A refresh — or reopening the
 installed app — always selected `chapters[0]`, so the chapter actually being written sat at the

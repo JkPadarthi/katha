@@ -67,6 +67,12 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.0.9** — the canon sweep works again, and an empty answer can never look like silence.
+  The sweep streamed nothing at all: this gateway runs the model with **extended thinking on**,
+  and thinking spends the same output budget as the reply — at a 4096 ceiling the model thought
+  until it ran out and never wrote a word (`stop_reason: max_tokens`). The ceiling for the
+  rewrite and both sweeps is now 12000, and the adapter prints a sentence when a stream ends
+  with no text instead of an empty panel. 4 new tests, 207 total.
 - **3.0.8** — the app opens where you were, not at chapter one. A refresh (or reopening the
   installed app) now resumes the chapter you last had open, and the remembered book with it.
   With no memory to go on it opens the chapter **written most recently** — `updated_at` now rides

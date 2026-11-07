@@ -665,3 +665,80 @@ def test_the_dialect_alias_anthropic_still_selects_the_same_shape(monkeypatch: p
     monkeypatch.setattr(up, "MUSE_API_BASE", "https://api.example.test/provider/v1")
     assert up.is_messages() is True
     assert up.chat_url() == "https://api.example.test/provider/v1/messages"
+
+
+# --- an empty answer must never look like silence (3.0.9) ------------------
+# This gateway runs the model with extended thinking ON, and thinking spends the same output
+# budget as the reply. The canon sweep asked for a whole-manuscript audit at a 4096 ceiling,
+# thought until it ran out, and streamed nothing — so the panel showed an empty report with no
+# explanation. Whatever the cause, the author gets a sentence, not a blank.
+
+def _notice_body(prompt: str = "audit the book") -> dict:
+    return {"model": "claude-sonnet-5-5",
+            "messages": [{"role": "user", "content": prompt}],
+            "options": {"num_predict": 40}}
+
+
+def _notice_transport(lines: list[str]):
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              content="".join(lines).encode())
+    return httpx.AsyncClient(transport=httpx.MockTransport(_handler), timeout=10)
+
+
+def _collect_notice(lines: list[str]) -> list[dict]:
+    async def go():
+        out = []
+        async for ev in up._stream_anthropic(_notice_body(), _notice_transport(lines)):
+            out.append(ev)
+        return out
+    return asyncio.run(go())
+
+
+_THINKING_ONLY = [
+    'data: {"type":"message_start"}\n\n',
+    'data: {"type":"content_block_start","index":0,'
+    '"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+    'data: {"type":" content_block_delta"}\n\n',
+    'data: {"type":"content_block_delta","index":0,'
+    '"delta":{"type":"signature_delta","signature":"AAAA"}}\n\n',
+    'data: {"type":"content_block_stop","index":0}\n\n',
+    'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}\n\n',
+    'data: {"type":"message_stop"}\n\n',
+]
+
+_TEXT_STREAM = [
+    'data: {"type":"message_start"}\n\n',
+    'data: {"type":"content_block_start","index":0,'
+    '"content_block":{"type":"text","text":""}}\n\n',
+    'data: {"type":"content_block_delta","index":0,'
+    '"delta":{"type":"text_delta","text":"## Canon\\n"}}\n\n',
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+]
+
+
+def test_a_thinking_only_reply_says_why_it_is_empty():
+    events = _collect_notice(_THINKING_ONLY)
+    text = "".join(e.get("content") or "" for e in events)
+    assert text, "an empty answer must not be streamed as silence"
+    assert "output budget" in text and "ask again" in text
+
+
+def test_a_real_reply_is_untouched_by_the_notice():
+    events = _collect_notice(_TEXT_STREAM)
+    text = "".join(e.get("content") or "" for e in events)
+    assert text == "## Canon\n"
+    assert "output budget" not in text
+
+
+def test_a_truncated_but_present_reply_gets_no_notice():
+    """stop_reason=max_tokens WITH text is a normal truncation, not an empty answer."""
+    lines = [*_TEXT_STREAM[:-1],
+             'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}\n\n']
+    text = "".join(e.get("content") or "" for e in _collect_notice(lines))
+    assert text == "## Canon\n"
+
+
+def test_the_sweep_ceiling_leaves_room_to_think():
+    from app import config
+    assert config.MUSE_NUM_PREDICT >= 12000, "thinking spends the same budget as the answer"

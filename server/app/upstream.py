@@ -422,6 +422,8 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
     """
     body = to_anthropic_payload({**payload, "stream": True})
     calls: dict[int, dict] = {}
+    text_seen = False
+    stop_reason = ""
 
     async with client.stream(
         "POST", chat_url(), json=body, headers=headers(), timeout=timeout(),
@@ -444,6 +446,10 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
                 err = obj.get("error") or {}
                 raise RuntimeError(err.get("message") or "upstream error")
 
+            if kind == "message_delta":
+                stop_reason = ((obj.get("delta") or {}).get("stop_reason")
+                               or obj.get("stop_reason") or stop_reason)
+
             if kind == "content_block_start":
                 block = obj.get("content_block") or {}
                 if block.get("type") == "tool_use":
@@ -460,6 +466,7 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
             elif kind == "content_block_delta":
                 delta = obj.get("delta") or {}
                 if delta.get("type") == "text_delta" and delta.get("text"):
+                    text_seen = True
                     yield {"content": delta["text"]}
                 elif delta.get("type") == "input_json_delta":
                     slot = calls.setdefault(
@@ -480,6 +487,20 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
             }
             for idx, slot in sorted(calls.items())
         ]}
+    elif not text_seen:
+        # Silence is the worst possible answer. This gateway runs the model with extended
+        # thinking on, and thinking spends the same output budget as the reply — so a
+        # reasoning-heavy prompt with a small ceiling can finish having written nothing at
+        # all. The sweep did exactly that (0 chars, stop_reason=max_tokens) and the panel
+        # showed an empty report with no explanation (3.0.9).
+        if stop_reason == "max_tokens":
+            yield {"content": (
+                "\n\n_[The model spent its entire output budget on reasoning and never "
+                "reached the answer. Nothing is wrong with your book — ask again, or ask "
+                "for something smaller (one chapter at a time).]_"
+            )}
+        else:
+            yield {"content": "\n\n_[The model returned an empty reply. Try again.]_"}
 
 
 async def stream_events(payload: dict, client: httpx.AsyncClient) -> AsyncIterator[dict]:

@@ -28,7 +28,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "3.0.8"
+VERSION = "3.0.9"
 
 # --- Muse upstream (0.3 Muse, D16/D19; dialect switch 2.1, D20-D23) -----------
 # Which wire dialect the Muse talks. "ollama" is the LAN box (unchanged
@@ -72,7 +72,12 @@ MUSE_AGENT_MODEL = (
 MUSE_MAX_TOOL_ROUNDS = int(os.environ.get("KATHA_MUSE_MAX_TOOL_ROUNDS", "6"))
 # Token budgets. We're well under deepseek-r1's 131K context; cap conservatively.
 MUSECONTEXT_MAX_TOKENS = int(os.environ.get("MUSECONTEXT_MAX_TOKENS", "6000"))
-MUSE_NUM_PREDICT = int(os.environ.get("MUSE_NUM_PREDICT", "4096"))
+# The ceiling for the non-agentic Muse calls (rewrite, canon sweep, bible sweep).
+# 4096 was chosen when the brain was a local Ollama model. This gateway runs the model with
+# EXTENDED THINKING on, and thinking spends the same output budget as the answer — the sweep
+# asked for a whole-manuscript audit, thought until the ceiling, and returned no text at all
+# (3.0.9). Reasoning-heavy calls need room for both.
+MUSE_NUM_PREDICT = int(os.environ.get("MUSE_NUM_PREDICT", "12000"))
 # The agentic chat is the one call that may have to write a WHOLE CHAPTER into a tool
 # argument, so it gets its own, much larger, output ceiling: 4096 tokens cannot hold a
 # 5,000-word chapter, and a truncated tool call used to look like an empty handover

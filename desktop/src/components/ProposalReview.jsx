@@ -142,7 +142,7 @@ export default function ProposalReview({
         {segments.map((s, i) => {
           if (s.kind === 'same') {
             return (
-              <span key={`t${i}`} className="whitespace-pre-wrap font-serif text-[14.5px] leading-[1.72] text-mute/80">
+              <span key={`t${i}`} className="whitespace-pre-wrap font-serif text-[14.5px] leading-[1.55] text-mute/80">
                 {s.text}
               </span>
             )
@@ -182,12 +182,12 @@ export default function ProposalReview({
                 </button>
               </div>
               {h.before.trim() && (
-                <div className="font-serif text-[14.5px] leading-[1.72] text-err/80 line-through">
+                <div className="font-serif text-[14.5px] leading-[1.55] text-err/80 line-through">
                   {h.before}
                 </div>
               )}
               {h.after.trim() && (
-                <div className="mt-0.5 font-serif text-[14.5px] leading-[1.72] text-ink">
+                <div className="mt-0.5 font-serif text-[14.5px] leading-[1.55] text-ink">
                   {h.after}
                 </div>
               )}

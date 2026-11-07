@@ -23,7 +23,7 @@ function Blocks({ text }) {
         </blockquote>
       )
     }
-    return <p key={i} className="mb-[1.25em] whitespace-pre-wrap">{t}</p>
+    return <p key={i} className="mb-[1em] whitespace-pre-wrap">{t}</p>
   })
 }
 
@@ -50,7 +50,7 @@ export default function ReadingView({ body, notes, onAddNote, onNoteBody, onDele
 
   return (
     <div>
-      <div onMouseUp={onMouseUp} className="font-serif text-[17px] leading-[1.7] text-ink/95">
+      <div onMouseUp={onMouseUp} className="font-serif text-[17px] leading-[1.55] text-ink/95">
         <Blocks text={body} />
       </div>
 

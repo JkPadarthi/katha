@@ -22,7 +22,7 @@ export default function App() {
   const [confirmTarget, setConfirmTarget] = useState(null)   // delete → confirm (2.3)
   const [series, setSeries] = useState(null)
   const [activeChapter, setActiveChapter] = useState(null)
-  const [railCollapsed, setRailCollapsed] = useState(false)
+  const [railCollapsed, setRailCollapsed] = useState(() => getSetting('railCollapsed', false))
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(() => getSetting('focus', false))
   const [loadError, setLoadError] = useState('')
@@ -105,6 +105,9 @@ export default function App() {
   }, [])
 
   useEffect(() => { setSetting('focus', focusMode) }, [focusMode])
+  // The rail's retracted state sticks too — in focus mode it is the one control
+  // you use on purpose, and it should stay where you left it.
+  useEffect(() => { setSetting('railCollapsed', railCollapsed) }, [railCollapsed])
 
   // Proactive nudge (D11): off by default.
   useEffect(() => {
@@ -412,29 +415,30 @@ export default function App() {
           <div
             className="grid min-h-0 flex-1"
             style={{
+              // Focus mode keeps the chapter list — a writer wants the map of the
+              // book while writing — but the rail's toggle retracts it to the
+              // 48px strip of chapter numbers, and that choice is remembered.
               gridTemplateColumns: focusMode
-                ? '1fr'
+                ? railCollapsed ? '48px 1fr' : '232px 1fr'
                 : railCollapsed ? '48px 1fr 320px' : '232px 1fr 320px',
               transition: 'grid-template-columns 160ms ease'
             }}
           >
-            {!focusMode && (
-              <Rail
-                collapsed={railCollapsed}
-                onToggle={() => setRailCollapsed((v) => !v)}
-                active={activeChapter}
-                onSelect={jumpTo}
-                archive={archive}
-                current={series}
-                onSelectBook={selectBook}
-                onNewBook={() => setNewBookOpen(true)}
-                onOpenBible={(name) => setBibleName(name || '')}
-                onNewChapter={() => newChapter('chapter')}
-                onNewPrologue={() => newChapter('prologue')}
-                onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
-                onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
-              />
-            )}
+            <Rail
+              collapsed={railCollapsed}
+              onToggle={() => setRailCollapsed((v) => !v)}
+              active={activeChapter}
+              onSelect={jumpTo}
+              archive={archive}
+              current={series}
+              onSelectBook={selectBook}
+              onNewBook={() => setNewBookOpen(true)}
+              onOpenBible={(name) => setBibleName(name || '')}
+              onNewChapter={() => newChapter('chapter')}
+              onNewPrologue={() => newChapter('prologue')}
+              onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
+              onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
+            />
             {pageNode}
             {!focusMode && <Muse series={series} chapter={chapter} />}
           </div>
@@ -522,6 +526,8 @@ export default function App() {
           onNudge={(v) => { setNudgeOn(v); setSetting('nudge', v) }}
           onClose={() => setSettingsOpen(false)}
           onRestored={refreshArchive}
+          theme={theme}
+          onChooseTheme={choose}
         />
       )}
       {newBookOpen && (

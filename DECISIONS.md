@@ -133,6 +133,18 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D40 — Settings is the second front door; focus keeps a retractable rail (2.5.1)
+The title bar hides `lock` and `focus` below `md` — so on a phone there was no way
+to lock the archive at all, and the theme picker was a small popover nobody would
+find. Both now live in **Settings** as well: a three-way theme choice (it writes the
+same `theme` setting the picker does, so the two stay in sync) and `Lock now`
+(`signOut`, the same call the title bar makes). Controls may be duplicated for
+reach, never for state.
+**Focus mode no longer throws the rail away.** A writer wants the map of the book
+while writing, so focus keeps the chapter list and the rail's own toggle *retracts*
+it to the 48px strip of chapter numbers; that choice persists like the focus flag
+itself. The Muse column stays hidden in focus — that is what focus is for.
+
 ## D39 — Chapter 0 is the prologue, and it is opt-in (2.5)
 `POST /api/books/{s}/{b}/chapters` takes an optional `number`; `number: 0` creates
 `ch-00`. It sorts first because the chapter sort key is numeric, it is **never

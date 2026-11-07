@@ -66,6 +66,13 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.5.1** — the door and the map. **Settings** now holds the two controls the
+  title bar kept to itself: the three-way **theme** choice (with swatches, same
+  setting the picker writes, so they stay in sync) and **Lock now** — which never
+  existed on a phone, because the title bar hides `lock` below 768px. **Focus mode
+  keeps the chapter list**, retractable: the rail's toggle collapses it to the 48px
+  strip of chapter numbers, and that choice persists. The Muse column still folds
+  away in focus.
 - **2.5** — chapter 0, and chats that know whose they are. A book can now have an
   **optional prologue**: `+ Prologue` in the rail (offered only while the book
   doesn't have one) creates `ch-00`, which sorts before chapter one and does not

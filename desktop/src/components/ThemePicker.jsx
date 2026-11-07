@@ -18,6 +18,8 @@ function Swatch({ id }) {
   )
 }
 
+export { Swatch }
+
 // A small popover in the title bar to pick a theme.
 export default function ThemePicker({ theme, onChoose }) {
   const [open, setOpen] = useState(false)

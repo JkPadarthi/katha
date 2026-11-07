@@ -200,13 +200,24 @@ def get_chapter(book: Path, chapter_id: str) -> Path | None:
     return cand if cand.exists() else None
 
 
-def create_chapter(book: Path, title: str, content: str = "") -> dict:
+def create_chapter(book: Path, title: str, content: str = "", number: int | None = None) -> dict:
+    """Add a chapter, optionally pinned to a number.
+
+    `number=0` is the **prologue**: it sorts before `ch-01`, and a book that has
+    one still numbers its next chapter from the highest existing number (`max+1`,
+    not `count+1`). Without `number`, the next free number is used. Raises
+    FileExistsError if that id is taken — the prologue is opt-in per book and is
+    never scaffolded, so a second one is a mistake, not a feature.
+    """
     cd = chapters_dir(book)
     cd.mkdir(parents=True, exist_ok=True)
-    nums = [chapter_number(f) for f in chapter_files(cd)]
-    next_n = (max(nums) + 1) if nums else 1
-    cid = f"ch-{next_n:02d}"
+    if number is None:
+        nums = [chapter_number(f) for f in chapter_files(cd)]
+        number = (max(nums) + 1) if nums else 1
+    cid = f"ch-{number:02d}"
     path = cd / f"{cid}.md"
+    if path.exists():
+        raise FileExistsError(cid)
     path.write_text(f"# {title}\n\n{content}".rstrip() + "\n", encoding="utf-8")
     return _chapter_meta(book, cid, title, path)
 

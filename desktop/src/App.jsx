@@ -181,10 +181,19 @@ export default function App() {
   )
   const activeChapterId = series && chapter ? `${series.series}/${series.book}/${chapter.id}` : null
 
-  const newChapter = async () => {
+  const newChapter = async (kind = 'chapter') => {
     if (!series) return
+    // A prologue is chapter 0 — opt-in per book, and only offered when the book
+    // doesn't have one already.
+    const prologue = kind === 'prologue'
     try {
-      const c = await api.createChapter(series.series, series.book, 'Untitled')
+      const c = await api.createChapter(
+        series.series,
+        series.book,
+        prologue ? 'Prologue' : 'Untitled',
+        '',
+        prologue ? 0 : null
+      )
       await refreshArchive()
       setActiveChapter(c.id)
       setSelection(null)
@@ -372,7 +381,8 @@ export default function App() {
                     onSelectBook={selectBook}
                     onNewBook={() => setNewBookOpen(true)}
                     onOpenBible={(name) => setBibleName(name || '')}
-                    onNewChapter={newChapter}
+                    onNewChapter={() => newChapter('chapter')}
+                    onNewPrologue={() => newChapter('prologue')}
                     onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
                     onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
                   />
@@ -419,7 +429,8 @@ export default function App() {
                 onSelectBook={selectBook}
                 onNewBook={() => setNewBookOpen(true)}
                 onOpenBible={(name) => setBibleName(name || '')}
-                onNewChapter={newChapter}
+                onNewChapter={() => newChapter('chapter')}
+                onNewPrologue={() => newChapter('prologue')}
                 onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
                 onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
               />

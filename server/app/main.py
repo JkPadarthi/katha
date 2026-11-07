@@ -70,8 +70,12 @@ async def lifespan(_app: FastAPI):
     # Pre-2.4 Muse threads were named after the chapter alone, so different books
     # shared one conversation. Attribute each of them to its book once (2.4.1).
     adopted = muse_mod.migrate_legacy_threads()
-    if adopted["adopted"] or adopted["set_aside"]:
-        print(f"muse threads: adopted {adopted['adopted']}, set aside {adopted['set_aside']}")
+    if any(adopted.values()):
+        print(
+            "muse threads: adopted {adopted}, set aside {set_aside}, kept {kept}".format(
+                **{k: (v or []) for k, v in adopted.items()}
+            )
+        )
     reindex_search()
     yield
 
@@ -231,7 +235,10 @@ def list_chapters(series: str, book_id: str):
           status_code=201, tags=["chapters"])
 def new_chapter(series: str, book_id: str, payload: ChapterCreate):
     bdir = _resolve_book_path(series, book_id)
-    meta = ar.create_chapter(bdir, payload.title, payload.content)
+    try:
+        meta = ar.create_chapter(bdir, payload.title, payload.content, payload.number)
+    except FileExistsError as exc:
+        raise HTTPException(409, f"{exc.args[0]} already exists in this book") from exc
     db.upsert_chapter({**meta, "book_id": bdir.name})
     db.index_doc("chapter", series, bdir.name, meta["id"], payload.title, payload.content)
     chapter = ar.get_chapter(bdir, meta["id"])

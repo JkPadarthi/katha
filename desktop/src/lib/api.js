@@ -94,10 +94,13 @@ export function saveChapter(series, bookId, chapterId, content, title) {
   })
 }
 
-export function createChapter(series, bookId, title, content = '') {
+export function createChapter(series, bookId, title, content = '', number = null) {
+  const body = { title, content }
+  // 0 = a prologue (chapter 0). Omitted entirely when not asked for.
+  if (number !== null && number !== undefined) body.number = number
   return req(`/books/${series}/${bookId}/chapters`, {
     method: 'POST',
-    body: JSON.stringify({ title, content })
+    body: JSON.stringify(body)
   })
 }
 

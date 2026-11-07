@@ -3,7 +3,7 @@ import RitualsCard from './RitualsCard.jsx'
 
 // The CHAPTERS pane. Collapses to icons like a proper IDE; the active chapter
 // glows in the theme accent. Below: the bible tree and the ritual stat.
-export default function Rail({ collapsed, onToggle, active, onSelect, archive, current, onSelectBook, onNewBook, onOpenBible, onNewChapter, onDeleteChapter, onDeleteBook }) {
+export default function Rail({ collapsed, onToggle, active, onSelect, archive, current, onSelectBook, onNewBook, onOpenBible, onNewChapter, onNewPrologue, onDeleteChapter, onDeleteBook }) {
   const series = archive.find((s) => s.name === current?.series) || archive[0]
   const book = series?.books?.find((b) => b.id === current?.book) || series?.books?.[0]
   if (!series || !book) return null
@@ -94,7 +94,7 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive, c
                   ) : (
                     <>
                       <span className="w-7 shrink-0 text-right text-[10px] text-mute/70">
-                        {c.id.replace(/^ch-?/, '')}
+                        {c.id === 'ch-00' ? '0' : c.id.replace(/^ch-?/, '')}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-[12px]">{c.title}</span>
                       <span className="text-[9.5px] text-mute/50">{c.words}</span>
@@ -177,6 +177,17 @@ export default function Rail({ collapsed, onToggle, active, onSelect, archive, c
         >
           {collapsed ? '+' : '+ New chapter'}
         </button>
+        {/* A prologue is chapter 0: optional, per book, and only offered while the
+            book doesn't have one. */}
+        {!collapsed && onNewPrologue && !book.chapters.some((c) => c.id === 'ch-00') && (
+          <button
+            onClick={onNewPrologue}
+            title="Add a prologue — chapter 0, before chapter one"
+            className="mt-1 flex w-full items-center justify-center gap-1 rounded-md px-2 py-1.5 text-[11px] text-mute/70 hover:bg-panel-2 hover:text-ink"
+          >
+            + Prologue
+          </button>
+        )}
       </div>
     </aside>
   )

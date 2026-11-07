@@ -735,21 +735,37 @@ def read_thread(chapter_id: str) -> str:
 # never served either.
 _LEGACY_DIR = _MUSE_ROOT / "legacy"
 
+# A chapter written within this many seconds of the thread counts as "existing
+# when the chat happened" — files get touched by saves, editors and moves.
+_CLAIM_SLACK = 60.0
 
-def _chapter_claimants(cid: str) -> set[str]:
+
+def _chapter_claimants(cid: str, before: float | None = None) -> set[str]:
     """Every book id that has a chapter `<cid>` — in the archive *and* the trash.
 
     The trash lives inside the archive (`.katha/trash/`), so one scan covers
     both. That matters: a book the author has deleted (and can restore) must
     still be able to claim its own conversation, and a book that no longer exists
     claims nothing.
+
+    With `before` (an mtime) only books whose chapter already existed by then
+    count. That is how two books sharing a chapter id are told apart: a
+    conversation cannot belong to a book whose `ch-01` was written afterwards.
     """
     owners: set[str] = set()
     for chapters in ARCHIVE_ROOT.glob("**/chapters"):
-        if not chapters.is_dir():
+        if not chapters.is_dir() or chapters.parent.name == "chapters":
             continue
-        if (chapters / f"{cid}.md").is_file() and chapters.parent.name != "chapters":
-            owners.add(chapters.parent.name)
+        chapter = chapters / f"{cid}.md"
+        if not chapter.is_file():
+            continue
+        if before is not None:
+            try:
+                if chapter.stat().st_mtime > before + _CLAIM_SLACK:
+                    continue          # the chapter is newer than the conversation
+            except OSError:
+                continue
+        owners.add(chapters.parent.name)
     return owners
 
 
@@ -758,25 +774,39 @@ def migrate_legacy_threads() -> dict:
 
     Before 2.4 a thread file was named after the chapter alone (`ch-01.md`), so
     every book's ch-01 shared one file. Each legacy file is adopted by the single
-    book the archive says owns that chapter id; when two books claim it (or none
-    does) the file is moved to `.katha/muse/legacy/` — kept, but never handed to
-    a book that might not own it.
+    book that both owns that chapter id and had that chapter when the
+    conversation was written. Anything still un-attributable is *kept* in
+    `.katha/muse/legacy/` and re-examined on the next boot — never served to a
+    book that might not own it, never deleted.
+
+    Runs at startup, so a book deleted today and restored tomorrow gets its chat
+    back then.
     """
-    result: dict = {"adopted": [], "set_aside": []}
+    result: dict = {"adopted": [], "set_aside": [], "kept": []}
     if not _MUSE_ROOT.is_dir():
         return result
-    for legacy in sorted(_MUSE_ROOT.glob("ch-*.md")):
-        cid = legacy.stem
-        owners = _chapter_claimants(cid)
+    candidates = list(_MUSE_ROOT.glob("ch-*.md"))
+    if _LEGACY_DIR.is_dir():
+        candidates += list(_LEGACY_DIR.glob("ch-*.md"))
+    for path in sorted(candidates):
+        cid = path.stem
+        try:
+            written = path.stat().st_mtime
+        except OSError:
+            written = None
+        owners = _chapter_claimants(cid, before=written)
         if len(owners) == 1:
             dest = _MUSE_ROOT / f"{next(iter(owners))}-{cid}.md"
             if not dest.exists():
-                shutil.move(str(legacy), str(dest))
+                shutil.move(str(path), str(dest))
                 result["adopted"].append(dest.name)
                 continue
+        if path.parent == _LEGACY_DIR:
+            result["kept"].append(path.name)      # still nobody's: leave it be
+            continue
         _LEGACY_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), str(_LEGACY_DIR / legacy.name))
-        result["set_aside"].append(legacy.name)
+        shutil.move(str(path), str(_LEGACY_DIR / path.name))
+        result["set_aside"].append(path.name)
     return result
 
 

@@ -45,7 +45,7 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "2.4.1"
+    assert body["version"] == "2.5.0"
     assert body["db_ok"] is True
 
 
@@ -503,3 +503,64 @@ def test_chapters_beyond_99_are_real_and_sorted():
     finally:
         high.unlink(missing_ok=True)
         low.unlink(missing_ok=True)
+
+
+# --- chapter 0: the prologue (2.5) ----------------------------------------
+
+def test_a_prologue_is_optional_sorts_first_and_does_not_shift_numbering():
+    """A prologue is chapter 0. It is opt-in per book (never scaffolded), it sorts
+    before ch-01, and a book that has one still numbers its next chapter from the
+    highest existing number — not from the count."""
+    from app import muse as muse_mod
+
+    created = client.post("/api/books", json={"series": "Prologue Tests", "title": "The Zero Book"})
+    assert created.status_code == 201, created.text
+    series_slug, book_slug = created.json()["series"], created.json()["id"]
+    try:
+        assert client.get(f"/api/books/{series_slug}/{book_slug}/chapters").json()["chapters"] == []
+
+        first = client.post(f"/api/books/{series_slug}/{book_slug}/chapters", json={"title": "First"})
+        assert first.json()["id"] == "ch-01"
+
+        zero = client.post(
+            f"/api/books/{series_slug}/{book_slug}/chapters",
+            json={"title": "Prologue", "number": 0},
+        )
+        assert zero.status_code == 201, zero.text
+        assert zero.json()["id"] == "ch-00"
+
+        ids = [c["id"] for c in client.get(f"/api/books/{series_slug}/{book_slug}/chapters").json()["chapters"]]
+        assert ids == ["ch-00", "ch-01"], ids          # the prologue comes first
+
+        # numbering is untouched by the zero: the next new chapter is ch-02
+        second = client.post(f"/api/books/{series_slug}/{book_slug}/chapters", json={"title": "Second"})
+        assert second.json()["id"] == "ch-02"
+
+        # a second prologue is refused, and a negative number is not a chapter
+        dup = client.post(f"/api/books/{series_slug}/{book_slug}/chapters",
+                          json={"title": "Another", "number": 0})
+        assert dup.status_code == 409, dup.text
+        assert client.post(f"/api/books/{series_slug}/{book_slug}/chapters",
+                           json={"title": "Nope", "number": -1}).status_code == 422
+
+        # it reads, saves and takes revisions like any chapter
+        assert client.get(f"/api/books/{series_slug}/{book_slug}/chapters/ch-00").json()["title"] == "Prologue"
+        saved = client.put(f"/api/books/{series_slug}/{book_slug}/chapters/ch-00",
+                           json={"content": "# Prologue\n\nthe before\n", "title": "Prologue"})
+        assert saved.status_code == 200, saved.text
+        assert (ar.book_dir(series_slug, book_slug) / "chapters" / "ch-00.1.md").is_file()
+
+        # searchable, and its Muse thread is book-scoped like every other chapter
+        hits = client.get("/api/search", params={"q": "before"}).json()["hits"]
+        assert any(h["doc_id"] == "ch-00" for h in hits), hits
+        thread = muse_mod._thread_path(f"{series_slug}/{book_slug}/ch-00")
+        assert thread is not None and thread.name == f"{book_slug}-ch-00.md"
+
+        # and it deletes + restores through the same trash as everything else
+        entry = client.delete(f"/api/books/{series_slug}/{book_slug}/chapters/ch-00").json()["entry"]
+        assert not (ar.book_dir(series_slug, book_slug) / "chapters" / "ch-00.md").exists()
+        client.post(f"/api/trash/{entry}/restore")
+        assert (ar.book_dir(series_slug, book_slug) / "chapters" / "ch-00.md").is_file()
+    finally:
+        entry = client.delete(f"/api/books/{series_slug}/{book_slug}").json()["entry"]
+        client.delete(f"/api/trash/{entry}")

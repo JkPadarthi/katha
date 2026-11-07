@@ -56,6 +56,8 @@ class RevisionContentOut(RevisionOut):
 class ChapterCreate(BaseModel):
     title: str = Field(min_length=1)
     content: str = ""
+    # 0 = a prologue (opt-in per book, never scaffolded). None → next free number.
+    number: int | None = Field(default=None, ge=0, le=999)
 
 
 class ChapterUpdate(BaseModel):

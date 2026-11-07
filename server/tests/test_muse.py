@@ -528,6 +528,40 @@ def test_one_books_chapter_never_reads_another_books_chat():
         theirs_path.unlink(missing_ok=True)
 
 
+def test_ownership_prefers_the_book_that_had_the_chapter_when_the_chat_happened():
+    """Two books can share a chapter id, so the archive alone cannot say whose
+    conversation it is. Time can: a chat cannot belong to a book whose chapter was
+    written *after* the conversation."""
+    import os
+    import shutil
+    import time
+
+    from app import muse as muse_mod
+    from app.config import ARCHIVE_ROOT
+
+    now = time.time()
+    old_chapters = ARCHIVE_ROOT / "muse-tests" / "old-book" / "chapters"
+    new_chapters = ARCHIVE_ROOT / "muse-tests" / "new-book" / "chapters"
+    for chapters in (old_chapters, new_chapters):
+        chapters.mkdir(parents=True, exist_ok=True)
+        (chapters / "ch-93.md").write_text("# Same id\n\nbody\n", encoding="utf-8")
+    os.utime(old_chapters / "ch-93.md", (now - 86400, now - 86400))   # a day old
+
+    muse_root = ARCHIVE_ROOT / ".katha" / "muse"
+    thread = muse_root / "ch-93.md"
+    thread.write_text("<!-- katha:user -->old chat\n\n<!-- katha:end -->\n", encoding="utf-8")
+    os.utime(thread, (now - 3600, now - 3600))                        # an hour old
+
+    out = muse_mod.migrate_legacy_threads()
+    assert "old-book-ch-93.md" in out["adopted"]
+    assert not (muse_root / "new-book-ch-93.md").exists()
+    assert "old chat" in muse_mod.read_thread("muse-tests/old-book/ch-93")
+    assert muse_mod.read_thread("muse-tests/new-book/ch-93") == ""
+
+    (muse_root / "old-book-ch-93.md").unlink(missing_ok=True)
+    shutil.rmtree(ARCHIVE_ROOT / "muse-tests", ignore_errors=True)
+
+
 def test_muse_persistence_dir_excluded_from_books_listing():
     """`/api/books` must NOT surface the Muse persistence directory
     (`archive/.katha/`) as a fake series. Otherwise the Rail shows a phantom

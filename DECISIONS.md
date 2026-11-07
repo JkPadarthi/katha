@@ -133,6 +133,17 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D39 — Chapter 0 is the prologue, and it is opt-in (2.5)
+`POST /api/books/{s}/{b}/chapters` takes an optional `number`; `number: 0` creates
+`ch-00`. It sorts first because the chapter sort key is numeric, it is **never
+scaffolded** (a new book still starts empty), and the rail offers `+ Prologue` only
+while the book has none. A book *with* a prologue still numbers its next chapter
+from the highest existing number (`max+1`, not `count+1`), so `ch-00` can't make
+the next chapter `ch-01` again; a duplicate `ch-00` is a 409, and `number` is
+validated 0..999. Everything downstream already keys off the id pattern and needs
+no special case: revision snapshots `ch-00.<rev>.md`, notes `ch-00.notes.md`, the
+Muse thread `<book>-ch-00.md`, trash entries, search rows, EPUB order.
+
 ## D35 — Muse threads are book-scoped (2.4, reads + adoption in 2.4.1)
 Thread files are `archive/.katha/muse/<book>-<chapter>.md`, not `<chapter>.md`.
 Chapter ids repeat across books (`ch-01` exists in every one of them), so the
@@ -142,11 +153,14 @@ delete could take the wrong book's history. Writes became book-scoped in 2.4;
 **reads follow the same name and nothing else** (2.4.1), so no book can ever be
 handed another book's conversation.
 Pre-2.4 files are handled once, at boot, by `muse.migrate_legacy_threads()`: a
-legacy `<chapter>.md` is adopted by the single book the archive says owns that
-chapter id — counting books sitting in the **trash** too, so a book the author has
-deleted and can restore still claims its own log. If two books claim it (or none
-does) the file moves to `.katha/muse/legacy/`: kept, never served. Deletes move
-only the book-scoped file; the legacy name is shared, so it is never moved.
+legacy `<chapter>.md` is adopted by the single book that both owns that chapter id
+and **had that chapter when the conversation was written** (mtime, 60 s slack) —
+which is what tells two books' `ch-01` apart, since the archive alone cannot. The
+scan counts books sitting in the **trash** too, so a book the author has deleted
+and can restore still claims its own log. If it stays un-attributable the file
+moves to `.katha/muse/legacy/` and is re-examined on every boot: kept, never
+served, never deleted. Deletes move only the book-scoped file; the legacy name is
+shared, so it is never moved.
 
 ## D38 — The sample story is planted once, never re-planted (2.4.1)
 `Dockerfile CMD` ran `python seed.py` on **every** container start, and `seed()`

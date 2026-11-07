@@ -66,6 +66,16 @@ talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.5** — chapter 0, and chats that know whose they are. A book can now have an
+  **optional prologue**: `+ Prologue` in the rail (offered only while the book
+  doesn't have one) creates `ch-00`, which sorts before chapter one and does not
+  disturb numbering — the next new chapter is still `ch-01`, then `ch-02`. New
+  books never get one; a duplicate is a clean 409 (D39). And finishing the
+  2.4.1 thread work: pre-2.4 Muse chats are now adopted by the book that **had that
+  chapter when the conversation was written** — the archive alone can't tell two
+  books' `ch-01` apart, but time can, so an author whose old book shares a chapter
+  id with a new one still gets the right conversation back (and the book can be
+  sitting in the trash while it happens) (D35).
 - **2.4.1** — two bugs that both amounted to *"it came back"*. (1) The sample
   story was re-planted on **every** container start (`Dockerfile CMD` ran
   `python seed.py`, which re-creates whatever is missing), so deleting every book

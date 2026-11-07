@@ -57,6 +57,23 @@ if [ "$FORCE" -eq 0 ] && [ -f "$QUIET_FILE" ] && [ "$now_h" -lt 22 ]; then
     log "skip: quiet-hours (hour=$now_h, night_only set)"; exit 0
 fi
 
+# --- author-activity guard (2.8.1) -----------------------------------------
+# A deploy RECREATES the container, which kills any Muse stream in flight. That is
+# not a theoretical risk: a forced deploy once landed 57 seconds into a turn, the
+# reply was persisted as a half-written preamble ("I'll re-open ch-01…"), and the
+# model then spent its next turn apologising instead of working. The commit is not
+# going anywhere, so if the archive was written to recently, wait for the author to
+# stop. `--force` (or ~/katha/logs/cd.force) still overrides it, deliberately.
+AUTHOR_QUIET_MIN="${KATHA_DEPLOY_QUIET_MINUTES:-5}"
+if [ "$FORCE" -eq 0 ] && [ -d "$ARCHIVE_DIR" ]; then
+    recent="$(find "$ARCHIVE_DIR" -type f -newermt "-${AUTHOR_QUIET_MIN} minutes" \
+              -print -quit 2>/dev/null)"
+    if [ -n "$recent" ]; then
+        log "skip: archive written <${AUTHOR_QUIET_MIN}m ago (${recent#"$ARCHIVE_DIR"/}) — author active, will retry"
+        exit 0
+    fi
+fi
+
 # Serialize deploys: a 5-min timer must never collide with an in-flight build.
 exec 9>"$LOCK"
 flock -n 9 || { log "skip: a deploy is already running"; exit 0; }

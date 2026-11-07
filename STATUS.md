@@ -67,6 +67,18 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.8.1** — the deploy learns to wait, and the Muse learns to work. A forced deploy
+  of 2.8.0 landed 57 seconds into a Muse turn: recreating the container killed the
+  stream mid-reply, and the persisted thread kept a half-written assistant turn
+  ("I'll re-open ch-01…") — after which the model spent its next turn apologising
+  instead of working, and the author reasonably concluded the Muse had ignored them.
+  `cd-deploy.sh` now **defers while the archive is being written to** (5 minutes,
+  `KATHA_DEPLOY_QUIET_MINUTES`, `--force` still overrides), so a CI-green commit
+  waits instead of interrupting. The Muse's system prompt also states the two rules
+  it kept missing: call a tool in the same turn rather than announcing it, and write
+  the prose into the reply because its tools are read-only (the Muse proposes, the
+  author applies). Pinned by a test on the upstream payload; 143 tests green; the
+  guard verified by running it against a freshly-touched archive.
 - **2.8.0** — the book's face. An EPUB with no cover is a grey rectangle in every
   reader's library, and Katha's exports had no `<dc:creator>` either, so the shelf
   could not even say who wrote it. Both now exist, and neither is invented: **the

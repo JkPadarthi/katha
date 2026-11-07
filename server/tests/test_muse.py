@@ -1034,3 +1034,50 @@ def test_fts_or_query_matches_any_distinctive_term():
     assert " OR " in q
     assert '"the"' not in q          # stopword
     assert muse_mod._fts_or_query("the and of") == ""
+
+
+# --- the prompt rules that keep the Muse working (2.8.1) -------------------
+
+def test_the_agent_prompt_forbids_announcing_tool_use_and_claims_no_write(monkeypatch):
+    """Two failure modes seen live in the same session:
+
+    * the model ended a turn with "I'll re-open ch-01 so the fixes match your exact
+      lines." — no tool call, no prose, so the author had nothing to act on (and the
+      next turn was spent apologising for it);
+    * it offered to fix a chapter rather than writing it, waiting on a write tool
+      that does not exist (the Muse's tools are read-only, by design: nothing an LLM
+      says should be able to rewrite the archive unattended).
+
+    So the system prompt has to say both things outright.
+    """
+    import json as _json
+
+    import httpx
+
+    from app import muse as muse_mod
+
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = _json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, content=_ollama_chat_ndjson(
+            {"model": "m", "message": {"role": "assistant", "content": "ok"}, "done": True}))
+
+    real = muse_mod._client
+    monkeypatch.setattr(muse_mod, "_client",
+                        httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                                          timeout=real.timeout))
+
+    chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01"
+    with TestClient(app) as client:
+        with client.stream("POST", "/api/muse/chat",
+                           json={"messages": [{"role": "user", "content": "fix the chapter"}],
+                                 "chapter_id": chapter_id}) as r:
+            assert r.status_code == 200
+            list(r.iter_lines())
+
+    system = " ".join(m["content"] for m in captured["body"]["messages"]
+                      if m["role"] == "system")
+    assert "CALL the tool in the same turn" in system
+    assert "read-only" in system and "cannot write" in system
+    assert "proposal" in system

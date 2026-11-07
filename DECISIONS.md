@@ -133,6 +133,29 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D44 — the deploy defers to the author, and the Muse writes into its reply (2.8.1)
+Both halves come from one incident: a **forced deploy landed 57 seconds into a Muse
+turn**. The container was recreated, the SSE stream died, and the *persisted
+thread* kept a half-written assistant turn — "I'll re-open ch-01 so the fixes match
+your exact lines." The model then spent its next turn explaining that it had not
+actually re-opened the file, and the author was left believing the Muse ignored
+them.
+
+* **`cd-deploy.sh` has an author-activity guard.** If anything under the archive was
+  written to within `KATHA_DEPLOY_QUIET_MINUTES` (default 5), the deploy logs why and
+  retries on the next tick. A CI-green commit can wait; an author's turn cannot be
+  unwritten. `--force` still overrides — deliberately and rarely: **never force a
+  deploy while someone is writing.**
+* **The Muse's system prompt states the two rules it kept missing.** Call a tool in
+  the same turn you decide to (never end a reply with "I'll re-open ch-01…" and no
+  work), and the tools are **read-only** — so when asked to write, fix or rewrite,
+  put the actual prose in the reply as a proposal rather than planning to do it
+  later. The Muse proposes; the author applies. Letting a model write the archive
+  unattended is a different decision, not a prompt fix.
+
+Both are pinned: the prompt rules by a test that reads the upstream payload, the
+guard by running it against a freshly-touched archive.
+
 ## D43 — the cover is the author's file, normalised once; the author is per book (2.8.0)
 `epub.py` used to emit text only: no cover, no images, and no `<dc:creator>` at
 all — so every export landed in a reader's library as a grey rectangle with no

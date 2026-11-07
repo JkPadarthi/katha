@@ -133,6 +133,18 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D47 — a pending revision must be discoverable, not witnessed (2.9.3)
+The `[PROPOSAL]` SSE marker only ever covers a turn the open tab watched live. A revision
+parked by another tab, by an earlier session, or by the API was therefore **invisible**:
+it sat in `archive/.katha/proposals/` waiting for an approval nobody could give, and the
+only way to see it was to ask the Muse again and hope it re-issued one. That is how the
+author ended up staring at a panel that showed nothing.
+
+**Any state the author has to act on must be readable, not only pushed.** The Muse panel
+now fetches `GET /api/muse/proposals` on open — in the same effect that restores the
+thread — and keeps the newest entry matching the open `series/book/chapter`. A marker is
+a nicety for the moment a turn finishes; it can never be a feature's only entrance.
+
 ## D46 — a whole chapter needs room to be written, and a truncated tool call must say so (2.9.1)
 `propose_chapter_rewrite` shipped in 2.9.0 with the chat still on `MUSE_NUM_PREDICT`
 (4096 tokens). The author's ch-01 is 4,775 words ≈ 7k tokens, so the tool arguments

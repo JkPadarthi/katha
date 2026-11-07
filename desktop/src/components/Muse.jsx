@@ -66,6 +66,7 @@ export default function Muse({ series, chapter, onProposal }) {
     setError('')
     setStatus('')
     setStreaming('')
+    setProposal('')          // a revision belongs to the chapter it was made in
     if (!chapterId) return
     api
       .museThread(chapterId)
@@ -74,6 +75,20 @@ export default function Muse({ series, chapter, onProposal }) {
         setMessages((r.messages || []).map((m) => ({ role: m.role, text: m.text })))
       })
       .catch(() => { /* history is best-effort */ })
+    // A revision may have been handed over while this tab was closed, or in another
+    // tab. The SSE marker only ever covers a turn we watched live, so ask the server
+    // what is still pending for this chapter — otherwise a waiting revision is
+    // invisible and the author has to ask the Muse again (2.9.3).
+    api
+      .listProposals()
+      .then((r) => {
+        if (!alive) return
+        const mine = (r.proposals || []).filter(
+          (p) => `${p.series}/${p.book}/${p.chapter}` === chapterId
+        )
+        setProposal(mine.length ? mine[0].id : '')   // newest first
+      })
+      .catch(() => { /* best-effort: never block the thread on this */ })
     return () => { alive = false }
   }, [chapterId])
 

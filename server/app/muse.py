@@ -64,6 +64,13 @@ PROPOSAL_MIN_CHARS = 200     # shorter than this is not a chapter, it's a fragme
 PROPOSAL_KEEP = 3            # newest N per book+chapter; older ones are pruned
 _PID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,120}$")
 
+# What a read tool is doing, when its arguments don't say (2.9.3): the author saw
+# 'reading list_story_files…' in the panel and it read like a bug rather than progress.
+_TOOL_LABELS = {
+    "list_story_files": "the story index",
+    "search_story": "the story",
+}
+
 
 # --- token stripping ------------------------------------------------------
 
@@ -671,7 +678,11 @@ async def chat(
                 # approval (2.9, D45).
                 yield Status("preparing a full-chapter revision…")
             else:
-                label = args.get("path") or args.get("query") or name
+                label = args.get("path") or args.get("query")
+                if not label:
+                    # A tool that takes no path still deserves a human status line:
+                    # the author saw 'reading list_story_files…' and it read like a bug.
+                    label = _TOOL_LABELS.get(name) or name.replace("_", " ")
                 yield Status(f"reading {label}…")
             result = _run_tool(ctx, name, args, turn)
             payload["messages"].append({"role": "tool", "tool_name": name, "content": result})

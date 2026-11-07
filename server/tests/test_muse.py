@@ -1081,3 +1081,36 @@ def test_the_agent_prompt_forbids_announcing_tool_use_and_claims_no_write(monkey
     assert "CALL the tool in the same turn" in system
     assert "read-only" in system and "cannot write" in system
     assert "proposal" in system
+
+
+def test_status_lines_read_like_progress_not_function_names(monkeypatch: pytest.MonkeyPatch):
+    """A read tool whose arguments carry no path still deserves a sentence. The author
+    saw `reading list_story_files…` in the panel and it read like a bug (2.9.3)."""
+    import httpx
+    from app import muse as muse_mod
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        has_tool = any(m.get("role") == "tool" for m in body.get("messages", []))
+        if has_tool:
+            chunk = {"message": {"role": "assistant", "content": "Two files."}, "done": True}
+        else:
+            chunk = {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "list_story_files", "arguments": {}}}]}, "done": True}
+        return httpx.Response(200, content=_ollama_chat_ndjson(chunk),
+                              headers={"content-type": "application/x-ndjson"})
+
+    monkeypatch.setattr(muse_mod, "_client",
+                        httpx.AsyncClient(transport=httpx.MockTransport(_handler),
+                                          timeout=muse_mod._client.timeout))
+    chapter_id = f"{ar.slugify('The Ember Throne')}/{ar.slugify('The First Flame')}/ch-01"
+    with TestClient(app) as client:
+        with client.stream("POST", "/api/muse/chat",
+                           json={"messages": [{"role": "user", "content": "what is there?"}],
+                                 "chapter_id": chapter_id}) as r:
+            assert r.status_code == 200
+            lines = list(r.iter_lines())
+
+    statuses = [ln for ln in lines if "[STATUS]" in ln]
+    assert any("reading the story index…" in ln for ln in statuses), statuses
+    assert not any("list_story_files" in ln for ln in statuses), statuses

@@ -67,6 +67,11 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **2.9.3** — a waiting revision is discoverable. The banner was raised only by the live
+  `[PROPOSAL]` marker, so a revision parked in another tab, in an earlier session, or by
+  the API was on disk and invisible — the panel showed nothing. It now asks the server
+  what is pending for the open chapter when it loads (D47). Also: progress lines read
+  like progress — `reading the story index…`, not `reading list_story_files…`.
 - **2.9.2** — a revision is announced only when the turn is finished. Parts can arrive
   across rounds, so announcing as soon as the first part lands would let you accept a
   third of a chapter; the marker is now collected during the turn and emitted at the end.

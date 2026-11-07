@@ -16,3 +16,4 @@ __pycache__/
 # local tooling artifacts (agent session scratch, code-graph cache)
 .omo/
 .codegraph/
+.hermes/

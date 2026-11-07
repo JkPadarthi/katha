@@ -1,8 +1,9 @@
 # Katha — Status
 
-**Phase 1.0** — the IDE is complete and shipping as an installable PWA, with
+**Phase 2.1** — the IDE is complete and shipping as an installable PWA, with
 reading mode, writing rituals, and EPUB delivery. The client is served from the
-same FastAPI server as the API.
+same FastAPI server as the API. The Muse is no longer tied to one brain: it can
+talk to the LAN Ollama box **or** any OpenAI-compatible gateway.
 
 ## Done
 - **0.1 Shell** — three panes, Hermes tokens, Cmd+K.
@@ -41,17 +42,32 @@ same FastAPI server as the API.
   checkout boots without an `archive/` directory. The bible has a canonical
   shape (one file per main character, a shared side-characters file, places,
   timeline) scaffolded on book creation and backfillable from the panel.
+- **2.1** — the Muse gets a second upstream dialect. `app/upstream.py` is the
+  only place that knows a provider's wire format: internally the Muse still
+  speaks the Ollama shape (so think-stripping, the agentic tool loop, canon
+  context and the style digest are untouched), while `KATHA_MUSE_API=openai`
+  routes it at any OpenAI-compatible `/chat/completions` gateway — bearer key,
+  `options`→`max_tokens`, SSE deltas, and tool-call fragments reassembled with
+  ids so the agentic loop works on both. Mode-aware model defaults; switching
+  brains is three env vars, and `=ollama` switches back (the LAN settings are
+  untouched). Also: a short **connect** timeout, so a dead upstream surfaces as
+  a real `[ERROR]` in the Muse instead of freezing it for 300s — that freeze was
+  the first thing the dormant jenga box exposed.
 
 ## Next
 - Dogfood the full loop (write → autosave/revisions → Muse tools → rewrite diff
   → sweep → reading + notes → EPUB); browser-verify the three themes + mobile.
 - Then: a revision-history browser (list / preview / restore).
+- Later: a settings affordance for the Muse dialect (today it's env-only).
 
 ## Verify
-- Server: `cd server && .venv/bin/python -m pytest -q` (59 tests).
+- Server: `cd server && .venv/bin/python -m pytest -q` (70 tests).
 - Client: `cd desktop && npm run build`.
 - Install: build, serve via the Pi, open over `tailscale serve` HTTPS, Install app.
 
 ## Open
-- Ollama (the Muse upstream) must be reachable on the LAN for Muse + sweep.
+- The Muse upstream must be reachable: the LAN Ollama box (`KATHA_MUSE_API=ollama`,
+  default) or a cloud gateway with a key (`KATHA_MUSE_API=openai`). With neither,
+  everything except the Muse still works — writing, revisions, search, bible,
+  reading mode, EPUB.
 - Whole-book continuous reading mode and offline support are out of scope.

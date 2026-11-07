@@ -10,6 +10,13 @@ services:
       dockerfile: server/Dockerfile
     container_name: katha-archive
     restart: unless-stopped
+    # Optional local env: server/.env carries KATHA_MUSE_API / _API_BASE /
+    # _API_KEY when the Muse is routed at a cloud gateway (2.1). Missing file is
+    # fine — the image defaults to the LAN Ollama box. `environment:` below wins
+    # over anything set here.
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "4901:4901"
     environment:

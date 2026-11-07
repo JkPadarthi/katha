@@ -35,6 +35,7 @@ import httpx
 
 from . import archive as ar_mod
 from . import db
+from . import upstream as up_mod
 from .config import (
     ARCHIVE_ROOT,
     MUSE_AGENT_MODEL,
@@ -44,7 +45,6 @@ from .config import (
     MUSE_STYLE_PROSE_CHAPTERS,
     MUSE_UPSTREAM_TIMEOUT,
     MUSECONTEXT_MAX_TOKENS,
-    OLLAMA_BASE,
 )
 
 # Module-level client — patchable from tests.
@@ -165,25 +165,16 @@ def _plain_snippet(text: str) -> str:
 
 
 # --- upstream call --------------------------------------------------------
+# The dialect (Ollama-native vs OpenAI-compatible) lives in app/upstream.py —
+# this module only ever sees normalized `{"content"|"tool_calls"}` events (D20).
 
 async def _post_chat(payload: dict) -> AsyncIterator[str]:
-    """POST to Ollama /api/chat with stream=True; yield visible-only deltas."""
-    payload = {**payload, "stream": True}
-    url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
+    """Stream a turn from the active upstream; yield visible-only deltas."""
     filt = ThinkStreamFilter()
-    async with _client.stream("POST", url, json=payload) as r:
-        r.raise_for_status()
-        async for line in r.aiter_lines():
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            content = obj.get("message", {}).get("content", "")
-            visible = filt.feed(content)
-            if visible:
-                yield visible
+    async for event in up_mod.stream_events({**payload, "stream": True}, _client):
+        visible = filt.feed(event.get("content") or "")
+        if visible:
+            yield visible
     tail = filt.finish()
     if tail:
         yield tail
@@ -349,25 +340,14 @@ AGENT_SYSTEM = (
 async def _stream_turn(payload: dict, holder: dict) -> AsyncIterator[str]:
     """Stream one assistant turn. Yields visible text; collects any tool calls
     into holder['tool_calls']."""
-    payload = {**payload, "stream": True}
     holder["tool_calls"] = []
-    url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
     filt = ThinkStreamFilter()
-    async with _client.stream("POST", url, json=payload) as r:
-        r.raise_for_status()
-        async for line in r.aiter_lines():
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            msg = obj.get("message", {}) or {}
-            for tc in msg.get("tool_calls") or []:
-                holder["tool_calls"].append(tc)
-            visible = filt.feed(msg.get("content", "") or "")
-            if visible:
-                yield visible
+    async for event in up_mod.stream_events({**payload, "stream": True}, _client):
+        for tc in event.get("tool_calls") or []:
+            holder["tool_calls"].append(tc)
+        visible = filt.feed(event.get("content") or "")
+        if visible:
+            yield visible
     tail = filt.finish()
     if tail:
         yield tail
@@ -699,7 +679,6 @@ async def _load_style_summary(book_slug: str, bdir: Path) -> str:
     )
     digest = ""
     try:
-        url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
         payload = {
             "model": MUSE_REWRITE_MODEL,
             "messages": [{"role": "user", "content": prompt}],
@@ -708,10 +687,8 @@ async def _load_style_summary(book_slug: str, bdir: Path) -> str:
         }
         # Async on purpose: this runs inside streaming generators. A sync
         # client here froze the whole event loop for up to the full timeout.
-        r = await _client.post(url, json=payload)
-        r.raise_for_status()
-        obj = r.json()
-        digest = strip_think(obj.get("message", {}).get("content", "")).strip()
+        obj = await up_mod.complete(payload, _client)
+        digest = strip_think((obj.get("message") or {}).get("content") or "").strip()
     except Exception as e:
         import sys
         print(f"[muse] style digest generation failed: {e}", file=sys.stderr)

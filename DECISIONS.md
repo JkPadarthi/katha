@@ -119,6 +119,48 @@ If a `chapter_id` (`series/book/ch-NN`) is supplied, the system prompt is
 prefixed with the current chapter plus up to 4 FTS5-ranked bible hits, capped at
 `MUSECONTEXT_MAX_TOKENS`.
 
+## D24 — Tool calls are translated, not dumbed down
+The agentic Muse (D-tools: `list_story_files` / `read_story_file` / `search_story`)
+must work on both dialects. Ollama and OpenAI disagree on the shape: OpenAI tool
+calls carry an `id` + `type`, arguments as a JSON *string*, and results are paired
+back with `tool_call_id` (we tag results with `tool_name` internally, so the
+adapter matches them in order, by name). Streaming tool calls also arrive as
+*fragments keyed by index* — id once, name once, arguments in pieces — so they are
+reassembled before the tool loop ever sees them. Dumbing this down (dropping tools
+on the cloud path) would silently disable the Muse's ability to read the story.
+
+## D23 — A dead upstream fails fast and loudly
+A blackholed upstream used to hang the Muse for the full `MUSE_UPSTREAM_TIMEOUT`
+(300 s) while answering `200` with an empty stream — the UI showed nothing at all,
+which reads as "frozen", not "broken". The connect step now gets its own short
+budget (`MUSE_UPSTREAM_CONNECT_TIMEOUT`, default 10 s) and the existing `[ERROR]`
+SSE event carries the failure to the client's error pane. Discovered the moment
+the jenga box went dark.
+
+## D22 — Model names are per dialect; an explicit env value always wins
+A model id is meaningful only inside its dialect (`gemma4:12b` vs
+`deepseek/deepseek-v4-flash`). Defaults are chosen per `KATHA_MUSE_API`, and any
+explicit `MUSE_AGENT_MODEL` / `MUSE_REWRITE_MODEL` overrides both. Chat needs a
+tool-capable model; rewrite wants a strong prose model — they may be different
+vendors.
+
+## D21 — Dialect, base URL and key are environment, never code
+`KATHA_MUSE_API` (`ollama` | `openai`), `KATHA_MUSE_API_BASE` (full base, including
+any `/v1`), `KATHA_MUSE_API_KEY` (bearer). The key is sent as a header only: never
+logged, never returned by any endpoint, never echoed in an error message, never in
+the client bundle. `server/.env` (gitignored) is injected via compose `env_file`,
+so the secret is never written into the compose file.
+
+## D20 — One dialect internally, two on the wire
+The Muse keeps speaking the *Ollama* shape internally
+(`{model, messages, options, tools, stream}` in, `{"message": {content, tool_calls}}`
+out). `app/upstream.py` is the only module that knows a provider's wire format and
+translates both directions when the dialect is `openai` (`options.num_predict` →
+`max_tokens`, NDJSON → SSE deltas, and back). Everything the Muse learned since 0.3
+— think-stripping, the tool loop, canon context, the style digest, thread
+persistence — stays provider-agnostic and untouched. The LAN settings stay the
+default, so `KATHA_MUSE_API=ollama` restores the old behavior byte for byte.
+
 ## D16/D17 — Muse proxy
 Chat and rewrite are proxied to a friend's Ollama box and streamed to the client
 as SSE. `<think>…</think>` blocks (deepseek-r1) are stripped so the reader never

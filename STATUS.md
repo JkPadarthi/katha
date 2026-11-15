@@ -70,6 +70,10 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **4.1.3** — OpenCode Go works: it refuses any request without `x-opencode-session`
+  ("MissingSessionID", shown only as a bare 400). Katha now sends a stable, opaque session id
+  per chapter's conversation to opencode.ai (a hash — nothing about the book), and a
+  `User-Agent: Katha/<version>` everywhere.
 - **4.1.2** — Muse & security says what "Test" checks: the button is "Test saved (Command Code)"
   and the line under the models reads "Saved now: …", with "used only after Save" while the form
   differs — testing the saved connection had looked like testing the form. With the lock on, a

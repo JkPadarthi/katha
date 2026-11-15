@@ -1121,6 +1121,7 @@ async def chat(
     the chapter itself (plus whatever the author @-mentioned).
     `chip` (rewrite/continue/scene/canon/inline/fix) rides along as a system hint.
     """
+    up_mod.set_session(chapter_id)
     ctx = _tool_ctx(chapter_id)
     sys_parts: list[dict] = [{"role": "system", "content": AGENT_SYSTEM}]
     if chip and chip in CHIP_PROMPTS:
@@ -1243,6 +1244,7 @@ async def rewrite(
     chapter_id: str | None = None,
 ) -> AsyncIterator:
     """Stream a single rewrite proposal for `text` in the chosen `style`."""
+    up_mod.set_session(chapter_id)
     sys_parts: list[dict] = [{"role": "system", "content": STYLE_PROMPTS.get(style, STYLE_PROMPTS["novel"])}]
     if chapter_id:
         parsed = _parse_chapter_id(chapter_id)
@@ -1286,6 +1288,7 @@ COMPLETE_CONTEXT = 3000       # chars before the cursor the model sees
 async def complete_text(before: str, chapter_id: str | None = None) -> str:
     """A short continuation of `before` — one sentence, for Tab-to-accept ghost text."""
     before = (before or "")[-COMPLETE_CONTEXT:]
+    up_mod.set_session(chapter_id)
     if not before.strip():
         return ""
     sys_parts = [{"role": "system", "content": COMPLETE_SYSTEM}]

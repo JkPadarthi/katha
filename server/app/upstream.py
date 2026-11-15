@@ -33,8 +33,11 @@ Nothing here holds a client of its own: `muse.py` passes its module-level
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import secrets
+from contextvars import ContextVar
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
@@ -47,7 +50,22 @@ from .config import (
     MUSE_UPSTREAM_CONNECT_TIMEOUT,
     MUSE_UPSTREAM_TIMEOUT,
     OLLAMA_BASE,
+    VERSION,
 )
+
+# Which conversation a request belongs to (4.1.3). OpenCode Go refuses a request
+# without a stable `x-opencode-session` per conversation ("cannot be routed
+# efficiently") and uses it for routing and prompt caching. The Muse sets it per
+# chapter (`set_session`); anything else shares one id per server process.
+_PROCESS_SESSION = "katha-" + secrets.token_hex(8)
+SESSION: ContextVar[str] = ContextVar("katha_session", default=_PROCESS_SESSION)
+
+
+def set_session(scope: str | None) -> None:
+    """One stable, opaque id per conversation scope (a chapter): the same chapter
+    always maps to the same id, and nothing about the book leaves in it."""
+    if scope:
+        SESSION.set("katha-" + hashlib.sha256(scope.encode()).hexdigest()[:32])
 
 OLLAMA = "ollama"
 OPENAI = "openai"
@@ -112,7 +130,8 @@ def headers() -> dict[str, str]:
 def headers_for(api: str, base: str, key: str) -> dict[str, str]:
     """The headers one dialect wants at one address (4.1: also used to list models
     for a connection that is not saved yet)."""
-    out: dict[str, str] = {}
+    # Say who is calling: providers that watch their traffic (OpenCode Go) ask for it.
+    out: dict[str, str] = {"User-Agent": f"Katha/{VERSION}"}
     if api in MESSAGES_SHAPES:
         # the version pin goes even without a key: native Anthropic rejects a request
         # that lacks it, and a gateway ignores it
@@ -121,6 +140,8 @@ def headers_for(api: str, base: str, key: str) -> dict[str, str]:
             out["x-api-key"] = key
     elif api == OPENAI and key:
         out["Authorization"] = f"Bearer {key}"
+    if _host(base) == "opencode.ai":
+        out["x-opencode-session"] = SESSION.get()
     if _host(base).endswith("openrouter.ai"):
         # OpenRouter's optional app attribution — no personal data, just the app name
         out["X-Title"] = "Katha"

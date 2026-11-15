@@ -386,3 +386,18 @@ def test_a_refusal_carries_the_providers_own_words(client, monkeypatch):
     d = client.post("/api/settings/muse/models",
                     json={"api": "openai", "base": "https://x.test/v1", "key": KEY}).json()["detail"]
     assert "400" in d and "must be called via /messages" in d and KEY not in d
+
+
+def test_opencode_gets_a_stable_session_per_conversation(monkeypatch):
+    """OpenCode Go refuses a request without `x-opencode-session` (MissingSessionID)."""
+    h = up.headers_for("openai", "https://opencode.ai/zen/go/v1", KEY)
+    assert h["x-opencode-session"].startswith("katha-") and h["User-Agent"].startswith("Katha/")
+    up.set_session("s/b/ch-01")
+    a = up.headers_for("openai", "https://opencode.ai/zen/go/v1", KEY)["x-opencode-session"]
+    up.set_session("s/b/ch-01")
+    assert up.headers_for("openai", "https://opencode.ai/zen/go/v1", KEY)["x-opencode-session"] == a
+    up.set_session("s/b/ch-02")
+    assert up.headers_for("openai", "https://opencode.ai/zen/go/v1", KEY)["x-opencode-session"] != a
+    assert "ch-0" not in a                                  # opaque: nothing about the book
+    # nobody else gets it
+    assert "x-opencode-session" not in up.headers_for("openai", "https://openrouter.ai/api/v1", KEY)

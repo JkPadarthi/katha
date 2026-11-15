@@ -92,7 +92,7 @@ export default function HistoryPanel({ series, chapter, current, onRestored, onC
           title={`History · ${chapter.title || chapter.id}`}
           onClose={onClose}
           extra={
-            <span className="text-[10.5px] text-mute">
+            <span className="text-[12.5px] text-mute">
               {revs ? `${revs.length} revision${revs.length === 1 ? '' : 's'}` : '…'}
             </span>
           }
@@ -108,31 +108,31 @@ export default function HistoryPanel({ series, chapter, current, onRestored, onC
                     (sel === r.number ? 'bg-panel-2 text-ink' : 'text-mute hover:bg-panel-2/60 hover:text-ink')
                   }
                 >
-                  <span className="text-[11.5px]">
+                  <span className="text-[13.5px]">
                     rev {r.number}{i === 0 ? ' · latest' : ''}
                   </span>
-                  <span className="text-[10px] text-mute/70">
+                  <span className="text-[12px] text-mute/70">
                     {when(r.created_at)} · {r.words} words
                   </span>
                 </button>
               </li>
             ))}
             {revs && !revs.length && (
-              <li className="px-3 py-2 text-[11px] text-mute/60">No saved revisions yet.</li>
+              <li className="px-3 py-2 text-[13px] text-mute/60">No saved revisions yet.</li>
             )}
           </ul>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             {error && (
-              <div className="mb-3 rounded-md border border-err/30 bg-err/10 px-3 py-2 text-[11px] text-err">
+              <div className="mb-3 rounded-lg border border-err/30 bg-err/10 px-3 py-2 text-[13px] text-err">
                 {error}
               </div>
             )}
             {!snap ? (
-              <div className="text-[11.5px] text-mute/60">{sel == null ? '' : 'Loading…'}</div>
+              <div className="text-[13.5px] text-mute/60">{sel == null ? '' : 'Loading…'}</div>
             ) : (
               <>
-                <div className="mb-3 text-[10.5px] text-mute">
+                <div className="mb-3 text-[12.5px] text-mute">
                   {same
                     ? 'This revision is identical to the chapter as it stands.'
                     : <>Restoring would change the chapter like this — <span className="text-err/80 line-through">removed</span>, <span className="text-ok">added</span>.</>}
@@ -155,7 +155,7 @@ export default function HistoryPanel({ series, chapter, current, onRestored, onC
           </div>
         </div>
         <div className="flex items-center justify-between border-t hairline px-4 py-2.5">
-          <span className="text-[10px] text-mute/60">
+          <span className="text-[12px] text-mute/60">
             Restoring saves this revision as a new one — nothing is ever overwritten.
           </span>
           <Button variant="accent" onClick={restore} disabled={busy || !snap || same}>

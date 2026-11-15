@@ -457,6 +457,13 @@ export function saveMuseSettings({ api, base, key, agentModel, rewriteModel, cur
   return settingsReq('/settings/muse', 'PUT', body)
 }
 
+// The models a connection offers, for the form as typed (4.1). `key` null = the stored one.
+export function listMuseModels({ api, base, key, currentPassword }) {
+  const body = { api, base: base || '', current_password: currentPassword || '' }
+  if (key) body.key = key
+  return settingsReq('/settings/muse/models', 'POST', body)
+}
+
 export function resetMuseSettings(currentPassword) {
   return settingsReq('/settings/muse/reset', 'POST', { current_password: currentPassword || '' })
 }

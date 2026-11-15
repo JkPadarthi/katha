@@ -56,6 +56,7 @@ from .schemas import (
     CurrentPasswordIn,
     HealthOut,
     LoginIn,
+    MuseModelsIn,
     MuseSettingsIn,
     PasswordChangeIn,
     MuseChatRequest,
@@ -280,6 +281,35 @@ async def test_muse_settings():
         if key:
             msg = msg.replace(key, "…")
         return {"ok": False, "model": muse_mod.MUSE_AGENT_MODEL, "detail": msg[:300]}
+
+
+@app.post("/api/settings/muse/models", tags=["settings"])
+async def list_muse_models(body: MuseModelsIn, request: Request):
+    """The models a connection offers (4.1) — for the form as typed, so the author can
+    pick a model before saving. Guarded like a save: it sends the key somewhere."""
+    _require_password(body.current_password, request)
+    from . import upstream as up_mod
+    api = settings_store.normalize_dialect(body.api)
+    if api not in settings_store.DIALECTS:
+        raise HTTPException(400, f"unknown dialect {body.api!r}")
+    base = (body.base or "").strip().rstrip("/")
+    eff = settings_store.effective_muse()
+    if api == "ollama" and not base:
+        base = up_mod.OLLAMA_BASE
+    if not base or not _URL_RE.match(base):
+        raise HTTPException(400, "the address must start with http:// or https://")
+    # The stored key only ever goes back to the address it was given for (D62).
+    key = body.key if body.key is not None else (
+        eff["key"] if base == eff["base"].rstrip("/") else "")
+    try:
+        key = (key or "").strip()
+        models, formats = await up_mod.models_and_formats(api, base, key, muse_mod._client)
+        return {"ok": True, "models": models, "formats": formats}
+    except Exception as e:  # a diagnostic, never an error page
+        msg = " ".join(f"{type(e).__name__}: {e}".split())
+        if key:
+            msg = msg.replace(key, "…")
+        return {"ok": False, "models": [], "formats": {}, "detail": msg[:300]}
 
 
 @app.put("/api/settings/password", tags=["settings"])

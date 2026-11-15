@@ -276,3 +276,103 @@ def test_the_connection_test_reports_success_and_failure(client, monkeypatch):
     monkeypatch.setattr(muse_mod, "_client", httpx.AsyncClient(transport=httpx.MockTransport(bad)))
     r = client.post("/api/settings/muse/test").json()
     assert r["ok"] is False and "401" in r["detail"] and KEY not in json.dumps(r)
+
+
+# --- 7. many providers (4.1): listing models, provider quirks -----------------
+
+def _models_client(monkeypatch, seen):
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.url.path.endswith("/api/tags"):
+            return httpx.Response(200, json={"models": [{"name": "gemma4:12b"}, {"name": "qwen3:8b"}]})
+        return httpx.Response(200, json={"data": [{"id": "z-model"}, {"id": "a-model"}, {"id": "a-model"}]})
+    monkeypatch.setattr(muse_mod, "_client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+
+def test_models_are_listed_for_the_form_as_typed(client, monkeypatch):
+    seen = []
+    _models_client(monkeypatch, seen)
+    r = client.post("/api/settings/muse/models",
+                    json={"api": "openai", "base": "https://openrouter.ai/api/v1/", "key": KEY})
+    assert r.json() == {"ok": True, "models": ["a-model", "z-model"], "formats": {}}   # sorted, deduped
+    req = seen[0]
+    assert str(req.url) == "https://openrouter.ai/api/v1/models"
+    assert req.headers["authorization"] == f"Bearer {KEY}"
+    assert req.headers["x-title"] == "Katha"
+    # nothing was saved by listing
+    assert client.get("/api/settings").json()["muse"]["source"] == "environment"
+
+
+def test_anthropic_models_use_its_headers(client, monkeypatch):
+    seen = []
+    _models_client(monkeypatch, seen)
+    client.post("/api/settings/muse/models",
+                json={"api": "messages", "base": "https://api.anthropic.com/v1", "key": KEY})
+    h = seen[0].headers
+    assert h["x-api-key"] == KEY and h["anthropic-version"] == up.ANTHROPIC_VERSION
+    assert "authorization" not in h
+
+
+def test_ollama_models_come_from_tags(client, monkeypatch):
+    seen = []
+    _models_client(monkeypatch, seen)
+    r = client.post("/api/settings/muse/models", json={"api": "ollama", "base": "http://10.0.0.5:11434"})
+    assert r.json()["models"] == ["gemma4:12b", "qwen3:8b"]
+    assert str(seen[0].url) == "http://10.0.0.5:11434/api/tags"
+
+
+def test_the_stored_key_is_only_reused_at_its_own_address(client, monkeypatch):
+    _gateway(client)
+    seen = []
+    _models_client(monkeypatch, seen)
+    client.post("/api/settings/muse/models", json={"api": "messages", "base": "https://gw.example.test/v1"})
+    client.post("/api/settings/muse/models", json={"api": "messages", "base": "https://elsewhere.test/v1"})
+    home = [r for r in seen if r.url.host == "gw.example.test"]
+    away = [r for r in seen if r.url.host == "elsewhere.test"]
+    assert home and all(r.headers["x-api-key"] == KEY for r in home)
+    assert away and all("x-api-key" not in r.headers for r in away)
+
+
+def test_listing_models_needs_the_current_password_when_locked(client, monkeypatch):
+    _lock_with_env_password(client)
+    seen = []
+    _models_client(monkeypatch, seen)
+    r = client.post("/api/settings/muse/models", json={"api": "openai", "base": "https://x.test/v1", "key": KEY})
+    assert r.status_code == 403 and not seen
+
+
+def test_a_failed_listing_reports_without_the_key(client, monkeypatch):
+    def handler(req):
+        return httpx.Response(401, json={"error": f"bad key {KEY}"})
+    monkeypatch.setattr(muse_mod, "_client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    r = client.post("/api/settings/muse/models", json={"api": "openai", "base": "https://x.test/v1", "key": KEY})
+    assert r.json()["ok"] is False and KEY not in r.text
+
+
+def test_openai_itself_gets_its_own_parameter_names(monkeypatch):
+    monkeypatch.setattr(up, "MUSE_API", "openai")
+    payload = {"model": "o4-mini", "messages": [], "options": {"num_predict": 99, "temperature": 0.7}}
+    monkeypatch.setattr(up, "MUSE_API_BASE", "https://api.openai.com/v1")
+    body = up.to_openai_payload(payload)
+    assert body["max_completion_tokens"] == 99 and "max_tokens" not in body
+    assert "temperature" not in body                       # reasoning model: default only
+    body = up.to_openai_payload({**payload, "model": "gpt-4.1"})
+    assert body["temperature"] == 0.7
+    # a gateway keeps the classic names
+    monkeypatch.setattr(up, "MUSE_API_BASE", "https://openrouter.ai/api/v1")
+    body = up.to_openai_payload(payload)
+    assert body["max_tokens"] == 99 and body["temperature"] == 0.7
+
+
+def test_a_gateway_that_names_endpoints_tells_each_models_format(client, monkeypatch):
+    """Command Code / OpenCode publish `supported_endpoints` per model (D42): a Claude
+    model only on /messages, others on /chat/completions."""
+    def handler(req):
+        return httpx.Response(200, json={"data": [
+            {"id": "claude-sonnet-5-5", "supported_endpoints": ["/provider/v1/messages"]},
+            {"id": "deepseek/deepseek-v4-flash", "supported_endpoints": ["/chat/completions", "/responses"]},
+            {"id": "plain-model"}]})
+    monkeypatch.setattr(muse_mod, "_client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    r = client.post("/api/settings/muse/models",
+                    json={"api": "openai", "base": "https://api.commandcode.ai/provider/v1", "key": KEY})
+    assert r.json()["formats"] == {"claude-sonnet-5-5": "messages", "deepseek/deepseek-v4-flash": "openai"}

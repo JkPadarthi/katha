@@ -51,14 +51,14 @@ export default function DiffOverlay({
         onClose={onClose}
         extra={
           showStyles ? (
-            <div className="flex gap-0.5 rounded-md border hairline p-0.5">
+            <div className="flex gap-0.5 rounded-lg border hairline p-0.5">
               {STYLES.map((s) => (
                 <button
                   key={s}
                   onClick={() => onStyleChange(s)}
                   disabled={busy}
                   className={
-                    'rounded-sm px-2 py-0.5 text-[10.5px] transition-colors ' +
+                    'rounded-sm px-2 py-0.5 text-[12.5px] transition-colors ' +
                     (style === s ? 'bg-accent/20 text-accent' : 'text-mute hover:text-ink disabled:opacity-40')
                   }
                 >
@@ -67,7 +67,7 @@ export default function DiffOverlay({
               ))}
             </div>
           ) : busy ? (
-            <span className="flex items-center gap-1.5 text-[10.5px] text-mute">
+            <span className="flex items-center gap-1.5 text-[12.5px] text-mute">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
               streaming
             </span>
@@ -76,9 +76,9 @@ export default function DiffOverlay({
       />
 
       {/* Side-by-side word-level diff */}
-      <div className="grid grid-cols-2 gap-px bg-line">
+      <div className="grid min-h-0 flex-1 grid-cols-2 gap-px overflow-y-auto bg-line">
         <div className="bg-panel-2 px-4 py-3">
-          <div className="mb-1.5 text-[9.5px] uppercase tracking-wider text-mute/70">original</div>
+          <div className="mb-1.5 text-[11.5px] text-mute/70">original</div>
           <div className="font-serif text-[14px] leading-[1.7] text-mute">
             {parts.map((p, i) =>
               p.removed
@@ -88,7 +88,7 @@ export default function DiffOverlay({
           </div>
         </div>
         <div className="bg-base px-4 py-3">
-          <div className="mb-1.5 text-[9.5px] uppercase tracking-wider text-mute/70">proposed</div>
+          <div className="mb-1.5 text-[11.5px] text-mute/70">proposed</div>
           <div className="font-serif text-[14px] leading-[1.7] text-ink">
             {parts.map((p, i) =>
               p.added
@@ -104,7 +104,7 @@ export default function DiffOverlay({
           <Button size="sm" onClick={copy} disabled={!proposed || busy}>
             {copied ? '✓ copied' : 'copy proposed'}
           </Button>
-          <span className="text-[10px] text-mute/60">Esc to dismiss · Ctrl/⌘+Enter to accept</span>
+          <span className="text-[12px] text-mute/60">Esc to dismiss · Ctrl/⌘+Enter to accept</span>
         </div>
         <div className="flex items-center gap-2">
           {onRetry && (

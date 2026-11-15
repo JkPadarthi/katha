@@ -95,10 +95,10 @@ export default function BookDetailsDialog({
   return (
     <Overlay onClose={onClose} width={460} padTop="18vh" z={50}>
       <OverlayHeader title="Book details" onClose={onClose} />
-      <div className="space-y-4 px-4 py-4">
-        <div className="text-[11px] text-mute">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-4 px-4 py-4">
+        <div className="text-[13px] text-mute">
           <span className="text-mute/60">In </span>{series}
-          <div className="mt-0.5 text-[12.5px] text-ink">{title}</div>
+          <div className="mt-0.5 text-[14px] text-ink">{title}</div>
         </div>
 
         <Field label="Author"
@@ -121,12 +121,12 @@ export default function BookDetailsDialog({
         )}
 
         <div>
-          <span className="text-[11px] text-mute">Cover</span>
+          <span className="text-[13px] text-mute">Cover</span>
           <div className="mt-1.5 flex gap-3">
-            <div className="flex h-[132px] w-[84px] shrink-0 items-center justify-center overflow-hidden rounded-md border hairline bg-panel-2/40">
+            <div className="flex h-[132px] w-[84px] shrink-0 items-center justify-center overflow-hidden rounded-lg border hairline bg-panel-2/40">
               {cover
                 ? <img src={cover} alt="" className="h-full w-full object-cover" />
-                : <span className="px-1 text-center text-[9.5px] text-mute/60">no cover</span>}
+                : <span className="px-1 text-center text-[11.5px] text-mute/60">no cover</span>}
             </div>
             <div className="min-w-0 flex-1 space-y-1.5">
               <input
@@ -148,7 +148,7 @@ export default function BookDetailsDialog({
                   <Button onClick={removeCover} disabled={busy === 'cover'}>Remove</Button>
                 )}
               </div>
-              <p className="text-[10px] leading-snug text-mute/60">
+              <p className="text-[12px] leading-snug text-mute/60">
                 JPEG, PNG or WebP up to 8 MB. It is fitted to 1600×2560 and re-encoded,
                 then becomes the EPUB's first page.
               </p>
@@ -164,12 +164,12 @@ export default function BookDetailsDialog({
         </div>
 
         {note && (
-          <div className="rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-[11px] text-mute">
+          <div className="rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-[13px] text-mute">
             {note}
           </div>
         )}
         {error && (
-          <div className="rounded-md border border-err/30 bg-err/10 px-3 py-2 text-[11px] text-err">
+          <div className="rounded-lg border border-err/30 bg-err/10 px-3 py-2 text-[13px] text-err">
             {error}
           </div>
         )}

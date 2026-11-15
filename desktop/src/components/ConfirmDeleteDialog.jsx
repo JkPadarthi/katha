@@ -85,8 +85,8 @@ export default function ConfirmDeleteDialog({ target, onClose, onDeleted, onDele
   return (
     <Overlay onClose={onClose} width={440} padTop="22vh" z={55} dismissable={!busy}>
       <OverlayHeader title={meta.title} onClose={onClose} />
-      <div className="space-y-3 px-4 py-4">
-        <p className="text-[12.5px] text-ink">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-3 px-4 py-4">
+        <p className="text-[14px] text-ink">
           <span className="font-medium">{target.label}</span>
           {meta.what} will be moved out of the archive.
         </p>
@@ -96,22 +96,22 @@ export default function ConfirmDeleteDialog({ target, onClose, onDeleted, onDele
             {facts(impact).map((f) => (
               <li
                 key={f}
-                className="rounded-md border hairline bg-panel-2 px-2 py-0.5 text-[10.5px] text-mute"
+                className="rounded-lg border hairline bg-panel-2 px-2 py-0.5 text-[12.5px] text-mute"
               >
                 {f}
               </li>
             ))}
-            <li className="rounded-md border hairline bg-panel-2 px-2 py-0.5 text-[10.5px] text-mute">
+            <li className="rounded-lg border hairline bg-panel-2 px-2 py-0.5 text-[12.5px] text-mute">
               {bytes(impact.bytes)}
             </li>
           </ul>
         ) : (
-          !error && <p className="text-[11px] text-mute">Checking what would go…</p>
+          !error && <p className="text-[13px] text-mute">Checking what would go…</p>
         )}
 
-        <p className="text-[11px] leading-relaxed text-mute">
+        <p className="text-[13px] leading-relaxed text-mute">
           Nothing is erased: it lands in the trash and can be brought back from{' '}
-          <span className="text-ink">Settings → Trash</span>. The rail and search
+          <span className="text-ink">Settings → Trash</span>. The book menu and search
           will forget it immediately.
         </p>
 
@@ -119,13 +119,13 @@ export default function ConfirmDeleteDialog({ target, onClose, onDeleted, onDele
           <button
             onClick={onDeleteSeries}
             disabled={busy}
-            className="text-left text-[10.5px] text-mute/70 underline decoration-dotted hover:text-err disabled:opacity-40"
+            className="text-left text-[12.5px] text-mute/70 underline decoration-dotted hover:text-err disabled:opacity-40"
           >
             …or delete the entire series instead — every book in “{target.seriesTitle || 'this series'}”
           </button>
         )}
 
-        {error && <p className="text-[11px] text-err">{error}</p>}
+        {error && <p className="text-[13px] text-err">{error}</p>}
 
         <div className="flex items-center justify-end gap-2 pt-1">
           <Button onClick={onClose} disabled={busy}>Cancel</Button>

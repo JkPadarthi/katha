@@ -8,7 +8,7 @@ Architecture, components, and the API contract.
 Pi 5 (Docker Compose)                         Browser / installed PWA
 ┌───────────────────────────────┐             ┌────────────────────────┐
 │ FastAPI (uvicorn :4901)       │  same origin│ React SPA (Vite)       │
-│  ├ /            → built PWA   │◄───────────►│  Rail · Page · Muse     │
+│  ├ /            → built PWA   │◄───────────►│  TopBar · Page · Dock   │
 │  ├ /api/...     → JSON API    │   /api      │  + CommandPalette,      │
 │  ├ /api/muse/*  → SSE stream  │             │    DiffOverlay, Sweep   │
 │  └ archive/     → md (truth)  │             └────────────────────────┘
@@ -21,17 +21,22 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
 
 ## Components
 
-- **Client** (`desktop/src/`) — React + Vite + Tailwind, no router, state in
-  `App.jsx`. `lib/api.js` is the entire backend boundary (same-origin `/api` +
-  SSE streaming); `lib/useTheme.js` drives the theme system (Hermes/Paper/Slate,
-  OS-follow default); `lib/settings.js` holds per-machine prefs; `lib/resume.js`
-  picks the landing chapter. `ui/` holds the shared primitives (`Overlay`,
-  `Button`, `Field`). Components: `TitleBar`, `ThemePicker`, `Rail`, `Editor`
-  (autosave, ghost text), `ReadingView`, `Muse` (chat, @-mentions, pending changes,
-  token meter), `ProposalReview` (per-hunk review, inline or modal, multi-file),
-  `HistoryPanel`, `SecurityPanel` (provider, key, password), `CommandPalette`, `DiffOverlay`, `SweepPanel` (located issues +
-  Fix), `BiblePanel`, `RitualsCard`, `SettingsPanel`, `NewBookDialog`,
-  `BookDetailsDialog`, `ConfirmDeleteDialog`. `public/sw.js` caches the shell only.
+- **Client** (`desktop/src/`) — React + Vite + Tailwind, no router (4.0, D63).
+  `App.jsx` composes; state lives in hooks: `lib/useBook.js` (archive, open book and
+  chapter, the moves between them), `lib/useMuse.js` (conversation, staged changes,
+  the `museApi` bridge), `lib/useReview.js` (open / accept / discard a staged change),
+  `lib/useStats.js` (rituals), `lib/useTheme.js` (Day/Hermes/Paper/Slate, OS-follow).
+  `lib/api.js` is the entire backend boundary (same-origin `/api` + SSE);
+  `lib/settings.js` holds per-machine prefs; `lib/resume.js` picks the landing chapter.
+  `shell/`: `TopBar` (breadcrumb → book menu, ⌘K, app menu), `Dock` (pending changes,
+  latest reply), `Composer` (the one input: chat, @-mentions, selection edits),
+  `Conversation` (the thread, beside the page or as a sheet). `ui/`: `Overlay` (a
+  full-screen sheet on a phone), `Popover`, `Button`, `Field`, `Icon`. Components:
+  `Editor` (autosave, ghost text), `ReadingView`, `ProposalReview` (per-hunk, marked in
+  the prose, inline or modal, multi-file), `HistoryPanel`, `SecurityPanel`,
+  `CommandPalette`, `DiffOverlay`, `SweepPanel`, `BiblePanel`, `RitualsCard`,
+  `SettingsPanel`, `NewBookDialog`, `BookDetailsDialog`, `ConfirmDeleteDialog`. Fonts
+  (Literata, Inter) are bundled. `public/sw.js` caches the shell only.
 - **Server** (`server/app/`) — `main.py` (HTTP + SSE + static PWA + the lock),
   `schemas.py` (contracts), `archive.py` (files = truth), `db.py` (SQLite index
   + FTS5), `muse.py` (the Muse: agentic chat with story tools, staged edits,
@@ -89,6 +94,7 @@ SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 | GET | `/api/settings` | Muse connection (key never returned) + lock state |
 | PUT | `/api/settings/muse` | provider, address, key, models (current password) |
 | POST | `/api/settings/muse/reset` · `/api/settings/muse/test` | back to env · test the connection |
+| POST | `/api/settings/muse/models` | list a connection's models, as typed in the form (4.1) |
 | PUT | `/api/settings/password` | set / change / turn off the lock (current password) |
 | GET / POST | `/api/books` | series → books tree / create series + book |
 | PUT | `/api/books/{series}/{book}/meta` | author (per book) |

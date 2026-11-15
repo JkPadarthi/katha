@@ -191,6 +191,14 @@ class MuseSettingsIn(BaseModel):
     current_password: str = ""        # required whenever the lock is on
 
 
+class MuseModelsIn(BaseModel):
+    """List the models of a connection as typed in the form, before it is saved."""
+    api: str
+    base: str = ""
+    key: str | None = None            # None = the stored key, if the address is the same
+    current_password: str = ""
+
+
 class PasswordChangeIn(BaseModel):
     current: str = ""
     new: str = ""

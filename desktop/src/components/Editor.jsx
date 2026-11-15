@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as api from '../lib/api.js'
 import { getSetting, setSetting } from '../lib/settings.js'
 import { countWords, clockNow } from '../lib/text.js'
-import { Button } from '../ui/Button.jsx'
+import Icon from '../ui/Icon.jsx'
 import ReadingView from './ReadingView.jsx'
 
 // THE EDITOR — the quiet center. Loads a chapter and autosaves via PUT (md
@@ -24,6 +24,20 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
   const [mode, setMode] = useState(() => getSetting('mode', 'edit'))
   const [notes, setNotes] = useState([])
   const taRef = useRef(null)
+  const titleRef = useRef(null)
+  // The title is a textarea so a long one wraps instead of running off the page; it
+  // grows to fit its text, on every edit and whenever the window changes width.
+  useLayoutEffect(() => {
+    const fit = () => {
+      const el = titleRef.current
+      if (!el) return
+      el.style.height = 'auto'
+      el.style.height = el.scrollHeight + 'px'
+    }
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  })
   const mirrorRef = useRef(null)
   const [suggest, setSuggest] = useState(null)     // {at, text} ghost text, or null
   const ghostRef = useRef({ timer: null, abort: null })
@@ -345,70 +359,83 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
   }, [body, title, chapterKey])
 
   const reading = mode === 'read'
-  // Focus mode gives the page the whole window — edit and read alike. Normal
-  // mode fills the middle pane.
-  const measure = focus ? 'w-full px-8 xl:px-12' : 'px-10'
-  const textSize = focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]'
 
+  // One measure everywhere (4.0, D63): the column is centred by padding, not by a
+  // narrower box, so the scrollbar stays at the window's edge and the textarea, its
+  // ghost layer, the title and the reading view all share the same left edge.
   return (
-    <main className="page-surface relative flex h-full min-h-0 flex-col bg-base">
-      <div className={'shrink-0 pb-2 ' + (focus ? measure + ' pt-14' : measure + ' pt-6')}>
+    <main className="page-surface relative flex h-full min-h-0 flex-col">
+      <div className={'measure shrink-0 ' + (focus ? 'pt-16' : 'pt-8 max-md:pt-4')}>
         {reading ? (
-          <h1 className={'font-serif font-semibold text-ink ' + (focus ? 'text-[30px]' : 'text-[26px]')}>
+          <h1 className="font-serif text-[30px] font-semibold leading-[1.15] tracking-[-0.01em] text-ink max-md:text-[25px]">
             {title || chapter?.title || ''}
           </h1>
         ) : (
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            spellCheck={false}
-            className={'w-full border-none bg-transparent font-serif font-semibold text-ink placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[30px]' : 'text-[26px]')}
-            placeholder="Chapter title"
-          />
+          <>
+            <label htmlFor="chapter-title" className="sr-only">Chapter title</label>
+            <textarea
+              id="chapter-title"
+              ref={titleRef}
+              rows={1}
+              value={title}
+              onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); taRef.current?.focus() } }}
+              spellCheck={false}
+              className="block w-full resize-none overflow-hidden border-none bg-transparent font-serif text-[30px] font-semibold leading-[1.15] tracking-[-0.01em] text-ink placeholder:text-mute/40 focus:outline-none max-md:text-[25px]"
+              placeholder="Chapter title"
+            />
+          </>
         )}
 
-        <div className="mt-1 flex items-center gap-3 text-[10.5px] text-mute/70">
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-mute">
           <span>{words} words</span>
-          <span>·</span>
+          <span aria-hidden="true">·</span>
           <span>{savedAt || '…'}</span>
-          <span>·</span>
+          <span aria-hidden="true">·</span>
           <span>rev {revision}{drafts ? ` · ${drafts} draft${drafts > 1 ? 's' : ''}` : ''}</span>
-          <span className="ml-auto flex items-center gap-2">
+          <span className="ml-auto flex items-center gap-0.5">
             {onHistory && chapter && (
               <button
                 onClick={onHistory}
-                className="rounded-md border hairline px-2.5 py-0.5 text-[10.5px] font-medium text-mute transition-colors hover:text-ink"
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-mute transition-colors hover:bg-panel-2 hover:text-ink"
                 title="Revision history — every save, restorable"
               >
-                History
+                <Icon name="history" size={15} /> History
               </button>
             )}
             <button
               onClick={() => setMode((m) => (m === 'edit' ? 'read' : 'edit'))}
-              className="rounded-md border hairline px-2.5 py-0.5 text-[10.5px] font-medium text-mute transition-colors hover:text-ink"
-              title={reading ? 'Back to editing' : 'Read as book'}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-mute transition-colors hover:bg-panel-2 hover:text-ink"
+              title={reading ? 'Back to editing' : 'Read as a book, and keep margin notes'}
             >
-              {reading ? 'Edit' : 'Read'}
+              <Icon name={reading ? 'pen' : 'read'} size={15} /> {reading ? 'Edit' : 'Read'}
             </button>
             {!reading && (
-              <Button variant="accent" size="sm" onClick={saveNow} disabled={saving}>
-                {saving ? '…' : 'Save'}
-              </Button>
+              <button
+                onClick={saveNow}
+                disabled={saving}
+                className="inline-flex h-8 items-center rounded-lg px-2 text-[13px] font-medium text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
+                title="Save now — it also saves itself as you write"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
             )}
           </span>
         </div>
       </div>
 
-      <div className={'min-h-0 flex-1 pb-16 ' + (reading ? 'overflow-y-auto ' : 'flex flex-col ') + measure}>
+      <div className={'relative min-h-0 flex-1 ' + (reading ? 'overflow-y-auto' : 'flex flex-col')}>
         {reading ? (
-          <ReadingView
-            body={body}
-            notes={notes}
-            onAddNote={addNote}
-            onNoteBody={setNoteBody}
-            onDeleteNote={deleteNote}
-            onCommitNotes={() => commitNotes()}
-          />
+          <div className="measure pb-64 pt-6">
+            <ReadingView
+              body={body}
+              notes={notes}
+              onAddNote={addNote}
+              onNoteBody={setNoteBody}
+              onDeleteNote={deleteNote}
+              onCommitNotes={() => commitNotes()}
+            />
+          </div>
         ) : (
           <div className="relative flex min-h-0 flex-1">
             {/* The ghost layer: the same text, invisible, with the suggestion in grey at
@@ -417,15 +444,17 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
               <div
                 ref={mirrorRef}
                 aria-hidden="true"
-                className={'pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words font-serif ' + textSize}
+                className="measure prose-page pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words pb-64 pt-6"
                 style={{ scrollbarGutter: 'stable' }}
               >
                 <span className="text-transparent">{body.slice(0, suggest.at)}</span>
-                <span className="text-mute/50">{suggest.text}</span>
-                <span className="ml-2 rounded border hairline px-1 align-middle font-sans text-[9.5px] text-mute/60">Tab</span>
+                <span className="text-mute/70">{suggest.text}</span>
+                <span className="ml-2 rounded border hairline px-1.5 align-middle font-sans text-[11px] text-mute">Tab</span>
               </div>
             )}
+            <label htmlFor="chapter-body" className="sr-only">Chapter text</label>
             <textarea
+              id="chapter-body"
               ref={taRef}
               value={body}
               onChange={(e) => setBody(e.target.value)}
@@ -437,7 +466,7 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
               onBlur={dropGhost}
               spellCheck={false}
               style={{ scrollbarGutter: 'stable' }}
-              className={'relative min-h-0 w-full flex-1 resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + textSize}
+              className="measure prose-page relative min-h-0 w-full flex-1 resize-none border-none bg-transparent pb-64 pt-6 text-ink caret-accent placeholder:text-mute/50 focus:outline-none"
               placeholder="The page is blank. The story begins here."
             />
           </div>

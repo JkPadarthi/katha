@@ -133,6 +133,81 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D64 — the Muse picks a provider, not a dialect; the themes are Light and Dark (4.1.0)
+The author asked for the Muse to "support multiple AIs" — OpenCode, OpenRouter, Claude,
+OpenAI and the rest — and for Hermes to be called dark mode.
+
+* **A provider is a preset over the three wire formats** the server already speaks
+  (Ollama, OpenAI chat completions, Claude Messages — D20, D42). Muse & security offers
+  Claude (Anthropic), OpenAI, OpenRouter, Command Code (`api.commandcode.ai/provider/v1`), OpenCode Go (the subscription, `…/zen/go/v1`), OpenCode Zen, Gemini, DeepSeek, Mistral,
+  Groq, xAI, Ollama, LM Studio (any local OpenAI-compatible server) and Custom. A preset
+  fills the format and the address and says where to get a key; everything stays
+  editable. OpenCode and Custom show the format switch, because OpenCode serves Claude
+  models only in the Messages shape. Nothing new is stored: the preset is recognised
+  from the saved address (`lib/providers.js`), so 3.2 settings files need no migration.
+* **Models are picked, not typed.** `POST /api/settings/muse/models` lists a
+  connection's models *as typed in the form* (`GET {base}/models`, Ollama's
+  `/api/tags`), guarded by the current password like a save — it sends the key. The
+  stored key is only reused at the address it was given for (D62's rule). A preset
+  with no known-good default model can't be saved until a chat model is named; a
+  blank rewrite model means the chat model.
+* **A gateway that names each model's endpoint picks the format itself.** Command Code
+  and OpenCode publish `supported_endpoints` per model (D42); the model list returns
+  `{id: format}` for those, and choosing such a model in the form switches the format
+  to match — a Claude model to Messages, the rest to OpenAI.
+* **Provider quirks live in upstream.py.** OpenAI itself (`api.openai.com`) gets
+  `max_completion_tokens`, and its reasoning models (o-series, gpt-5) get no
+  temperature; gateways keep the classic names. OpenRouter gets an `X-Title: Katha`
+  header (app attribution, no personal data). The Messages format always sends its
+  version pin.
+* **Themes:** "Day" and "Hermes" are now **Light** and **Dark** in every label; the
+  ids stay `day` / `hermes`, so a stored choice keeps working.
+* **Type:** the chapter title is 30px (25 on a phone), down from 40; the prose stays
+  19px at every page width (4.0.1).
+
+## D63 — One Page: the manuscript gets the window (4.0.0)
+The author asked for the whole UI to be redone: it was cluttered, weak on a phone, and
+the code had grown into one 844-line `App.jsx`. Three directions were mocked up (a
+plain page, an IDE workbench, a margin column); the author chose **One Page**, with a
+dark mode in the Hermes black and gold.
+
+* **The rail and the title bar are gone.** Where you are is a breadcrumb at the top
+  ("Harbour / 01 · The Debt"); it opens the book — chapters, prologue, bible, sweep,
+  book details, EPUB, delete, and the rituals card. Everything else is ⌘K or the menu
+  (theme, focus, settings, Muse & security, install, lock). Today's count sits in the
+  top bar.
+* **The Muse is a dock at the bottom of the page**, not a column: what is waiting for
+  review (with Review and Accept all), the latest reply (insert / append / replace,
+  token meter), and the one composer. The full conversation opens beside the page on
+  a wide screen (and stays open if left open) or as a sheet on a phone.
+* **A selection talks to the composer.** Select text and the composer edits that
+  passage (the inline edit, D57) — ⌘I puts the caret there. "Rewrite…" still opens the
+  styled side-by-side rewrite. The floating selection buttons are gone.
+* **Changes are marked in the prose.** The review strikes through what goes and
+  highlights what comes, where it lands, each change with its own include toggle; the
+  decision sits where the dock was. On a phone too — the open chapter's changes are
+  reviewed in place on every device now. Whitespace a change shares with the text
+  around it is drawn outside the marks.
+* **The phone gets the same layout,** not three swiped panes: the page, the dock, the
+  book as a bottom sheet, every panel as a full-screen sheet. Touch targets are 36–48px.
+* **Themes:** **Day** (white, ink, indigo) and **Hermes** (black, gold) are the pair; the
+  menu flips between them and the default follows the OS (Day when light, Hermes when
+  dark). Paper and Slate stay in Settings. Review colours are their own tokens
+  (`add`, `add-bg`, `del`) and differ in lightness as well as hue.
+* **Typography is redone, with the author's consent this time** (cf. D51): Literata for
+  the prose (19px / 1.75, 18 / 1.7 on a phone) in one 680px measure centred by padding,
+  Inter for the interface, both **bundled** (`@fontsource-variable`) so the Pi serves
+  them and nothing is fetched from Google. The panels kept their content and stepped
+  every size up for comfort.
+* **The code is split by job:** `lib/useBook` (where you are), `lib/useMuse` (the
+  conversation, staged changes, the `museApi` bridge), `lib/useReview` (open, accept,
+  discard), `lib/useStats`; `shell/` holds `TopBar`, `Dock`, `Composer`,
+  `Conversation`; `ui/` gained `Icon` and `Popover`. `App.jsx` composes them.
+  `TitleBar`, `Rail`, `ThemePicker` and `Muse` were removed.
+* Unchanged on purpose: the save path (baseline + debounce, `loadSaved` for an
+  accepted change — still one revision per accept, checked), ghost text, @-mentions,
+  the review's keys (n / p, ⌘↵, Esc), every API.
+
 ## D62 — the Muse's connection and the password are changed in the app (3.2.0)
 "The user should be able to change the API key and password in the UI." Both were env-only,
 read once at boot: SSH, an editor, a container restart. **Settings → Muse & security** now

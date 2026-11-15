@@ -108,7 +108,7 @@ export default function SweepPanel({ series, onClose, onFix, onReview }) {
           extra={
             <span className="flex items-center gap-2">
               {usage && !busy && (
-                <span className="text-[10px] text-mute/60">
+                <span className="text-[12px] text-mute/60">
                   {usage.input} in · {usage.output} out
                 </span>
               )}
@@ -121,31 +121,31 @@ export default function SweepPanel({ series, onClose, onFix, onReview }) {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {error && (
-            <div className="mb-3 rounded-md border border-err/30 bg-err/10 px-3 py-2 text-[11px] text-err">
+            <div className="mb-3 rounded-lg border border-err/30 bg-err/10 px-3 py-2 text-[13px] text-err">
               {error}
             </div>
           )}
 
-          <div className="mb-2 text-[9.5px] uppercase tracking-wider text-mute/70">Continuity report</div>
+          <div className="mb-2 text-[11.5px] text-mute/70">Continuity report</div>
           {report ? (
             <div className="space-y-1">
               {rows.map((r, i) => {
                 if (r.kind === 'heading') {
                   return (
-                    <div key={i} className="pt-2 text-[11.5px] font-medium text-ink">{r.text}</div>
+                    <div key={i} className="pt-2 text-[13.5px] font-medium text-ink">{r.text}</div>
                   )
                 }
                 if (r.kind === 'text') {
                   return (
-                    <div key={i} className="whitespace-pre-wrap text-[12px] leading-relaxed text-mute">{r.text}</div>
+                    <div key={i} className="whitespace-pre-wrap text-[14px] leading-relaxed text-mute">{r.text}</div>
                   )
                 }
                 return (
-                  <div key={i} className="flex items-start gap-2 rounded-md border hairline px-2.5 py-1.5">
-                    <div className="min-w-0 flex-1 text-[12px] leading-relaxed text-ink/95">
+                  <div key={i} className="flex items-start gap-2 rounded-lg border hairline px-2.5 py-1.5">
+                    <div className="min-w-0 flex-1 text-[14px] leading-relaxed text-ink/95">
                       <span className="mr-1.5 inline-flex flex-wrap gap-1 align-middle">
                         {r.refs.map((ref) => (
-                          <span key={ref} className="rounded bg-panel-2 px-1.5 py-px text-[10px] text-accent/90">
+                          <span key={ref} className="rounded bg-panel-2 px-1.5 py-px text-[12px] text-accent/90">
                             {ref}
                           </span>
                         ))}
@@ -166,37 +166,37 @@ export default function SweepPanel({ series, onClose, onFix, onReview }) {
               })}
             </div>
           ) : (
-            <div className="text-[11.5px] text-mute/60">
+            <div className="text-[13.5px] text-mute/60">
               {reportBusy
                 ? 'Reading the whole book…'
                 : 'Run a sweep to audit canon, timeline, and character continuity across the manuscript.'}
             </div>
           )}
 
-          <div className="mb-2 mt-5 text-[9.5px] uppercase tracking-wider text-mute/70">Bible updates</div>
-          {note && <div className="mb-2 text-[11px] text-mute">{note}</div>}
+          <div className="mb-2 mt-5 text-[11.5px] text-mute/70">Bible updates</div>
+          {note && <div className="mb-2 text-[13px] text-mute">{note}</div>}
           {drafting && (
-            <div className="mb-2 rounded-md border border-accent/30 bg-accent/5 px-3 py-2">
-              <div className="mb-1 flex items-center gap-1.5 text-[10.5px] text-mute">
+            <div className="mb-2 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2">
+              <div className="mb-1 flex items-center gap-1.5 text-[12.5px] text-mute">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
                 drafting {drafting.name} — it opens for review when done
               </div>
-              <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap font-sans text-[11.5px] text-mute/80">
+              <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap font-sans text-[13.5px] text-mute/80">
                 {drafting.text}
               </pre>
             </div>
           )}
           <ul className="space-y-1">
             {bibleNames.map((name) => (
-              <li key={name} className="flex items-center justify-between rounded-md border hairline px-2.5 py-1.5">
-                <span className="truncate text-[12px] text-ink">{name}</span>
+              <li key={name} className="flex items-center justify-between rounded-lg border hairline px-2.5 py-1.5">
+                <span className="truncate text-[14px] text-ink">{name}</span>
                 <Button size="sm" onClick={() => propose(name)} disabled={busy}>
                   Propose update
                 </Button>
               </li>
             ))}
             {bibleNames.length === 0 && (
-              <li className="text-[11.5px] text-mute/60">No bible files yet.</li>
+              <li className="text-[13.5px] text-mute/60">No bible files yet.</li>
             )}
           </ul>
         </div>

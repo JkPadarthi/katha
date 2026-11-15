@@ -122,8 +122,8 @@ def test_login_page_renders_and_follows_the_themes(locked):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store"
     html = r.text
-    # all three theme token sets, exactly as desktop/src/index.css defines them
-    for token in ("#0e0e12", "#ffbf00", "#f6f1e7", "#9a5b17", "#0f1419", "#5aa2f0"):
+    # all four theme token sets, exactly as desktop/src/index.css defines them
+    for token in ("#fbfbf9", "#3b4cca", "#0e0e12", "#ffbf00", "#f6f1e7", "#9a5b17", "#0f1419", "#5aa2f0"):
         assert token in html, token
     assert "katha.theme" in html            # same OS-follow rule as the app
     assert 'type="password"' in html

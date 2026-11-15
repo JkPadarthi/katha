@@ -34,7 +34,9 @@ Nothing here holds a client of its own: `muse.py` passes its module-level
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 import httpx
 
@@ -104,11 +106,42 @@ def chat_url() -> str:
 def headers() -> dict[str, str]:
     """Auth headers. The key is a header, never a body field: it must never
     reach a log line, an error message, or an API response."""
-    if is_messages() and MUSE_API_KEY:
-        return {"x-api-key": MUSE_API_KEY, "anthropic-version": ANTHROPIC_VERSION}
-    if is_openai() and MUSE_API_KEY:
-        return {"Authorization": f"Bearer {MUSE_API_KEY}"}
-    return {}
+    return headers_for(MUSE_API, base_url(), MUSE_API_KEY)
+
+
+def headers_for(api: str, base: str, key: str) -> dict[str, str]:
+    """The headers one dialect wants at one address (4.1: also used to list models
+    for a connection that is not saved yet)."""
+    out: dict[str, str] = {}
+    if api in MESSAGES_SHAPES:
+        # the version pin goes even without a key: native Anthropic rejects a request
+        # that lacks it, and a gateway ignores it
+        out["anthropic-version"] = ANTHROPIC_VERSION
+        if key:
+            out["x-api-key"] = key
+    elif api == OPENAI and key:
+        out["Authorization"] = f"Bearer {key}"
+    if _host(base).endswith("openrouter.ai"):
+        # OpenRouter's optional app attribution — no personal data, just the app name
+        out["X-Title"] = "Katha"
+    return out
+
+
+def _host(base: str) -> str:
+    try:
+        return (urlparse(base).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+# OpenAI's own reasoning models (o1, o3, o4-mini, gpt-5…) take only the default
+# temperature, and every OpenAI model now names the ceiling `max_completion_tokens`
+# (`max_tokens` is refused by the reasoning ones). Gateways keep the classic names.
+_OPENAI_REASONING = re.compile(r"^(o\d|gpt-5)", re.I)
+
+
+def _is_openai_native() -> bool:
+    return _host(base_url()) == "api.openai.com"
 
 
 def timeout() -> httpx.Timeout:
@@ -188,10 +221,11 @@ def to_openai_payload(payload: dict) -> dict:
         "messages": to_openai_messages(payload.get("messages") or []),
         "stream": bool(payload.get("stream")),
     }
+    native = _is_openai_native()
     if "num_predict" in opts:
         # Internal `num_predict` is Ollama's name for the completion ceiling.
-        body["max_tokens"] = opts["num_predict"]
-    if "temperature" in opts:
+        body["max_completion_tokens" if native else "max_tokens"] = opts["num_predict"]
+    if "temperature" in opts and not (native and _OPENAI_REASONING.match(str(body["model"] or ""))):
         body["temperature"] = opts["temperature"]
     if payload.get("tools"):
         # Already OpenAI shape internally ({"type": "function", "function": …}).
@@ -569,3 +603,53 @@ async def complete(payload: dict, client: httpx.AsyncClient) -> dict:
     r.raise_for_status()
     obj = r.json()
     return {"message": {"content": (obj.get("message") or {}).get("content") or ""}}
+
+
+# --- listing a provider's models (4.1) -------------------------------------
+
+def _format_of(row: dict) -> str | None:
+    """A gateway that publishes `supported_endpoints` per model (D42) says which wire
+    format the model needs: 'messages' when it is served only on /messages, 'openai'
+    when /chat/completions is offered. None when the gateway doesn't say."""
+    eps = row.get("supported_endpoints") if isinstance(row, dict) else None
+    if not isinstance(eps, list) or not eps:
+        return None
+    eps = [str(e) for e in eps]
+    if any(e.endswith("/chat/completions") for e in eps):
+        return OPENAI
+    if any(e.endswith("/messages") for e in eps):
+        return MESSAGES
+    return None
+
+
+async def list_models(api: str, base: str, key: str, client: httpx.AsyncClient) -> list[str]:
+    """The model ids a connection offers, so the author picks one instead of typing it."""
+    return (await models_and_formats(api, base, key, client))[0]
+
+
+async def models_and_formats(api: str, base: str, key: str,
+                             client: httpx.AsyncClient) -> tuple[list[str], dict[str, str]]:
+    """One request for both: the model ids, and {id: wire format} for the models whose
+    gateway says which endpoint they need (Command Code, OpenCode — D42).
+
+    Ollama: `GET {base}/api/tags`. Everything else — OpenAI, OpenRouter, OpenCode,
+    Anthropic, most gateways — answers `GET {base}/models` with `{"data": [{"id": …}]}`."""
+    base = (base or "").rstrip("/")
+    formats: dict[str, str] = {}
+    if api == OLLAMA:
+        r = await client.get(f"{base}/api/tags", timeout=timeout())
+        r.raise_for_status()
+        names = [m.get("name") or m.get("model") for m in (r.json().get("models") or [])]
+    else:
+        r = await client.get(f"{base}/models", headers=headers_for(api, base, key), timeout=timeout())
+        r.raise_for_status()
+        data = r.json()
+        rows = data.get("data") if isinstance(data, dict) else data
+        names = []
+        for m in rows or []:
+            mid = m.get("id") if isinstance(m, dict) else m
+            names.append(mid)
+            f = _format_of(m) if isinstance(m, dict) else None
+            if f and isinstance(mid, str):
+                formats[mid] = f
+    return sorted({n for n in names if isinstance(n, str) and n}), formats

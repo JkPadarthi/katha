@@ -1,6 +1,7 @@
 # Katha — Status
 
-**3.1** — the Muse works like an AI IDE: it edits chapters and bible files itself
+**4.0** — One Page: the manuscript has the window and the Muse sits in a dock beneath it
+(D63). Since **3.1** the Muse works like an AI IDE: it edits chapters and bible files itself
 with targeted edits, and every change waits for the author's per-hunk review before
 anything is saved. The app ships as an installable PWA, with reading mode, writing
 rituals, revision history and EPUB delivery. The client is served from the
@@ -69,6 +70,22 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **4.1.0** — the Muse picks a provider (D64): Claude, OpenAI, OpenRouter, Command Code, OpenCode Go, OpenCode Zen,
+  Gemini, DeepSeek, Mistral, Groq, xAI, Ollama, LM Studio or Custom — a preset fills the
+  format and address; "Load models" lists the provider's own models. OpenAI's own parameter
+  names handled. Themes renamed Light and Dark. Chapter title 30px.
+- **4.0.1** — fixes from the first real use: page width is a choice (Narrow 680 / Medium 860 /
+  Wide 1040, in the ••• menu and ⌘K; default Medium; the type stays 19px at every width) and the dock
+  follows it; a long chapter title wraps instead of running off the page; Settings, New book,
+  Book details and the delete dialog scroll when taller than the window (so does the book menu
+  with many chapters, and the dock's list of waiting files); text fades out under the dock;
+  "New book" is reachable from the book menu with only one book.
+- **4.0.0** — One Page (D63): the whole UI redone. The manuscript gets the window; a
+  breadcrumb opens the book; the Muse is a dock at the bottom (pending changes, the latest
+  reply, the composer — a selection edits that passage); changes are marked in the prose
+  where they land, on a phone too; the conversation opens beside the page or as a sheet.
+  Day (indigo) and Hermes (black + gold) themes, Literata + Inter bundled. `App.jsx` split
+  into `lib/useBook`, `useMuse`, `useReview`, `useStats` and `shell/`.
 - **3.2.0** — the Muse's provider, address, API key and models, and the lock's password, are
   changed in the app (Settings → Muse & security), live, without SSH or a restart (D62). The key
   is write-only (never returned, only its last four), follows its address (a new address clears

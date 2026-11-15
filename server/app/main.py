@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+import secrets
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,6 +29,7 @@ from . import auth
 from . import db
 from . import epub
 from . import hunks as hunks_mod
+from . import settings_store
 from . import stats
 from . import trash
 from .config import (
@@ -50,8 +53,11 @@ from .schemas import (
     ChapterOut,
     ChapterUpdate,
     CoverIn,
+    CurrentPasswordIn,
     HealthOut,
     LoginIn,
+    MuseSettingsIn,
+    PasswordChangeIn,
     MuseChatRequest,
     MuseCompleteRequest,
     MuseRewriteRequest,
@@ -74,6 +80,10 @@ async def lifespan(_app: FastAPI):
     # app boots even before seed.py has run.
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     ar.migrate_archive()
+    # Settings changed in the app win over the environment (3.2, D62). Only when the
+    # file exists: an install that never opened them must boot exactly as before.
+    if settings_store.path().is_file():
+        settings_store.apply()
     # Pre-2.4 Muse threads were named after the chapter alone, so different books
     # shared one conversation. Attribute each of them to its book once (2.4.1).
     adopted = muse_mod.migrate_legacy_threads()
@@ -150,6 +160,151 @@ def logout(response: Response):
     """Drop the session. Public on purpose: logging out must never 401."""
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"ok": True}
+
+
+# ---------- settings changed in the app: the Muse's brain, the lock (3.2, D62) ----
+# Both used to be env-only. Every change here asks for the current password while
+# the lock is on — the address and key decide where the whole manuscript is sent,
+# and a borrowed session must not be enough to redirect it or to lock the author out.
+
+_URL_RE = re.compile(r"^https?://[^\s/]+", re.I)
+
+
+def _require_password(current: str, request: Request) -> None:
+    if not auth.enabled():
+        return
+    ip = request.client.host if request.client else "?"
+    if auth.blocked(ip):
+        raise HTTPException(429, "too many attempts — wait a few minutes")
+    if not auth.verify(current or ""):
+        auth.record_failure(ip)
+        raise HTTPException(403, "that isn't your current password")
+    auth.clear_failures(ip)
+
+
+def _settings_out(note: str = "") -> dict:
+    data = settings_store.load()
+    eff = settings_store.effective_muse(data)
+    pw = data.get("password") or {}
+    lock_source = ("app" if (pw.get("hash") or pw.get("disabled"))
+                   else "environment" if auth.PASSWORD else "none")
+    out = {
+        "lock": {"enabled": auth.enabled(), "source": lock_source},
+        "muse": {
+            "api": eff["api"],
+            "base": eff["base"],
+            "agent_model": eff["agent_model"],
+            "rewrite_model": eff["rewrite_model"],
+            "source": eff["source"],
+            # The key itself is never sent back — only whether there is one.
+            "key_set": bool(eff["key"]),
+            "key_hint": settings_store.key_hint(eff["key"]),
+        },
+        "dialects": list(settings_store.DIALECTS),
+    }
+    if note:
+        out["note"] = note
+    return out
+
+
+@app.get("/api/settings", tags=["settings"])
+def get_settings():
+    return _settings_out()
+
+
+@app.put("/api/settings/muse", tags=["settings"])
+def put_muse_settings(body: MuseSettingsIn, request: Request):
+    """Point the Muse at a brain. Takes effect on the next request — no restart."""
+    _require_password(body.current_password, request)
+    api = settings_store.normalize_dialect(body.api)
+    if api not in settings_store.DIALECTS:
+        raise HTTPException(400, f"unknown dialect {body.api!r}")
+    base = (body.base or "").strip().rstrip("/")
+    if base and not _URL_RE.match(base):
+        raise HTTPException(400, "the address must start with http:// or https://")
+    if api != "ollama" and not base:
+        raise HTTPException(400, "a gateway dialect needs its address (base URL)")
+
+    data = settings_store.load()
+    before = settings_store.effective_muse(data)
+    muse = dict(data.get("muse") or {})
+    muse.update(api=api, base=base,
+                agent_model=(body.agent_model or "").strip(),
+                rewrite_model=(body.rewrite_model or "").strip())
+    note = ""
+    if body.key is not None:
+        muse["key"] = body.key.strip()
+    elif before["key"] and base != before["base"].rstrip("/"):
+        # Never send a key to an address it wasn't given for: whoever changes the
+        # address must also supply the key that belongs to it.
+        muse["key"] = ""
+        if api != "ollama":           # Ollama takes no key: nothing to re-enter
+            note = ("The API key was cleared because the address changed — enter the "
+                    "key for the new address.")
+    data["muse"] = muse
+    settings_store.save(data)
+    settings_store.apply(data)
+    return _settings_out(note)
+
+
+@app.post("/api/settings/muse/reset", tags=["settings"])
+def reset_muse_settings(body: CurrentPasswordIn, request: Request):
+    """Forget the app's Muse settings and go back to the environment's."""
+    _require_password(body.current_password, request)
+    data = settings_store.load()
+    data.pop("muse", None)
+    settings_store.save(data)
+    settings_store.apply(data)
+    return _settings_out()
+
+
+@app.post("/api/settings/muse/test", tags=["settings"])
+async def test_muse_settings():
+    """One tiny round trip to the brain as configured now, so a typo in an address or
+    a key shows up here and not in the middle of a chapter."""
+    from . import upstream as up_mod
+    payload = {
+        "model": muse_mod.MUSE_AGENT_MODEL,
+        "messages": [{"role": "user", "content": "Reply with the single word: ready"}],
+        "stream": False,
+        # roomy on purpose: a thinking model reasons before it answers (D53)
+        "options": {"num_predict": 1024, "temperature": 0},
+    }
+    try:
+        obj = await up_mod.complete(payload, muse_mod._client)
+        text = muse_mod.strip_think((obj.get("message") or {}).get("content") or "").strip()
+        return {"ok": True, "model": muse_mod.MUSE_AGENT_MODEL, "reply": text[:120]}
+    except Exception as e:  # report it, never raise it: this is a diagnostic
+        msg = " ".join(f"{type(e).__name__}: {e}".split())
+        key = up_mod.MUSE_API_KEY
+        if key:
+            msg = msg.replace(key, "…")
+        return {"ok": False, "model": muse_mod.MUSE_AGENT_MODEL, "detail": msg[:300]}
+
+
+@app.put("/api/settings/password", tags=["settings"])
+def change_password(body: PasswordChangeIn, request: Request, response: Response):
+    """Set, change or remove the lock's password.
+
+    Every other session is signed out (the signing key moves with the password); the
+    device that made the change gets a fresh cookie so it stays signed in."""
+    _require_password(body.current, request)
+    data = settings_store.load()
+    if body.disable:
+        data["password"] = {"disabled": True}
+    else:
+        new = body.new or ""
+        if len(new) < 8:
+            raise HTTPException(400, "use at least 8 characters")
+        data["password"] = {**settings_store.hash_password(new),
+                            "epoch": secrets.token_hex(8)}
+    settings_store.save(data)
+    settings_store.apply(data)
+    if auth.enabled():
+        response.set_cookie(value=auth.issue_token(), **auth.cookie_kwargs(request))
+    else:
+        response.delete_cookie(COOKIE_NAME, path="/")
+    return _settings_out()
 
 
 def reindex_search():

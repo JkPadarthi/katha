@@ -133,6 +133,38 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D62 — the Muse's connection and the password are changed in the app (3.2.0)
+"The user should be able to change the API key and password in the UI." Both were env-only,
+read once at boot: SSH, an editor, a container restart. **Settings → Muse & security** now
+changes the provider (Ollama / OpenAI-compatible / Messages), address, key and models, and the
+lock's password, live.
+
+* **Stored in `KATHA_DATA/settings.json`** — outside the checkout on the deploy host (D25), and
+  *not* in the nightly backup, which takes the Markdown and the SQLite file only. Written
+  atomically, mode 0600. A value set there wins over the environment; anything never set there
+  falls back to it, so an install that never opens the panel boots exactly as before (the file is
+  only applied when it exists).
+* **The key is write-only.** No endpoint returns it — `key_set` and its last four characters.
+  The connection test scrubs it from any error it reports.
+* **A key follows its address.** Changing the base URL without entering a key clears the stored
+  key: whoever redirects the Muse must also supply the key for the new address, so a key is never
+  sent somewhere it wasn't given for.
+* **The current password guards every change** while the lock is on (403, and it counts toward
+  the login throttle). The address decides where the whole manuscript is sent; a borrowed session
+  must not be enough to redirect it, or to lock the author out.
+* **The password is stored only as scrypt with its own random salt**, plus a random *epoch*
+  regenerated on every change and mixed into the session signing key — so a change signs out
+  every other device even when `KATHA_SECRET_KEY` pins the key. The device that made the change
+  is issued a fresh cookie and stays in. Turning the lock off is stored too, so it survives a
+  restart with `KATHA_PASSWORD` still in the environment.
+* **Live without a restart**: the store pushes its values into the module globals the Muse
+  already reads at call time — the same ones the test suite patches.
+* **Save & test**: every save makes one tiny round trip to the new brain, so a typo in an address
+  or a dead key shows up in Settings, not in the middle of a chapter.
+
+Going back: *Use environment settings* forgets the app's Muse settings; deleting
+`settings.json` forgets everything, password included.
+
 ## D61 — an accepted change is loaded as saved, never re-saved (3.1.0)
 Accepting a Muse change called the editor's `replaceAll`, which set the text but left the
 editor's saved baseline on the *old* text — so 900ms later autosave wrote the same chapter again.

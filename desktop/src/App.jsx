@@ -7,6 +7,7 @@ import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
 import ProposalReview from './components/ProposalReview.jsx'
 import HistoryPanel from './components/HistoryPanel.jsx'
+import SecurityPanel from './components/SecurityPanel.jsx'
 import SweepPanel from './components/SweepPanel.jsx'
 import BiblePanel from './components/BiblePanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
@@ -47,6 +48,7 @@ export default function App() {
   const [proposal, setProposal] = useState(null)
   const [proposalBusy, setProposalBusy] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [securityOpen, setSecurityOpen] = useState(false)
   const [ghostOn, setGhostOn] = useState(() => getSetting('ghost', false))
   // Inline edit on a selection (3.1): null = closed, else {text: instruction}.
   const [inlineAsk, setInlineAsk] = useState(null)
@@ -409,6 +411,7 @@ export default function App() {
       setBibleKey((k) => k + 1)
     } else if (saved.id === activeChapter && editorApi.loadSaved) {
       editorApi.loadSaved(saved.content, saved.title, saved.revision)
+      setSelection(null)       // its offsets point into the text that was just replaced
     }
   }
 
@@ -510,7 +513,7 @@ export default function App() {
         onHistory={() => setHistoryOpen(true)}
         ghost={ghostOn}
       />
-      {selection && selection.text && !rewriteOpen && !inlineAsk && (
+      {selection && selection.text && !rewriteOpen && !inlineAsk && !inlineReview && (
         <div className="absolute right-6 top-6 z-30 flex items-center gap-1.5">
           <button
             onClick={openInline}
@@ -589,7 +592,8 @@ export default function App() {
           run: () => api.exportEpub(series.series, series.book, `${series.book}.epub`).catch(() => {})
         }]
       : []),
-    { id: 'settings', label: 'Settings', hint: '', run: () => setSettingsOpen(true) }
+    { id: 'settings', label: 'Settings', hint: '', run: () => setSettingsOpen(true) },
+    { id: 'security', label: 'Muse & security (provider, API key, password)', hint: 'Settings', run: () => setSecurityOpen(true) }
   ]
 
   return (
@@ -796,12 +800,14 @@ export default function App() {
           onNudge={(v) => { setNudgeOn(v); setSetting('nudge', v) }}
           ghost={ghostOn}
           onGhost={(v) => { setGhostOn(v); setSetting('ghost', v) }}
+          onOpenSecurity={() => setSecurityOpen(true)}
           onClose={() => setSettingsOpen(false)}
           onRestored={refreshArchive}
           theme={theme}
           onChooseTheme={choose}
         />
       )}
+      {securityOpen && <SecurityPanel onClose={() => setSecurityOpen(false)} />}
       {newBookOpen && (
         <NewBookDialog onClose={() => setNewBookOpen(false)} onCreated={onBookCreated} />
       )}

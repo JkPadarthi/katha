@@ -423,3 +423,48 @@ export async function exportEpub(series, bookId, filename) {
   URL.revokeObjectURL(url)
 }
 
+// --- settings changed in the app: the Muse's brain + the lock (3.2) --------
+// The API key is write-only: the server never sends it back, only `key_set` and a
+// `key_hint` (its last four characters). Every change asks for the current password
+// while the lock is on. Errors carry the server's own sentence (`detail`).
+async function settingsReq(path, method, body) {
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  })
+  handleAuth(res)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.detail || `${res.status} ${res.statusText}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
+export function getSettings() {
+  return settingsReq('/settings', 'GET')
+}
+
+// key: undefined/null = keep the stored key, '' = remove it, else the new key
+export function saveMuseSettings({ api, base, key, agentModel, rewriteModel, currentPassword }) {
+  const body = {
+    api, base: base || '', agent_model: agentModel || '', rewrite_model: rewriteModel || '',
+    current_password: currentPassword || ''
+  }
+  if (key !== undefined && key !== null) body.key = key
+  return settingsReq('/settings/muse', 'PUT', body)
+}
+
+export function resetMuseSettings(currentPassword) {
+  return settingsReq('/settings/muse/reset', 'POST', { current_password: currentPassword || '' })
+}
+
+export function testMuseConnection() {
+  return settingsReq('/settings/muse/test', 'POST')
+}
+
+export function changePassword({ current, next, disable = false }) {
+  return settingsReq('/settings/password', 'PUT', { current: current || '', new: next || '', disable })
+}

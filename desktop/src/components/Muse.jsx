@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as api from '../lib/api.js'
 import { editorApi } from './Editor.jsx'
 import { fileLabel } from './ProposalReview.jsx'
@@ -64,6 +64,7 @@ export default function Muse({ series, chapter, book, onReview }) {
   const threadRef = useRef(null)
   const composerRef = useRef(null)
   const queuedRef = useRef(null)                 // an ask() waiting for its chapter to open
+  const caretRef = useRef(null)                  // where the caret goes after a mention pick
 
   // `series/book/ch-NN` — tells the server which story to read (canon context
   // + the agentic tools). Null when nothing is open.
@@ -246,15 +247,21 @@ export default function Muse({ series, chapter, book, onReview }) {
     const ta = composerRef.current
     const caret = ta ? ta.selectionStart : draft.length
     const next = draft.slice(0, mention.start) + '@' + f.token + ' ' + draft.slice(caret)
+    caretRef.current = mention.start + f.token.length + 2
     setDraft(next)
     setMention(null)
-    requestAnimationFrame(() => {
-      if (!ta) return
-      const c = mention.start + f.token.length + 2
-      ta.focus()
-      ta.setSelectionRange(c, c)
-    })
   }
+
+  // Place the caret after a picked mention *before* the next keystroke is handled — a
+  // requestAnimationFrame here lost the race to fast typing and spliced the words.
+  useLayoutEffect(() => {
+    const c = caretRef.current
+    const ta = composerRef.current
+    if (c == null || !ta) return
+    caretRef.current = null
+    ta.focus()
+    ta.setSelectionRange(c, c)
+  }, [draft])
 
   const onComposerKey = (e) => {
     if (mention && matches.length) {

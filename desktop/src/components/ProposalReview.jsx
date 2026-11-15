@@ -259,12 +259,12 @@ export default function ProposalReview({
                 </div>
                 {h.before.trim() && (
                   <div className={'whitespace-pre-wrap text-err/80 line-through ' + prose}>
-                    {h.before}
+                    {h.before.trim()}
                   </div>
                 )}
                 {h.after.trim() && (
                   <div className={'mt-0.5 whitespace-pre-wrap text-ink ' + prose}>
-                    {h.after}
+                    {h.after.trim()}
                   </div>
                 )}
               </div>

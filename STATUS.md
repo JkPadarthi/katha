@@ -69,6 +69,14 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.2.0** — the Muse's provider, address, API key and models, and the lock's password, are
+  changed in the app (Settings → Muse & security), live, without SSH or a restart (D62). The key
+  is write-only (never returned, only its last four), follows its address (a new address clears
+  it), and every change asks for the current password. A new password signs out every other
+  device and keeps this one in. *Save & test* checks the connection on the spot. Also from
+  the UI check: the command palette now finds commands by typing ("sweep", "history"), a fast
+  typist no longer splices words after picking an @-mention, accepting a change clears the stale
+  selection buttons, and the review trims trailing blank lines. 268 tests.
 - **3.1.0** — the Muse as an IDE (D54–D61). It **edits** now, it doesn't just suggest:
   `edit_file` makes targeted find/replace edits to any chapter or bible file (even a new
   one), and every edit is staged for review — nothing is saved until the author accepts.
@@ -310,10 +318,9 @@ serves Claude models in the Messages shape (2.7.0).
 - Dogfood the IDE loop in a browser: ask → staged edits → inline review → partial
   accept → keep typing → replayed draft → accept the rest; a multi-file rename; Fix
   from the sweep; history restore; ghost text on each dialect. Three themes + mobile.
-- Later: a settings affordance for the Muse dialect (today it's env-only).
 
 ## Verify
-- Server: `cd server && .venv/bin/python -m pytest -q` (246 tests; Python 3.12 —
+- Server: `cd server && .venv/bin/python -m pytest -q` (268 tests; Python 3.12 —
   the pins in requirements.txt need it, and `hashlib.scrypt` is missing from Apple's
   system Python).
 - Client: `cd desktop && npm run build`.

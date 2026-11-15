@@ -50,6 +50,22 @@ export default function CommandPalette({ onClose, onJump, onOpenHit, archive, se
     return b?.chapters || []
   }, [archive, series])
   const showChapters = !q.trim()
+  // Typing filters the commands too (3.1): "sweep" finds Canon sweep, "hist" finds
+  // Revision history — the palette is how an IDE reaches what has no button.
+  const matched = useMemo(() => {
+    const term = q.trim().toLowerCase()
+    if (!term) return commands
+    return commands.filter((c) => c.label.toLowerCase().includes(term))
+  }, [q, commands])
+  const runFirst = () => {
+    if (matched.length) { matched[0].run(); onClose(); return }
+    const h = Array.isArray(hits) && hits[0]
+    if (h) {
+      if (onOpenHit) onOpenHit(h)
+      else if (h.kind === 'chapter') onJump(h.doc_id)
+      onClose()
+    }
+  }
 
   return (
     <Overlay onClose={onClose} width={560} padTop="18vh" z={50}>
@@ -59,13 +75,14 @@ export default function CommandPalette({ onClose, onJump, onOpenHit, archive, se
           ref={inputRef}
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); runFirst() } }}
           placeholder="Search chapters and canon…"
           className="w-full bg-transparent py-2.5 text-[13px] text-ink placeholder:text-mute/50 focus:outline-none"
         />
       </div>
 
       <ul className="max-h-[340px] overflow-y-auto p-1.5">
-        {showChapters && commands.map((cmd) => (
+        {matched.map((cmd) => (
           <li key={cmd.id}>
             <button
               onClick={() => { cmd.run(); onClose() }}
@@ -118,7 +135,7 @@ export default function CommandPalette({ onClose, onJump, onOpenHit, archive, se
           </li>
         ))}
 
-        {!showChapters && Array.isArray(hits) && hits.length === 0 && (
+        {!showChapters && Array.isArray(hits) && hits.length === 0 && !matched.length && (
           <li className="px-2.5 py-3 text-center text-[12px] text-mute">No roads lead there.</li>
         )}
       </ul>

@@ -37,6 +37,11 @@ from .config import SECRET_KEY as _CFG_SECRET_KEY
 # Live values (monkeypatchable; config supplies the initial ones).
 PASSWORD = _CFG_PASSWORD
 SECRET_KEY = _CFG_SECRET_KEY
+# Set from the app's Settings (3.2, D62) — see settings_store.apply(). A stored
+# hash wins over the env password; LOCK_DISABLED is the author turning the lock
+# off in the app, which must survive a restart even with KATHA_PASSWORD still set.
+PASSWORD_HASH: dict | None = None     # {"salt", "hash", "epoch"}
+LOCK_DISABLED = False
 
 # --- paths that stay reachable without a session -------------------------------
 
@@ -69,10 +74,19 @@ def is_public(path: str) -> bool:
 
 def enabled() -> bool:
     """The lock is only armed when a password is configured."""
-    return bool(PASSWORD)
+    if LOCK_DISABLED:
+        return False
+    return bool(PASSWORD_HASH or PASSWORD)
 
 
 def signing_key() -> str:
+    if PASSWORD_HASH:
+        # A password set in the app carries a random epoch, regenerated on every
+        # change: every existing session is signed out, even when KATHA_SECRET_KEY
+        # pins the key (which would otherwise survive a password change).
+        base = SECRET_KEY or PASSWORD_HASH.get("hash", "")
+        return hashlib.sha256(
+            f"katha-auth-v2:{base}:{PASSWORD_HASH.get('epoch', '')}".encode()).hexdigest()
     if SECRET_KEY:
         return SECRET_KEY
     # Derived: rotating the password silently invalidates every session.
@@ -91,6 +105,9 @@ def verify(password: str) -> bool:
     """Constant-time check. Always False when no password is configured."""
     if not enabled():
         return False
+    if PASSWORD_HASH:
+        from .settings_store import check_password
+        return check_password(password, PASSWORD_HASH)
     return hmac.compare_digest(hash_password(password), hash_password(PASSWORD))
 
 

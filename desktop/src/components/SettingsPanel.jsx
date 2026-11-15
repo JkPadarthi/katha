@@ -23,7 +23,7 @@ const size = (n) =>
 
 const when = (iso) => (iso || '').replace('T', ' ').replace('Z', ' UTC')
 
-export default function SettingsPanel({ goal, onGoal, nudge, onNudge, ghost, onGhost, onClose, onRestored, theme, onChooseTheme }) {
+export default function SettingsPanel({ goal, onGoal, nudge, onNudge, ghost, onGhost, onOpenSecurity, onClose, onRestored, theme, onChooseTheme }) {
   const [trash, setTrash] = useState(null)     // null = still reading
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -157,6 +157,18 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, ghost, onG
             className="h-4 w-4 shrink-0 accent-accent"
           />
         </label>
+
+        {onOpenSecurity && (
+          <div className="flex items-center justify-between gap-4 border-t hairline pt-3">
+            <span className="text-[11px] text-mute">
+              Muse & security
+              <span className="mt-0.5 block text-[10px] text-mute/60">
+                Which AI the Muse uses (provider, address, API key, models) and the password.
+              </span>
+            </span>
+            <Button size="sm" onClick={onOpenSecurity}>Open…</Button>
+          </div>
+        )}
 
         {/* Trash — the revive half of delete */}
         <div className="border-t hairline pt-3">

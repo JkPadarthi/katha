@@ -178,3 +178,24 @@ class NotesUpdate(BaseModel):
 class LoginIn(BaseModel):
     password: str
 
+
+# --- settings changed in the app (3.2, D62) --------------------------------
+
+class MuseSettingsIn(BaseModel):
+    api: str
+    base: str = ""
+    # None = keep the stored key; "" = clear it; anything else = the new key.
+    key: str | None = None
+    agent_model: str = ""
+    rewrite_model: str = ""
+    current_password: str = ""        # required whenever the lock is on
+
+
+class PasswordChangeIn(BaseModel):
+    current: str = ""
+    new: str = ""
+    disable: bool = False              # turn the lock off (still needs `current`)
+
+
+class CurrentPasswordIn(BaseModel):
+    current_password: str = ""

@@ -29,7 +29,7 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
   `Button`, `Field`). Components: `TitleBar`, `ThemePicker`, `Rail`, `Editor`
   (autosave, ghost text), `ReadingView`, `Muse` (chat, @-mentions, pending changes,
   token meter), `ProposalReview` (per-hunk review, inline or modal, multi-file),
-  `HistoryPanel`, `CommandPalette`, `DiffOverlay`, `SweepPanel` (located issues +
+  `HistoryPanel`, `SecurityPanel` (provider, key, password), `CommandPalette`, `DiffOverlay`, `SweepPanel` (located issues +
   Fix), `BiblePanel`, `RitualsCard`, `SettingsPanel`, `NewBookDialog`,
   `BookDetailsDialog`, `ConfirmDeleteDialog`. `public/sw.js` caches the shell only.
 - **Server** (`server/app/`) — `main.py` (HTTP + SSE + static PWA + the lock),
@@ -37,7 +37,8 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
   + FTS5), `muse.py` (the Muse: agentic chat with story tools, staged edits,
   rewrite, ghost text, canon sweep), `upstream.py` (the three wire dialects),
   `hunks.py` (word-level hunks + partial merge), `prose.py` (paragraph rule),
-  `epub.py`, `stats.py`, `trash.py`, `auth.py`, `config.py`.
+  `epub.py`, `stats.py`, `trash.py`, `auth.py`, `settings_store.py` (settings
+  changed in the app), `config.py`.
   `seed.py` bootstraps sample data; `tests/` cover all of it.
 
 ## The Muse as an IDE (3.1)
@@ -72,6 +73,10 @@ author's `bible/rules.md`, and any `@`-mentioned files.
   .katha/stats/writing.jsonl     # writing-ritual log (1.0)
 ```
 
+`KATHA_DATA/settings.json` (0600, beside the index, not in backups) holds what the
+author changed in Settings → Muse & security: the Muse's connection and the password
+(as a salted scrypt hash). It wins over the environment when present (D62).
+
 SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 `search_index` — rebuildable from the md at any time.
 
@@ -81,6 +86,10 @@ SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 |---|---|---|
 | GET | `/api/health` | status + version + db heartbeat (public) |
 | POST | `/api/auth/login` · `/api/auth/logout` | the lock (D32) |
+| GET | `/api/settings` | Muse connection (key never returned) + lock state |
+| PUT | `/api/settings/muse` | provider, address, key, models (current password) |
+| POST | `/api/settings/muse/reset` · `/api/settings/muse/test` | back to env · test the connection |
+| PUT | `/api/settings/password` | set / change / turn off the lock (current password) |
 | GET / POST | `/api/books` | series → books tree / create series + book |
 | PUT | `/api/books/{series}/{book}/meta` | author (per book) |
 | GET / PUT / DELETE | `/api/books/{series}/{book}/cover` | cover image (normalised) |

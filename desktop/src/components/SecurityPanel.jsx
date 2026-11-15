@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import * as api from '../lib/api.js'
 import Overlay, { OverlayHeader } from '../ui/Overlay.jsx'
 import { Field, TextInput } from '../ui/Field.jsx'
@@ -49,6 +49,10 @@ export default function SecurityPanel({ onClose }) {
   const [models, setModels] = useState(null)    // null = not loaded; [] = none
   const [formats, setFormats] = useState({})    // model id -> 'openai' | 'messages', when the gateway says
   const [modelsMsg, setModelsMsg] = useState('')
+  const [modelsErr, setModelsErr] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [pickFor, setPickFor] = useState('chat')   // which field a click in the list fills
+  const loadRef = useRef(0)                       // the latest Load; older answers are ignored
 
   const adopt = (data) => {
     setS(data)
@@ -88,8 +92,13 @@ export default function SecurityPanel({ onClose }) {
 
   const pickProvider = (id) => {
     const p = providerById(id)
+    // a Load still in flight belongs to the provider we are leaving: forget it
+    loadRef.current += 1
+    if (busy === 'models') setBusy('')
     setModels(null)
     setModelsMsg('')
+    setModelsErr(false)
+    setFilter('')
     if (id === detectProvider(s.muse.api, s.muse.base)) {
       // back to the one in use: its own address and models come back
       set({ provider: id, api: s.muse.api, base: s.muse.base, agentModel: s.muse.agent_model, rewriteModel: s.muse.rewrite_model })
@@ -99,26 +108,42 @@ export default function SecurityPanel({ onClose }) {
   }
 
   const loadModels = async () => {
+    const mine = ++loadRef.current
     setBusy('models')
     setModelsMsg('')
+    setModelsErr(false)
+    setFilter('')
     try {
       const r = await api.listMuseModels({
         api: form.api, base: form.base, key: form.key.trim() || null, currentPassword: current
       })
+      if (mine !== loadRef.current) return
       if (r.ok) {
         setModels(r.models)
         setFormats(r.formats || {})
-        setModelsMsg(r.models.length ? `${r.models.length} models — type to filter.` : 'The provider listed no models.')
+        setModelsMsg(r.models.length ? `${r.models.length} models — click one to use it.` : 'The provider listed no models.')
       } else {
-        setModels([])
+        setModels(null)
+        setModelsErr(true)
         setModelsMsg(`Couldn't list models: ${r.detail}`)
       }
     } catch (e) {
+      if (mine !== loadRef.current) return
+      setModelsErr(true)
       setModelsMsg(e.message)
     } finally {
-      setBusy('')
+      if (mine === loadRef.current) setBusy('')
     }
   }
+
+  // Use a model from the list: the chat field (and the format, when the gateway said
+  // which one this model needs — D42), or the rewrite field.
+  const useModel = (m) => {
+    if (pickFor === 'rewrite') { set({ rewriteModel: m }); return }
+    const f = prov.wire && formats[m]
+    set(f && f !== form.api ? { agentModel: m, api: f } : { agentModel: m })
+  }
+  const shown = (models || []).filter((m) => !filter.trim() || m.toLowerCase().includes(filter.trim().toLowerCase()))
 
   const saveMuse = async () => {
     setBusy('muse')
@@ -299,13 +324,51 @@ export default function SecurityPanel({ onClose }) {
                       title="Ask the provider which models it offers">
                 {busy === 'models' ? 'Loading…' : 'Load models'}
               </Button>
-              <span className="min-w-0 flex-1 text-[12.5px] text-mute">
-                {modelsMsg || 'Pick from the provider’s own list instead of typing a name.'}
+              <span className={'min-w-0 flex-1 text-[12.5px] ' + (modelsErr ? 'text-err' : 'text-mute')} role="status">
+                {busy === 'models' ? 'Asking the provider…' : modelsMsg || 'Pick from the provider’s own list instead of typing a name.'}
               </span>
             </div>
-            <datalist id="muse-models">
-              {(models || []).map((m) => <option key={m} value={m} />)}
-            </datalist>
+            {models && models.length > 0 && (
+              <div className="rounded-xl border hairline">
+                <div className="flex flex-wrap items-center gap-2 border-b hairline p-2">
+                  <input
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                    placeholder={`Filter ${models.length} models…`}
+                    aria-label="Filter models"
+                    className="h-9 min-w-0 flex-1 rounded-lg bg-base px-3 text-[13.5px] text-ink placeholder:text-mute/70 focus:outline-none"
+                  />
+                  <div role="group" aria-label="Clicking a model sets" className="flex rounded-lg border hairline p-0.5 text-[12.5px]">
+                    {[['chat', 'Chat'], ['rewrite', 'Rewrite']].map(([id, label]) => (
+                      <button key={id} onClick={() => setPickFor(id)} aria-pressed={pickFor === id}
+                              className={'h-7 rounded-md px-2.5 ' + (pickFor === id ? 'bg-accent/12 font-medium text-accent' : 'text-mute hover:text-ink')}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <ul className="max-h-56 overflow-y-auto overscroll-contain p-1" aria-label="Models">
+                  {shown.map((m) => {
+                    const on = m === (pickFor === 'rewrite' ? form.rewriteModel : form.agentModel)
+                    return (
+                      <li key={m}>
+                        <button
+                          onClick={() => useModel(m)}
+                          aria-pressed={on}
+                          className={'flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-[13.5px] ' +
+                            (on ? 'bg-accent/10 text-ink' : 'text-ink hover:bg-panel-2')}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{m}</span>
+                          {formats[m] === 'messages' && <span className="shrink-0 text-[11.5px] text-mute">Claude format</span>}
+                          {on && <span className="shrink-0 text-[12px] text-accent">✓ {pickFor}</span>}
+                        </button>
+                      </li>
+                    )
+                  })}
+                  {!shown.length && <li className="px-3 py-2 text-[13px] text-mute">No model matches “{filter}”.</li>}
+                </ul>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2 max-md:grid-cols-1">
               <Field label="Chat model" hint="Must support tools.">
                 <TextInput value={form.agentModel}
@@ -315,13 +378,11 @@ export default function SecurityPanel({ onClose }) {
                              const f = prov.wire && formats[m]
                              set(f && f !== form.api ? { agentModel: m, api: f } : { agentModel: m })
                            }}
-                           list="muse-models"
                            placeholder={prov.models ? prov.models[0] : 'pick one — Load models'}
                            spellCheck={false} autoComplete="off" />
               </Field>
               <Field label="Rewrite & sweep model" hint="Blank = the chat model.">
                 <TextInput value={form.rewriteModel} onChange={(e) => set({ rewriteModel: e.target.value })}
-                           list="muse-models"
                            placeholder={form.agentModel || 'same as chat'}
                            spellCheck={false} autoComplete="off" />
               </Field>

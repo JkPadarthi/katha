@@ -283,6 +283,25 @@ async def test_muse_settings():
         return {"ok": False, "model": muse_mod.MUSE_AGENT_MODEL, "detail": msg[:300]}
 
 
+def _plain_error(e: Exception, key: str | None) -> str:
+    """A provider failure, said so the author knows what to do next."""
+    import httpx as _h
+    if isinstance(e, _h.HTTPStatusError):
+        code = e.response.status_code
+        if code in (401, 403):
+            return (f"the provider refused the key ({code}). Paste the API key above — "
+                    "an empty or wrong key is the usual cause.")
+        if code == 404:
+            return "nothing at that address (404). Check the address — it usually ends in /v1."
+        return f"the provider answered {code}."
+    if isinstance(e, (_h.ConnectError, _h.ConnectTimeout)):
+        return "couldn't reach that address — is the machine on, and on your network?"
+    if isinstance(e, _h.TimeoutException):
+        return "the provider took too long to answer."
+    msg = " ".join(f"{type(e).__name__}: {e}".split())
+    return (msg.replace(key, "…") if key else msg)[:300]
+
+
 @app.post("/api/settings/muse/models", tags=["settings"])
 async def list_muse_models(body: MuseModelsIn, request: Request):
     """The models a connection offers (4.1) — for the form as typed, so the author can
@@ -306,10 +325,7 @@ async def list_muse_models(body: MuseModelsIn, request: Request):
         models, formats = await up_mod.models_and_formats(api, base, key, muse_mod._client)
         return {"ok": True, "models": models, "formats": formats}
     except Exception as e:  # a diagnostic, never an error page
-        msg = " ".join(f"{type(e).__name__}: {e}".split())
-        if key:
-            msg = msg.replace(key, "…")
-        return {"ok": False, "models": [], "formats": {}, "detail": msg[:300]}
+        return {"ok": False, "models": [], "formats": {}, "detail": _plain_error(e, key)}
 
 
 @app.put("/api/settings/password", tags=["settings"])

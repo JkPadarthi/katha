@@ -636,12 +636,15 @@ async def models_and_formats(api: str, base: str, key: str,
     Anthropic, most gateways — answers `GET {base}/models` with `{"data": [{"id": …}]}`."""
     base = (base or "").rstrip("/")
     formats: dict[str, str] = {}
+    # A list is a quick question: an unreachable box must fail in seconds, not hold
+    # the form for the five minutes a long generation is allowed.
+    quick = httpx.Timeout(20.0, connect=6.0)
     if api == OLLAMA:
-        r = await client.get(f"{base}/api/tags", timeout=timeout())
+        r = await client.get(f"{base}/api/tags", timeout=quick)
         r.raise_for_status()
         names = [m.get("name") or m.get("model") for m in (r.json().get("models") or [])]
     else:
-        r = await client.get(f"{base}/models", headers=headers_for(api, base, key), timeout=timeout())
+        r = await client.get(f"{base}/models", headers=headers_for(api, base, key), timeout=quick)
         r.raise_for_status()
         data = r.json()
         rows = data.get("data") if isinstance(data, dict) else data

@@ -70,6 +70,10 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **4.1.1** — Load models shows a clickable, filterable list (Chat / Rewrite) instead of
+  autocomplete hidden in the field; a model list fails in seconds, not minutes (an unreachable
+  box no longer holds the form); errors say what to do (wrong key, wrong address, unreachable);
+  switching provider mid-load is never blocked.
 - **4.1.0** — the Muse picks a provider (D64): Claude, OpenAI, OpenRouter, Command Code, OpenCode Go, OpenCode Zen,
   Gemini, DeepSeek, Mistral, Groq, xAI, Ollama, LM Studio or Custom — a preset fills the
   format and address; "Load models" lists the provider's own models. OpenAI's own parameter

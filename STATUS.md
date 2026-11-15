@@ -70,6 +70,11 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **4.1.2** — Muse & security says what "Test" checks: the button is "Test saved (Command Code)"
+  and the line under the models reads "Saved now: …", with "used only after Save" while the form
+  differs — testing the saved connection had looked like testing the form. With the lock on, a
+  note explains that loading models and saving need the current password and jumps to the box.
+  Provider refusals carry the provider's own message (e.g. "must be called via /messages").
 - **4.1.1** — Load models shows a clickable, filterable list (Chat / Rewrite) instead of
   autocomplete hidden in the field; a model list fails in seconds, not minutes (an unreachable
   box no longer holds the form); errors say what to do (wrong key, wrong address, unreachable);

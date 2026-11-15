@@ -276,11 +276,29 @@ async def test_muse_settings():
         text = muse_mod.strip_think((obj.get("message") or {}).get("content") or "").strip()
         return {"ok": True, "model": muse_mod.MUSE_AGENT_MODEL, "reply": text[:120]}
     except Exception as e:  # report it, never raise it: this is a diagnostic
-        msg = " ".join(f"{type(e).__name__}: {e}".split())
-        key = up_mod.MUSE_API_KEY
-        if key:
-            msg = msg.replace(key, "…")
-        return {"ok": False, "model": muse_mod.MUSE_AGENT_MODEL, "detail": msg[:300]}
+        return {"ok": False, "model": muse_mod.MUSE_AGENT_MODEL,
+                "detail": _plain_error(e, up_mod.MUSE_API_KEY)}
+
+
+def _provider_says(resp) -> str:
+    """The provider's own words for a refusal (`error.message`, `message`, `detail`) —
+    e.g. "unsupported_model: … must be called via /messages" — which tells the author
+    far more than a status code."""
+    try:
+        resp.read()
+        data = resp.json()
+    except Exception:
+        try:
+            return " ".join((resp.text or "").split())[:240]
+        except Exception:
+            return ""
+    err = data.get("error") if isinstance(data, dict) else None
+    for v in ((err or {}).get("message") if isinstance(err, dict) else err,
+              data.get("message") if isinstance(data, dict) else None,
+              data.get("detail") if isinstance(data, dict) else None):
+        if isinstance(v, str) and v.strip():
+            return " ".join(v.split())[:240]
+    return ""
 
 
 def _plain_error(e: Exception, key: str | None) -> str:
@@ -293,7 +311,10 @@ def _plain_error(e: Exception, key: str | None) -> str:
                     "an empty or wrong key is the usual cause.")
         if code == 404:
             return "nothing at that address (404). Check the address — it usually ends in /v1."
-        return f"the provider answered {code}."
+        said = _provider_says(e.response)
+        if key:
+            said = said.replace(key, "…")
+        return f"the provider answered {code}" + (f": {said}" if said else ".")
     if isinstance(e, (_h.ConnectError, _h.ConnectTimeout)):
         return "couldn't reach that address — is the machine on, and on your network?"
     if isinstance(e, _h.TimeoutException):

@@ -52,7 +52,8 @@ export default function SecurityPanel({ onClose }) {
   const [modelsErr, setModelsErr] = useState(false)
   const [filter, setFilter] = useState('')
   const [pickFor, setPickFor] = useState('chat')   // which field a click in the list fills
-  const loadRef = useRef(0)                       // the latest Load; older answers are ignored
+  const loadRef = useRef(0)
+  const pwRef = useRef(null)                      // the current-password box, to send people to it                       // the latest Load; older answers are ignored
 
   const adopt = (data) => {
     setS(data)
@@ -86,6 +87,11 @@ export default function SecurityPanel({ onClose }) {
   const prov = providerById(form.provider)
   const keyed = prov.keyed || prov.optionalKey || (prov.wire && form.api !== 'ollama')
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
+  // What is saved now — the thing "Test" checks — named, so it can't be mistaken for the form.
+  const savedProv = providerById(detectProvider(s.muse.api, s.muse.base))
+  const savedLabel = savedProv.id === 'custom' ? (s.muse.base.replace(/^https?:\/\//, '').split('/')[0] || 'Custom') : savedProv.label
+  const needPw = locked && !current
+  const goToPassword = () => { pwRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }); pwRef.current?.focus() }
   // A provider with no known default model needs one named before it can work.
   const needsModel = !form.agentModel.trim() && !prov.models && form.provider !== 'ollama' &&
     !(form.provider === detectProvider(s.muse.api, s.muse.base) && s.muse.source === 'app')
@@ -176,8 +182,8 @@ export default function SecurityPanel({ onClose }) {
     try {
       const t = await api.testMuseConnection()
       setMuseMsg(t.ok
-        ? { kind: 'ok', text: `${t.model} answered: “${t.reply || '…'}”` }
-        : { kind: 'err', text: t.detail })
+        ? { kind: 'ok', text: `The saved connection (${savedLabel}, ${t.model}) answered: “${t.reply || '…'}”` }
+        : { kind: 'err', text: `The saved connection (${savedLabel}, ${t.model}) failed: ${t.detail}` })
     } catch (e) {
       setMuseMsg({ kind: 'err', text: e.message })
     } finally {
@@ -231,7 +237,7 @@ export default function SecurityPanel({ onClose }) {
           {locked ? (
             <Field label="Your current password"
                    hint="Needed to change anything on this page — it decides where your manuscript is sent and who can open it.">
-              <TextInput type="password" autoComplete="current-password" value={current}
+              <TextInput ref={pwRef} type="password" autoComplete="current-password" value={current}
                          onChange={(e) => setCurrent(e.target.value)} />
             </Field>
           ) : (
@@ -388,9 +394,18 @@ export default function SecurityPanel({ onClose }) {
               </Field>
             </div>
             <p className="text-[12px] text-mute/60">
-              Now using <span className="text-mute">{s.muse.agent_model}</span> for chat and{' '}
+              Saved now: <span className="text-mute">{savedLabel}</span> —{' '}
+              <span className="text-mute">{s.muse.agent_model}</span> for chat,{' '}
               <span className="text-mute">{s.muse.rewrite_model}</span> for rewrites and sweeps.
+              {form.provider !== savedProv.id && ' What you pick above is used only after Save.'}
             </p>
+            {needPw && (
+              <Note kind="info">
+                The archive is locked, so loading models and saving need your current
+                password.{' '}
+                <button onClick={goToPassword} className="font-medium text-accent underline">Enter it at the top</button>
+              </Note>
+            )}
 
             {museMsg && <Note kind={museMsg.kind}>{museMsg.text}</Note>}
 
@@ -402,7 +417,7 @@ export default function SecurityPanel({ onClose }) {
                 </Button>
               )}
               <Button onClick={testMuse} disabled={!!busy}>
-                {busy === 'test' ? 'Testing…' : 'Test saved connection'}
+                {busy === 'test' ? 'Testing…' : `Test saved (${savedLabel})`}
               </Button>
               {needsModel && <span className="mr-auto text-[12.5px] text-warn">Name a chat model first.</span>}
               <Button variant="accent" onClick={saveMuse} disabled={!!busy || (locked && !current) || needsModel}>

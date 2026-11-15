@@ -4,9 +4,9 @@ const INPUT =
   'w-full rounded-lg border hairline bg-base px-3 py-2 text-[14px] text-ink ' +
   'placeholder:text-mute/60 focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/20'
 
-export function TextInput({ className = '', ...props }) {
-  return <input {...props} className={INPUT + ' ' + className} />
-}
+export const TextInput = React.forwardRef(function TextInput({ className = '', ...props }, ref) {
+  return <input ref={ref} {...props} className={INPUT + ' ' + className} />
+})
 
 export function TextArea({ className = '', ...props }) {
   return <textarea {...props} className={INPUT + ' resize-none ' + className} />

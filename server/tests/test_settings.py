@@ -376,3 +376,13 @@ def test_a_gateway_that_names_endpoints_tells_each_models_format(client, monkeyp
     r = client.post("/api/settings/muse/models",
                     json={"api": "openai", "base": "https://api.commandcode.ai/provider/v1", "key": KEY})
     assert r.json()["formats"] == {"claude-sonnet-5-5": "messages", "deepseek/deepseek-v4-flash": "openai"}
+
+
+def test_a_refusal_carries_the_providers_own_words(client, monkeypatch):
+    """A 400 tells the author nothing; the provider's message usually says exactly why."""
+    def handler(req):
+        return httpx.Response(400, json={"error": {"message": f"unsupported_model: claude-x must be called via /messages ({KEY})"}})
+    monkeypatch.setattr(muse_mod, "_client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    d = client.post("/api/settings/muse/models",
+                    json={"api": "openai", "base": "https://x.test/v1", "key": KEY}).json()["detail"]
+    assert "400" in d and "must be called via /messages" in d and KEY not in d

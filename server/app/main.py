@@ -1,8 +1,9 @@
-"""Katha Archive API — FastAPI entry point (2.0.0)."""
+"""Katha Archive API — FastAPI entry point."""
 
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -52,6 +53,7 @@ from .schemas import (
     HealthOut,
     LoginIn,
     MuseChatRequest,
+    MuseCompleteRequest,
     MuseRewriteRequest,
     MuseSweepRequest,
     NoteOut,
@@ -434,114 +436,156 @@ def get_stats(goal: int | None = None):
     return stats.summary(goal if goal and goal > 0 else DAILY_GOAL)
 
 
-# ---------- whole-chapter proposals (2.9, D45) ----------------------------
-# The Muse can read the story but never write it. When it has a full revision for
-# the author, it parks it here and the app shows a diff; Accept runs the *same*
-# save path as autosave, so the time machine keeps the revision either way.
+# ---------- staged changes: the Muse proposes, the author disposes ----------
+# (2.9, D45; per hunk 3.0, D48; any chapter or bible file 3.1, D54)
+# The Muse never writes the story. Every change it makes is parked as a proposal and
+# the app shows it hunk by hunk; Accept runs the *same* save path as an edit the
+# author made — the chapter autosave (revision snapshot and all) or the bible PUT.
+
+def _proposal_ctx(p: dict) -> tuple[Path, Path]:
+    """(book dir, target file) for a proposal, or a 404 the author can read."""
+    bdir = _resolve_book_path(p["series"], p["book"])
+    f = muse_mod.proposal_file(p, bdir)
+    kind, path = muse_mod.proposal_target(p)
+    if f is None or (kind == "chapter" and not f.is_file()):
+        raise HTTPException(404, f"{path or 'that file'} is not in this book any more")
+    return bdir, f
+
+
+def _proposal_base(p: dict, bdir: Path, f: Path) -> str:
+    """The file text the change was written against.
+
+    Chapter: if the chapter has moved on since the Muse read it, the snapshot from that
+    moment is the honest base — diffing against today's file would blame the author's own
+    later edits on the Muse. Bible: files keep no revisions, so the proposal carries the
+    text the Muse read.
+    """
+    kind, _ = muse_mod.proposal_target(p)
+    if kind == "bible":
+        return p.get("base_content") or ""
+    rev = int(p.get("base_revision") or 0)
+    current = ar._read_revision_marker(f)
+    if rev and rev < current:
+        snap = ar.get_revision(bdir, p["chapter"], rev)
+        if snap and snap.get("content"):
+            return snap["content"]
+    return f.read_text(encoding="utf-8")
+
+
+def _proposal_full(p: dict, f: Path) -> str:
+    """The Muse's version, in the same shape as the file.
+
+    A chapter revision that arrives without a heading is not "a chapter with the title
+    deleted" — it is a revision of the prose under the author's existing title. Restoring
+    the heading before diffing means the author is never asked to decide a phantom
+    'deleted the heading' hunk, while a revision that *does* rename the chapter shows up
+    as a real one (3.0, D48).
+    """
+    text = p.get("content") or ""
+    kind, _ = muse_mod.proposal_target(p)
+    if kind == "bible" or text.lstrip().startswith("# "):
+        return text
+    return f"# {ar._chapter_title(f)}\n\n{text}"
+
+
+def _fresh(p: dict, bdir: Path) -> dict | None:
+    """Replay a stale, edit-built draft onto the file as it is now (D58).
+
+    Returns None when nothing of the draft survives the author's own changes — then
+    the proposal is gone, the same as if the author had discarded it.
+    """
+    p = muse_mod.refresh_proposal(p, bdir)
+    if p.get("empty"):
+        muse_mod.delete_proposal(p["id"])
+        return None
+    return p
+
 
 @app.get("/api/muse/proposals", response_model=dict, tags=["muse"])
 def list_proposals():
-    """Pending revisions, newest first. Metadata only — the body is one GET away, and
+    """Pending changes, newest first. Metadata only — the body is one GET away, and
     `hunk_count` is how many separate decisions are waiting (3.0, D48)."""
     out = []
-    for p in muse_mod.list_proposals():
+    for meta in muse_mod.list_proposals():
         try:
-            bdir = _resolve_book_path(p["series"], p["book"])
-            chapter = ar.get_chapter(bdir, p["chapter"])
-            if chapter is not None:
-                # The list carries metadata only — the body has to be read, or this counts
-                # the hunks of a revision that isn't there (which is how it reported 1 for
-                # an eleven-change revision).
-                full = muse_mod.read_proposal(p["id"]) or p
-                base = _proposal_base(p, bdir, chapter)
-                p["hunk_count"] = len(hunks_mod.hunks(base, _proposal_full(full, chapter)))
-        except Exception:      # a book on its way to the trash must not break the list
+            full = muse_mod.read_proposal(meta["id"])
+            bdir, f = _proposal_ctx(full)
+            full = _fresh(full, bdir)
+            if full is None:
+                continue
+            meta["stale"] = muse_mod.is_stale(full, bdir)
+            meta["dropped"] = len(full.get("dropped") or [])
+            # The list carries metadata only — the body has to be read, or this counts
+            # the hunks of a revision that isn't there (which is how it reported 1 for
+            # an eleven-change revision).
+            meta["hunk_count"] = len(hunks_mod.hunks(_proposal_base(full, bdir, f),
+                                                     _proposal_full(full, f)))
+        except HTTPException:
+            pass               # a book on its way to the trash must not break the list
+        except Exception:
             pass
-        out.append(p)
+        out.append(meta)
     return {"proposals": out}
 
 
 @app.get("/api/muse/proposals/{proposal_id}", response_model=dict, tags=["muse"])
 def read_proposal(proposal_id: str):
-    """A pending revision, cut into hunks so it can be reviewed one place at a time."""
+    """A pending change, cut into hunks so it can be reviewed one place at a time."""
     p = muse_mod.read_proposal(proposal_id)
     if p is None:
         raise HTTPException(404, "no such proposal")
-    bdir = _resolve_book_path(p["series"], p["book"])
-    chapter = ar.get_chapter(bdir, p["chapter"])
-    if chapter is None:
-        raise HTTPException(404, "that chapter is not in this book any more")
-    base = _proposal_base(p, bdir, chapter)
+    bdir, f = _proposal_ctx(p)
+    p = _fresh(p, bdir)
+    if p is None:
+        raise HTTPException(404, "nothing of that change survives your later edits")
+    kind, path = muse_mod.proposal_target(p)
+    base = _proposal_base(p, bdir, f)
+    p["kind"], p["path"] = kind, path
     p["base_content"] = base
-    p["current_revision"] = ar._read_revision_marker(chapter)
-    # A revision is written against the chapter the Muse *read*. If the author has saved
-    # since, accepting would quietly overwrite prose the Muse never saw — so the review
-    # says so, and the accept route refuses (3.0.1).
-    p["stale"] = int(p.get("base_revision") or 0) != p["current_revision"]
-    p["hunks"] = hunks_mod.hunks(base, _proposal_full(p, chapter))
+    p["current_revision"] = ar._read_revision_marker(f) if kind == "chapter" else 0
+    # A change is written against the text the Muse *read*. If the author has saved
+    # since (and it could not be replayed, D58), accepting would quietly overwrite prose
+    # the Muse never saw — so the review says so, and the accept route refuses (3.0.1).
+    p["stale"] = muse_mod.is_stale(p, bdir)
+    p["hunks"] = hunks_mod.hunks(base, _proposal_full(p, f))
+    p["dropped"] = p.get("dropped") or []
+    p.pop("edits", None)
     return p
 
 
-def _proposal_base(p: dict, bdir: Path, chapter: Path) -> str:
-    """The file text the revision was written against.
-
-    If the chapter has moved on since the Muse read it, the snapshot from that moment is the
-    honest base — diffing against today's file would blame the author's own later edits on
-    the Muse.
-    """
-    rev = int(p.get("base_revision") or 0)
-    current = ar._read_revision_marker(chapter)
-    if rev and rev < current:
-        snap = ar.get_revision(bdir, p["chapter"], rev)
-        if snap and snap.get("content"):
-            return snap["content"]
-    return chapter.read_text(encoding="utf-8")
-
-
-def _proposal_full(p: dict, chapter: Path) -> str:
-    """The Muse's revision, in the same shape as the chapter file.
-
-    A revision that arrives without a heading is not "a chapter with the title deleted" —
-    it is a revision of the prose under the author's existing title. Restoring the heading
-    before diffing means the author is never asked to decide a phantom 'deleted the heading'
-    hunk, while a revision that *does* rename the chapter shows up as a real one (3.0, D48).
-    """
-    text = p.get("content") or ""
-    if text.lstrip().startswith("# "):
-        return text
-    return f"# {ar._chapter_title(chapter)}\n\n{text}"
-
-
-@app.post("/api/muse/proposals/{proposal_id}/accept", response_model=ChapterOut,
+@app.post("/api/muse/proposals/{proposal_id}/accept", response_model=dict,
           tags=["muse"])
 def accept_proposal(proposal_id: str, body: ProposalAcceptIn | None = None):
-    """Apply a proposed revision — all of it, or just the hunks the author ticked.
+    """Apply a staged change — all of it, or just the hunks the author ticked.
 
-    Either way this is a normal save (revision snapshot and all), so a partial accept is as
-    undoable as any edit. Hunks left unticked stay pending: the proposal keeps its content
-    and is re-pointed at the revision that was just written.
+    Either way this is a normal save, so a partial accept is as undoable as any edit.
+    Hunks left unticked stay pending: the proposal keeps its content and is re-pointed
+    at what was just written.
     """
     p = muse_mod.read_proposal(proposal_id)
     if p is None:
         raise HTTPException(404, "no such proposal")
-    bdir = _resolve_book_path(p["series"], p["book"])
-    chapter = ar.get_chapter(bdir, p["chapter"])
-    if chapter is None:
-        raise HTTPException(404, "that chapter is not in this book any more")
-    current_rev = ar._read_revision_marker(chapter)
-    base_rev = int(p.get("base_revision") or 0)
-    if base_rev != current_rev:
+    bdir, f = _proposal_ctx(p)
+    p = _fresh(p, bdir)
+    if p is None:
+        raise HTTPException(404, "nothing of that change survives your later edits")
+    kind, path = muse_mod.proposal_target(p)
+    if muse_mod.is_stale(p, bdir):
         # Not a conflict to be clever about: the Muse read one text, the author has since
         # saved another, and merging them silently is how a writer loses a paragraph. The
         # author's newer prose wins by default, and the Muse can revise it properly.
-        raise HTTPException(409, (
-            "the chapter has been saved since this revision was written "
-            f"(this revision is based on revision {base_rev}, the chapter is at "
-            f"{current_rev}) — ask the Muse to revise the current chapter, or discard "
-            "this revision"
-        ))
-    base = _proposal_base(p, bdir, chapter)
-    proposal_text = _proposal_full(p, chapter)
+        if kind == "chapter":
+            current_rev = ar._read_revision_marker(f)
+            base_rev = int(p.get("base_revision") or 0)
+            detail = ("the chapter has been saved since this revision was written "
+                      f"(this revision is based on revision {base_rev}, the chapter is at "
+                      f"{current_rev})")
+        else:
+            detail = f"{path} has been changed since this revision was written"
+        raise HTTPException(409, detail + " — ask the Muse to revise the current text, "
+                                          "or discard this revision")
+    base = _proposal_base(p, bdir, f)
+    proposal_text = _proposal_full(p, f)
     groups = hunks_mod.hunks(base, proposal_text)
     total = len(groups)
     wanted = None if body is None or body.hunks is None else body.hunks
@@ -550,28 +594,42 @@ def accept_proposal(proposal_id: str, body: ProposalAcceptIn | None = None):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    if not taken:
-        # Rejecting every hunk is a legitimate answer, and it must not burn a revision.
-        return ChapterOut(
-            **ar._chapter_meta(bdir, chapter.stem, "", chapter),
-            content=chapter.read_text(encoding="utf-8"),
-        )
+    applied = hunks_mod.merge(base, proposal_text, taken) if taken else base
 
-    applied = hunks_mod.merge(base, proposal_text, taken)
-    # The Muse is asked for the whole chapter *with* its heading; the save path writes its
-    # own heading, so take the one it sent and drop the duplicate.
-    text, title = muse_mod.split_heading(applied, ar._chapter_title(chapter))
-    out = _write_chapter_text(p["series"], bdir, chapter, title, text)
+    if kind == "chapter":
+        if not taken:
+            # Rejecting every hunk is a legitimate answer, and it must not burn a revision.
+            return {"kind": kind, "path": path,
+                    **ChapterOut(**ar._chapter_meta(bdir, f.stem, "", f),
+                                 content=f.read_text(encoding="utf-8")).model_dump()}
+        # The Muse is asked for the whole chapter *with* its heading; the save path writes
+        # its own heading, so take the one it sent and drop the duplicate.
+        text, title = muse_mod.split_heading(applied, ar._chapter_title(f))
+        out = {"kind": kind, "path": path,
+               **_write_chapter_text(p["series"], bdir, f, title, text)}
+        rebase = {"base_revision": out["revision"]}
+    else:
+        if not taken:
+            return {"kind": kind, "path": path, "content": base, "remaining": total}
+        name = path[len("bible/"):]
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(applied, encoding="utf-8")
+        db.index_doc("bible", p["series"], bdir.name, name, Path(name).stem, applied)
+        out = {"kind": kind, "path": path, "content": applied}
+        rebase = {"base_content": applied}
+
     if len(taken) >= total:
         muse_mod.delete_proposal(proposal_id)
+        out["remaining"] = 0
     else:
-        muse_mod.rebase_proposal(proposal_id, out["revision"])
-    return ChapterOut(**out)
+        muse_mod.rebase_proposal(proposal_id, **rebase)
+        out["remaining"] = total - len(taken)
+    return out
 
 
 @app.delete("/api/muse/proposals/{proposal_id}", response_model=dict, tags=["muse"])
 def discard_proposal(proposal_id: str):
-    """Throw a revision away. The chapter is untouched — it never was."""
+    """Throw a staged change away. The file is untouched — it never was."""
     removed = muse_mod.delete_proposal(proposal_id)
     if not removed:
         raise HTTPException(404, "no such proposal")
@@ -695,9 +753,13 @@ async def _sse_from(async_iter) -> AsyncIterator[bytes]:
                 msg = " ".join(chunk.text.split())
                 yield f"data: [STATUS] {_sse_escape(msg)}\n\n".encode("utf-8")
             elif isinstance(chunk, muse_mod.Proposal):
-                # A whole-chapter revision is waiting for the author (2.9, D45).
-                # The id, not the chapter: the client fetches it to show the diff.
+                # A staged change is waiting for the author (2.9, D45). The id, not the
+                # text: the client fetches it to show the review.
                 yield f"data: [PROPOSAL] {_sse_escape(chunk.proposal_id)}\n\n".encode("utf-8")
+            elif isinstance(chunk, muse_mod.Usage):
+                # What the reply cost, in tokens (3.1, D59). JSON has no newlines here.
+                usage = json.dumps({"input": chunk.input, "output": chunk.output})
+                yield f"data: [USAGE] {usage}\n\n".encode("utf-8")
             else:
                 yield f"data: {_sse_escape(chunk)}\n\n".encode("utf-8")
     except Exception as e:
@@ -742,6 +804,18 @@ async def muse_chat(payload: MuseChatRequest):
     )
 
 
+@app.post("/api/muse/complete", tags=["muse"])
+async def muse_complete(payload: MuseCompleteRequest):
+    """Ghost text (3.1, D59): a one-sentence continuation of the prose before the
+    cursor. Opt-in on the client; a failed upstream is an empty suggestion, not an
+    error the author has to dismiss while typing."""
+    try:
+        text = await muse_mod.complete_text(payload.before, payload.chapter_id)
+    except Exception:
+        text = ""
+    return {"text": text}
+
+
 @app.post("/api/muse/rewrite", tags=["muse"])
 async def muse_rewrite(payload: MuseRewriteRequest):
     """Stream a single rewrite proposal as SSE.
@@ -770,7 +844,7 @@ async def muse_sweep(payload: MuseSweepRequest):
     Body:
         series, book_id: which book
         target:          'report' (whole-book continuity audit) |
-                         'bible'  (proposed rewrite of one bible file)
+                         'bible'  (rewrite of one bible file, staged as a proposal)
         bible_name:      required when target='bible'
     """
     if payload.target == "bible":

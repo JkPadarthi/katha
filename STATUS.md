@@ -1,7 +1,9 @@
 # Katha — Status
 
-**Phase 2.1** — the IDE is complete and shipping as an installable PWA, with
-reading mode, writing rituals, and EPUB delivery. The client is served from the
+**3.1** — the Muse works like an AI IDE: it edits chapters and bible files itself
+with targeted edits, and every change waits for the author's per-hunk review before
+anything is saved. The app ships as an installable PWA, with reading mode, writing
+rituals, revision history and EPUB delivery. The client is served from the
 same FastAPI server as the API. The Muse is no longer tied to one brain: it can
 talk to the LAN Ollama box, any OpenAI-compatible gateway, **or** a gateway that
 serves Claude models in the Messages shape (2.7.0).
@@ -67,6 +69,21 @@ serves Claude models in the Messages shape (2.7.0).
   `~/katha/index` on the deploy host) while the workshop stays a workshop. Plus
   `katha-archive-backup.timer`: a daily snapshot of the md archive and a
   consistent copy of the index, keeping 14.
+- **3.1.0** — the Muse as an IDE (D54–D61). It **edits** now, it doesn't just suggest:
+  `edit_file` makes targeted find/replace edits to any chapter or bible file (even a new
+  one), and every edit is staged for review — nothing is saved until the author accepts.
+  **One live draft per file**: later requests stack onto it, and the Muse reads its own
+  draft so its next edit matches. **Drafts survive typing**: an edit-built draft that
+  went stale is replayed onto the new text, with edits the author overrode dropped and
+  named in the review. **Multi-file changes** (a rename across the book) are reviewed as
+  tabs with *Accept all files*. The open chapter's changes are reviewed **on the page**.
+  **Inline edit** (select → *Edit with Muse*, Ctrl/⌘+I). **@-mentions** attach files.
+  **`bible/rules.md`** — the author's rules, sent with every Muse call. The **continuity
+  report** is a list of located issues, each with a **Fix** button; bible updates from
+  the sweep go through the same review. A **revision history** browser (list, diff,
+  restore — a restore is itself a revision). Opt-in **ghost text** (Tab to accept), and a
+  **token meter** on every Muse reply. Fixed on the way: accepting a change made
+  autosave write it a second time, which staled whatever was set aside (D61). 246 tests.
 - **3.0.9** — the canon sweep works again, and an empty answer can never look like silence.
   The sweep streamed nothing at all: this gateway runs the model with **extended thinking on**,
   and thinking spends the same output budget as the reply — at a 4096 ceiling the model thought
@@ -290,13 +307,15 @@ serves Claude models in the Messages shape (2.7.0).
   `lock` button in the title bar.
 
 ## Next
-- Dogfood the full loop (write → autosave/revisions → Muse tools → rewrite diff
-  → sweep → reading + notes → EPUB); browser-verify the three themes + mobile.
-- Then: a revision-history browser (list / preview / restore).
+- Dogfood the IDE loop in a browser: ask → staged edits → inline review → partial
+  accept → keep typing → replayed draft → accept the rest; a multi-file rename; Fix
+  from the sweep; history restore; ghost text on each dialect. Three themes + mobile.
 - Later: a settings affordance for the Muse dialect (today it's env-only).
 
 ## Verify
-- Server: `cd server && .venv/bin/python -m pytest -q` (86 tests).
+- Server: `cd server && .venv/bin/python -m pytest -q` (246 tests; Python 3.12 —
+  the pins in requirements.txt need it, and `hashlib.scrypt` is missing from Apple's
+  system Python).
 - Client: `cd desktop && npm run build`.
 - Install: build, serve via the Pi, open over `tailscale serve` HTTPS, Install app.
 - Deploy: `katha-cd.timer` (every 5 min) on the prod host; decisions land in

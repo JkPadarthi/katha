@@ -116,7 +116,13 @@ class MuseMessage(BaseModel):
 class MuseChatRequest(BaseModel):
     messages: list[MuseMessage]
     chapter_id: str | None = None
-    chip: str | None = None  # 'rewrite' | 'continue' | 'scene' | 'canon'
+    chip: str | None = None  # 'rewrite'|'continue'|'scene'|'canon'|'inline'|'fix'
+
+
+class MuseCompleteRequest(BaseModel):
+    """Ghost text (3.1): the prose before the cursor → a one-sentence continuation."""
+    before: str
+    chapter_id: str | None = None
 
 
 class MuseRewriteRequest(BaseModel):
@@ -171,3 +177,4 @@ class NotesUpdate(BaseModel):
 
 class LoginIn(BaseModel):
     password: str
+

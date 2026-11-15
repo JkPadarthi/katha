@@ -24,6 +24,15 @@ Phases 0.0 → 2.0. Single-user, self-hosted, no SaaS, by design.
 - Companion use — write scenes on the bus, same archive, same Muse.
 - Requires — an HTTPS origin reachable from the phone: Tailscale stays the boundary; `tailscale serve` provides the certificate. (See DECISIONS: the earlier "PWA rejected by design" call is overturned.)
 
+## Phase 3 — the Muse as an IDE ✅
+
+- **3.0** per-hunk review of a whole-chapter revision.
+- **3.1** the Muse edits any chapter or bible file with targeted edits — staged, never
+  saved until accepted; one live draft per file that stacks and survives typing;
+  multi-file review; inline review on the page; inline edit on a selection;
+  @-mentions; `bible/rules.md`; located continuity issues with Fix; revision history;
+  ghost text (opt-in); token meter.
+
 ## Later / never
 
 - **Multi-user** — not a goal. Single user by design (D12).

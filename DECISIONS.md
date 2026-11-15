@@ -133,6 +133,112 @@ that destroys anything in Katha. Delete stays a move (D33); erasing is what you
 ask for afterwards, per entry or wholesale, and the UI always routes it through a
 red confirm that says the restore is gone for good. Nothing ages out on its own.
 
+## D61 — an accepted change is loaded as saved, never re-saved (3.1.0)
+Accepting a Muse change called the editor's `replaceAll`, which set the text but left the
+editor's saved baseline on the *old* text — so 900ms later autosave wrote the same chapter again.
+That burned a revision for nothing and, worse, moved the chapter past the revision a partially
+accepted change had just been re-pointed at, so the hunks the author set aside went stale and the
+next accept was refused (409). Text the server has just saved — an accept, a restore from
+history — now enters the editor through `editorApi.loadSaved`, which makes it the saved baseline
+and cancels any pending debounce. `replaceAll` remains for text the author is applying by hand.
+
+## D60 — the review happens where the writing is, and the sweep's issues are fixable (3.1.0)
+* **The open chapter's changes are reviewed on the page.** When the change under review is for
+  the chapter in the editor (desktop), the review pane renders over the page itself — the same
+  prose, with each change marked in place and its own ✓/✗ — instead of a modal. A bible file,
+  another chapter, or a phone keeps the modal. The editor stays mounted underneath, so closing the
+  review loses nothing. (The page is a `<textarea>`, which cannot carry inline marks; the inline
+  review *replaces the surface while reviewing* rather than decorating it.)
+* **The continuity report is a list of located issues.** The sweep prompt now requires one bullet
+  per issue, each starting with where it is: `- [ch-03] …`, `- [bible/timeline.md] …`,
+  `- [ch-02, bible/characters/kael.md] …` or `[general]`. Whole-book context labels every chapter
+  (`### CHAPTER ch-03`) so the model can cite it. The panel renders each issue with a **Fix**
+  button: the app opens the first chapter it names and sends the issue to the Muse with the `fix`
+  chip, whose edits arrive in review like any other. A line the model writes without a location
+  is still shown — just without a button.
+
+## D59 — the Muse's cost is visible, and ghost text is opt-in (3.1.0)
+* **Usage is reported, never estimated.** Each dialect already carries token counts on the wire
+  (Ollama's final `prompt_eval_count`/`eval_count`; an OpenAI chunk's `usage`; the Messages
+  shape's `message_start`/`message_delta` usage); `upstream.py` normalises them into a `usage`
+  event and the Muse sums them over every round of a turn, emitting one `[USAGE] {"input","output"}`
+  SSE event at the end. We do **not** ask an OpenAI gateway for usage (`stream_options`) — a strict
+  gateway could refuse the unknown field, and a missing number is better than a failed reply. No
+  counts reported → no event, no meter.
+* **Ghost text** (`POST /api/muse/complete`): after a 1.4s pause at the end of a line, one sentence
+  in grey; Tab takes it, any other key drops it. It is **off by default** (Settings → Ghost text)
+  because every suggestion is a model call. `MUSE_COMPLETE_MODEL` defaults to the agent model; the
+  ceiling (`MUSE_COMPLETE_MAX_TOKENS`, 1024) is far above a sentence because a thinking model
+  spends the same budget on reasoning (D53). A failure is an empty suggestion, never an error
+  while the author is typing.
+
+## D58 — a draft survives the author typing (3.1.0)
+D49 made an accept refuse when the chapter had moved since the Muse read it — right for a full
+rewrite, where there is nothing to do but ask again. But an `edit_file` draft is a list of
+find/replace edits, and *those can be replayed*. So a draft remembers the edits that built it, and
+when it is read, listed or accepted against a file that has moved, it is rebuilt from the file as
+it now stands:
+
+* an edit whose `old_text` still matches once is applied;
+* an edit whose `old_text` is gone but whose result is already there (the author accepted it, or
+  wrote the same thing) is **satisfied** and skipped — that is what makes "accept some hunks, keep
+  typing, accept the rest" work;
+* anything else **no longer applies**: it is dropped, recorded in `dropped`, and the review names
+  it ("you changed that text yourself, and your version wins").
+
+If nothing of the draft survives, the draft is gone. Full rewrites carry `edits: null` and keep the
+D49 behaviour. Bible files keep no revisions, so a bible draft stores the text the Muse read
+(`base_content`) and is stale when the file differs from it.
+
+## D57 — the IDE verbs: @-mentions and inline edit (3.1.0)
+* **`@` attaches a file.** `@ch-03`, `@kael`, `@characters/kael`, `@places` resolve against the
+  story's own file index (exact path → path+`.md` → `bible/…` → chapter number → a unique stem);
+  the files are read and sent with the turn (16k chars each, 40k total), and the panel says
+  `attached kael.md`. Resolution is server-side, so a typed mention works as well as one picked
+  from the composer's autocomplete. An email address is not a mention.
+* **Inline edit** (select → *Edit with Muse*, or Ctrl/⌘+I): the app saves any pending keystrokes
+  first (the Muse reads the file, not the editor), then sends the passage and the instruction with
+  the `inline` chip, which tells the Muse to make exactly one `edit_file` whose `old_text` is the
+  passage. When the turn stages a change, its review opens straight away.
+
+## D56 — the author's rules ride on every call (3.1.0)
+`bible/rules.md` is the book's standing orders — "British spelling", "no em-dashes", "Kael never
+swears". The style digest is the Muse's *guess* at the voice; rules are the author's word. Chat,
+rewrite, both sweeps and ghost text all carry them. The scaffold writes a template that is all
+HTML comment, heading and an empty bullet, and such a file sends **nothing**: the first real line
+is the first rule. It lives in the bible, so it is searchable, backed up, editable in the bible
+panel — and editable by the Muse, through review, like any other bible file.
+
+## D55 — one live draft per file, and new edits stack on it (3.1.0)
+`PROPOSAL_KEEP` was 3 per chapter: three rival drafts of the same chapter, each a separate review.
+An IDE has one pending change set per file. Now a new full rewrite **supersedes** the pending draft
+for that file, and new `edit_file` calls — in a later turn too — **stack onto it** rather than
+starting over. For that to work the Muse must see what it is stacking onto, so `read_story_file`
+returns the pending draft (clearly labelled "NOT yet accepted") whenever one exists; its next
+`old_text`, copied from what it read, then matches.
+
+## D54 — the Muse edits any story file, and every edit is a proposal (3.1.0)
+"It should be like an AI IDE — able to edit the chapter, but reviewed and then saved by the user."
+2.9 gave the Muse one write-shaped tool, `propose_chapter_rewrite`, and it had to resend the whole
+chapter (≈7k tokens for ch-01) to change a sentence; the system prompt meanwhile still told it its
+tools were read-only and to paste prose into the chat — two instructions that contradicted each
+other on every turn.
+
+* **`edit_file(path?, edits[])`** — targeted find/replace on a chapter (`chapters/ch-NN.md`, or a
+  bare `ch-NN`, or omitted for the open chapter) or a bible file (`bible/<name>.md`, which may be
+  new: one edit with an empty `old_text`). Each `old_text` must match exactly once; a call is
+  all-or-nothing, and every refusal tells the model why (not found / ambiguous / empty / no-op).
+  Nothing else is reachable: not notes, not the series root, not `book.json`, not hidden files.
+* **A proposal now targets a file**, not a chapter: `kind` (`chapter`|`bible`), `path`, `origin`
+  (the conversation's chapter) and `batch` (the turn). Pre-3.1 records still read as chapter
+  proposals. A turn that edits several files announces each one, and the review pane walks them
+  as tabs with an "Accept all files" — a rename across the book is one review.
+* **Accepting a bible change** writes the file and reindexes it — the same as the bible PUT.
+* **The bible sweep stages too.** Its rewrite of a bible file is parked as a proposal and opens in
+  the per-hunk review, replacing the separate diff-and-PUT path the sweep used to have. The
+  adapter's "the model wrote nothing" sentence is flagged `notice` and is never staged as a file.
+* The prompt now says what is true: edit with the tools, you cannot save, the author reviews.
+
 ## D53 — extended thinking spends the answer's budget, and silence is never an answer (3.0.9)
 The canon sweep returned **nothing**: HTTP 200, a complete SSE stream, zero text. The cause was
 not the prompt, the payload shape, the model, the credentials or the network — it was that this

@@ -28,7 +28,7 @@ WEB_DIR = Path(os.environ.get(
 ))
 
 # Version stamp for the health check heartbeat (D13/D14).
-VERSION = "3.0.9"
+VERSION = "3.1.0"
 
 # --- Muse upstream (0.3 Muse, D16/D19; dialect switch 2.1, D20-D23) -----------
 # Which wire dialect the Muse talks. "ollama" is the LAN box (unchanged
@@ -84,6 +84,11 @@ MUSE_NUM_PREDICT = int(os.environ.get("MUSE_NUM_PREDICT", "12000"))
 # (2.9.1, D46). Only *generated* tokens cost anything — the ceiling is just a bound.
 # The gateway accepts at least 64k; 32k covers a chapter of roughly 20k words.
 MUSE_AGENT_MAX_TOKENS = int(os.environ.get("MUSE_AGENT_MAX_TOKENS", "32000"))
+# Ghost-text completion (3.1, D59): a one-sentence continuation, so a fast model and
+# a small ceiling. Defaults to the agent model; a thinking model needs more room
+# (its reasoning spends the same budget), so the ceiling is generous for a sentence.
+MUSE_COMPLETE_MODEL = os.environ.get("MUSE_COMPLETE_MODEL") or MUSE_AGENT_MODEL
+MUSE_COMPLETE_MAX_TOKENS = int(os.environ.get("MUSE_COMPLETE_MAX_TOKENS", "1024"))
 MUSE_STYLE_PROSE_CHAPTERS = int(os.environ.get("MUSE_STYLE_PROSE_CHAPTERS", "3"))
 # HTTP timeout for the upstream call. Streaming responses can take long, but the
 # CONNECT step gets its own short budget: a blackholed/dead host must fail in

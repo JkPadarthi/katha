@@ -23,7 +23,7 @@ const size = (n) =>
 
 const when = (iso) => (iso || '').replace('T', ' ').replace('Z', ' UTC')
 
-export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, onRestored, theme, onChooseTheme }) {
+export default function SettingsPanel({ goal, onGoal, nudge, onNudge, ghost, onGhost, onClose, onRestored, theme, onChooseTheme }) {
   const [trash, setTrash] = useState(null)     // null = still reading
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -138,6 +138,22 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
             type="checkbox"
             checked={!!nudge}
             onChange={(e) => onNudge(e.target.checked)}
+            className="h-4 w-4 shrink-0 accent-accent"
+          />
+        </label>
+
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-[11px] text-mute">
+            Ghost text
+            <span className="mt-0.5 block text-[10px] text-mute/60">
+              Pause at the end of a line and the Muse suggests the next sentence in grey —
+              Tab takes it. Each suggestion is a model call; off by default.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={!!ghost}
+            onChange={(e) => onGhost && onGhost(e.target.checked)}
             className="h-4 w-4 shrink-0 accent-accent"
           />
         </label>

@@ -94,6 +94,15 @@ export function saveChapter(series, bookId, chapterId, content, title) {
   })
 }
 
+// --- the time machine (D9): every save is a full snapshot ------------------
+export function listRevisions(series, bookId, chapterId) {
+  return req(`/books/${series}/${bookId}/chapters/${chapterId}/revisions`)
+}
+
+export function getRevision(series, bookId, chapterId, number) {
+  return req(`/books/${series}/${bookId}/chapters/${chapterId}/revisions/${number}`)
+}
+
 export function createChapter(series, bookId, title, content = '', number = null) {
   const body = { title, content }
   // 0 = a prologue (chapter 0). Omitted entirely when not asked for.
@@ -162,7 +171,7 @@ function unescapeSse(s) {
   return s.replace(/\\n|\\\\/g, (m) => (m === '\\n' ? '\n' : '\\'))
 }
 
-async function streamSse(path, body, { onDelta, onStatus, onProposal, signal }) {
+async function streamSse(path, body, { onDelta, onStatus, onProposal, onUsage, signal }) {
   const res = await fetch(`/api${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -203,6 +212,11 @@ async function streamSse(path, body, { onDelta, onStatus, onProposal, signal }) 
           if (onProposal) onProposal(payload.slice(10).trim())
           continue
         }
+        // What the reply cost in tokens (3.1): {input, output}, summed over every round.
+        if (payload.startsWith('[USAGE]')) {
+          try { if (onUsage) onUsage(JSON.parse(payload.slice(7).trim())) } catch { /* cosmetic */ }
+          continue
+        }
         if (payload.startsWith('[ERROR]')) {
           throw new Error(payload.slice(7).trim() || 'Muse error')
         }
@@ -215,17 +229,33 @@ async function streamSse(path, body, { onDelta, onStatus, onProposal, signal }) 
   return acc
 }
 
-export function museChat({ messages, chapterId, chip, onDelta, onStatus, onProposal, signal }) {
+export function museChat({ messages, chapterId, chip, onDelta, onStatus, onProposal, onUsage, signal }) {
   return streamSse('/muse/chat', {
     messages,
     chapter_id: chapterId || null,
     chip: chip || null
-  }, { onDelta, onStatus, onProposal, signal })
+  }, { onDelta, onStatus, onProposal, onUsage, signal })
 }
 
-// --- whole-chapter revisions (2.9, D45) -----------------------------------
+// Ghost text (3.1): a one-sentence continuation of the prose before the cursor.
+// Always resolves — a failed upstream is simply no suggestion.
+export async function museComplete({ before, chapterId, signal }) {
+  const res = await fetch('/api/muse/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ before, chapter_id: chapterId || null }),
+    signal
+  })
+  handleAuth(res)
+  if (!res.ok) return ''
+  const j = await res.json()
+  return j.text || ''
+}
+
+// --- staged changes (2.9, D45; any chapter or bible file since 3.1) --------
 // The Muse proposes; the author disposes. `acceptProposal` runs the same save path
-// as autosave on the server, so accepting one snapshots a revision like any edit.
+// as an edit the author made (chapter autosave + revision, or the bible PUT).
+// Each proposal carries {kind: 'chapter'|'bible', path, chapter, batch, stale, …}.
 export function listProposals() {
   return req('/muse/proposals')
 }
@@ -246,12 +276,12 @@ export function discardProposal(id) {
   return req(`/muse/proposals/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-export function museRewrite({ text, style, chapterId, onDelta, signal }) {
+export function museRewrite({ text, style, chapterId, onDelta, onUsage, signal }) {
   return streamSse('/muse/rewrite', {
     text,
     style: style || 'novel',
     chapter_id: chapterId || null
-  }, { onDelta, signal })
+  }, { onDelta, onUsage, signal })
 }
 
 export function museModels() {
@@ -321,14 +351,15 @@ export function museThread(chapterId) {
   return req(`/muse/thread?chapter_id=${encodeURIComponent(chapterId || '')}`)
 }
 
-// target: 'report' (whole-book audit) | 'bible' (proposed rewrite of one file)
-export function museSweep({ series, bookId, target, bibleName, onDelta, signal }) {
+// target: 'report' (whole-book audit) | 'bible' (rewrite of one file, staged as a
+// proposal — `onProposal` gets its id when the stream ends)
+export function museSweep({ series, bookId, target, bibleName, onDelta, onStatus, onProposal, onUsage, signal }) {
   return streamSse('/muse/sweep', {
     series,
     book_id: bookId,
     target: target || 'report',
     bible_name: bibleName || null
-  }, { onDelta, signal })
+  }, { onDelta, onStatus, onProposal, onUsage, signal })
 }
 
 // --- bible ----------------------------------------------------------------
@@ -391,3 +422,4 @@ export async function exportEpub(series, bookId, filename) {
   a.remove()
   URL.revokeObjectURL(url)
 }
+

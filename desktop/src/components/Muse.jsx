@@ -1,14 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from '../lib/api.js'
 import { editorApi } from './Editor.jsx'
+import { fileLabel } from './ProposalReview.jsx'
 import { Button } from '../ui/Button.jsx'
 
-// Imperative bridge so App can pre-fill the composer (proactive nudge).
-export const museApi = { setDraft: null }
+// Imperative bridge so the rest of the app can drive the composer:
+//   setDraft(text)                       pre-fill (proactive nudge)
+//   ask(text, {chip, chapterId}) → ids   send a message (inline edit, Fix buttons);
+//                                        resolves with the proposal ids the turn staged
+//   refreshPending()                     re-read what is waiting for review
+export const museApi = { setDraft: null, ask: null, refreshPending: null }
 
 // THE MUSE — streaming chat. The server is agentic: given a chapter id, it can
-// fetch the story files itself (see server/app/muse.py). The thread lives in
-// component state.
+// read the story files itself and stage edits to chapters and bible files (see
+// server/app/muse.py). Nothing it does is saved until the author accepts it.
 
 const CHIPS = [
   { id: 'rewrite',  label: '✎ rewrite' },
@@ -28,31 +33,75 @@ const APPLY = ['insert at cursor', 'replace selection', 'append to chapter']
 
 function latestAssistant(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'assistant' && messages[i].text) return messages[i].text
+    if (messages[i].role === 'assistant' && messages[i].text && !messages[i].local) return messages[i].text
   }
   return ''
 }
 
-export default function Muse({ series, chapter, onProposal }) {
+const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
+
+// The @-mention under the caret, if any: {start, query}.
+function mentionAt(text, caret) {
+  const upto = text.slice(0, caret)
+  const m = upto.match(/(^|[\s(])@([\w./-]*)$/)
+  if (!m) return null
+  return { start: caret - m[2].length - 1, query: m[2].toLowerCase() }
+}
+
+export default function Muse({ series, chapter, book, onReview }) {
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState('')
-  const [proposal, setProposal] = useState('')   // a whole-chapter revision, waiting (2.9)
-  const [hunkCount, setHunkCount] = useState(0)  // how many separate changes it holds (3.0)
+  const [pending, setPending] = useState([])     // staged changes waiting in this book
   const [busy, setBusy] = useState(false)
   const [streaming, setStreaming] = useState('')
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
+  const [usage, setUsage] = useState(null)       // last reply {input, output}
+  const [spent, setSpent] = useState({ input: 0, output: 0 })   // this session
+  const [mention, setMention] = useState(null)   // {start, query}
+  const [pick, setPick] = useState(0)
   const abortRef = useRef(null)
   const threadRef = useRef(null)
+  const composerRef = useRef(null)
+  const queuedRef = useRef(null)                 // an ask() waiting for its chapter to open
 
   // `series/book/ch-NN` — tells the server which story to read (canon context
   // + the agentic tools). Null when nothing is open.
   const chapterId = series && chapter ? `${series.series}/${series.book}/${chapter.id}` : null
 
+  // Everything the author can @-mention in this book.
+  const files = useMemo(() => {
+    if (!book) return []
+    const ch = (book.chapters || []).map((c) => ({
+      token: c.id, label: c.title ? `${c.id} · ${c.title}` : c.id, kind: 'chapter'
+    }))
+    const bi = (book.bible || []).map((b) => ({
+      token: b.id.replace(/\.md$/, ''), label: `bible · ${b.id}`, kind: 'bible'
+    }))
+    return [...ch, ...bi]
+  }, [book])
+  const matches = useMemo(() => {
+    if (!mention) return []
+    const q = mention.query
+    return files.filter((f) => !q || f.token.toLowerCase().includes(q) || f.label.toLowerCase().includes(q)).slice(0, 8)
+  }, [mention, files])
+
+  const refreshPending = async () => {
+    if (!series) { setPending([]); return }
+    try {
+      const r = await api.listProposals()
+      const mine = (r.proposals || []).filter((p) => p.series === series.series && p.book === series.book)
+      // the open chapter first, then the rest in the order the server gives (newest first)
+      mine.sort((a, b) => (b.chapter === chapter?.id) - (a.chapter === chapter?.id))
+      setPending(mine)
+    } catch { /* best-effort: never block the thread on this */ }
+  }
+
   useEffect(() => {
-    museApi.setDraft = (t) => setDraft(t)
-    return () => { museApi.setDraft = null }
-  }, [])
+    museApi.setDraft = (t) => { setDraft(t); composerRef.current?.focus() }
+    museApi.refreshPending = refreshPending
+    return () => { museApi.setDraft = null; museApi.refreshPending = null }
+  })
 
   // Restore the persisted conversation for the open chapter.
   useEffect(() => {
@@ -67,8 +116,11 @@ export default function Muse({ series, chapter, onProposal }) {
     setError('')
     setStatus('')
     setStreaming('')
-    setProposal('')          // a revision belongs to the chapter it was made in
     if (!chapterId) return
+    // A change may have been staged while this tab was closed, or in another tab. The
+    // SSE marker only ever covers a turn we watched live, so ask the server what is
+    // still pending — otherwise a waiting change is invisible (2.9.3).
+    refreshPending()
     api
       .museThread(chapterId)
       .then((r) => {
@@ -76,44 +128,26 @@ export default function Muse({ series, chapter, onProposal }) {
         setMessages((r.messages || []).map((m) => ({ role: m.role, text: m.text })))
       })
       .catch(() => { /* history is best-effort */ })
-    // A revision may have been handed over while this tab was closed, or in another
-    // tab. The SSE marker only ever covers a turn we watched live, so ask the server
-    // what is still pending for this chapter — otherwise a waiting revision is
-    // invisible and the author has to ask the Muse again (2.9.3).
-    api
-      .listProposals()
-      .then((r) => {
-        if (!alive) return
-        const mine = (r.proposals || []).filter(
-          (p) => `${p.series}/${p.book}/${p.chapter}` === chapterId
-        )
-        setProposal(mine.length ? mine[0].id : '')   // newest first
+      .finally(() => {
+        // An ask() that was waiting for this chapter to open (a Fix button) goes now.
+        const q = queuedRef.current
+        if (alive && q && q.chapterId === chapterId) {
+          queuedRef.current = null
+          send(q.text, q.chip).then(q.resolve, q.reject)
+        }
       })
-      .catch(() => { /* best-effort: never block the thread on this */ })
     return () => { alive = false }
   }, [chapterId])
-
-  // Say how many changes are waiting, not just that something is. The banner is the only
-  // thing the author sees before opening the review, so it should carry the size of the
-  // decision (3.0, D48).
-  useEffect(() => {
-    if (!proposal) { setHunkCount(0); return }
-    let alive = true
-    api
-      .getProposal(proposal)
-      .then((p) => { if (alive) setHunkCount((p.hunks || []).length) })
-      .catch(() => { if (alive) setHunkCount(0) })
-    return () => { alive = false }
-  }, [proposal])
 
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
   }, [messages, streaming])
 
   const send = async (text, chip) => {
-    if (!text.trim() || busy) return
+    if (!text.trim() || busy) return []
     setError('')
     setStatus('')
+    setMention(null)
     setMessages((m) => [...m, { role: 'user', text }])
     setDraft('')
     setBusy(true)
@@ -126,6 +160,7 @@ export default function Muse({ series, chapter, onProposal }) {
       { role: 'user', content: text }
     ]
 
+    const staged = []
     const ac = new AbortController()
     abortRef.current = ac
     try {
@@ -135,9 +170,13 @@ export default function Muse({ series, chapter, onProposal }) {
         chip: chip || null,
         onDelta: (acc) => setStreaming(acc),
         onStatus: (s) => setStatus(s),
-        // The server parked a whole-chapter revision for approval. Nothing was
-        // written: this only raises the "review the diff" affordance (2.9, D45).
-        onProposal: (id) => setProposal(id),
+        // The server staged a change for review. Nothing was written: this only
+        // refreshes the "review" list (2.9, D45).
+        onProposal: (id) => { staged.push(id) },
+        onUsage: (u) => {
+          setUsage(u)
+          setSpent((s) => ({ input: s.input + (u.input || 0), output: s.output + (u.output || 0) }))
+        },
         signal: ac.signal
       })
       setMessages((m) => [...m, { role: 'assistant', text: full }])
@@ -153,7 +192,23 @@ export default function Muse({ series, chapter, onProposal }) {
       setStatus('')
       abortRef.current = null
     }
+    if (staged.length) await refreshPending()
+    return staged
   }
+
+  // ask(): send from outside the panel. If it is about another chapter, that chapter
+  // opens first (the caller switches it) and the message goes once its thread loads.
+  useEffect(() => {
+    museApi.ask = (text, { chip, chapterId: target } = {}) => {
+      if (target && target !== chapterId) {
+        return new Promise((resolve, reject) => {
+          queuedRef.current = { text, chip, chapterId: target, resolve, reject }
+        })
+      }
+      return send(text, chip)
+    }
+    return () => { museApi.ask = null }
+  })
 
   const stop = () => {
     abortRef.current?.abort()
@@ -176,6 +231,43 @@ export default function Muse({ series, chapter, onProposal }) {
   }
 
   const latest = latestAssistant(messages) || streaming
+  const totalHunks = pending.reduce((n, p) => n + (p.hunk_count || 0), 0)
+
+  // --- composer + @-mentions ------------------------------------------------
+  const onDraftChange = (e) => {
+    setDraft(e.target.value)
+    const m = mentionAt(e.target.value, e.target.selectionStart)
+    setMention(m)
+    setPick(0)
+  }
+
+  const takeMention = (f) => {
+    if (!mention || !f) return
+    const ta = composerRef.current
+    const caret = ta ? ta.selectionStart : draft.length
+    const next = draft.slice(0, mention.start) + '@' + f.token + ' ' + draft.slice(caret)
+    setDraft(next)
+    setMention(null)
+    requestAnimationFrame(() => {
+      if (!ta) return
+      const c = mention.start + f.token.length + 2
+      ta.focus()
+      ta.setSelectionRange(c, c)
+    })
+  }
+
+  const onComposerKey = (e) => {
+    if (mention && matches.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); return }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); takeMention(matches[pick]); return }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setMention(null); return }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      send(draft)
+    }
+  }
 
   return (
     <aside className="flex min-h-0 flex-col border-l hairline bg-panel">
@@ -184,7 +276,14 @@ export default function Muse({ series, chapter, onProposal }) {
           <span className="text-[10px] text-accent">✦</span>
           <span className="text-[11.5px] font-medium text-ink">The Muse</span>
         </div>
-        <span className="text-[10px] text-mute/60">
+        <span className="flex items-center gap-2 text-[10px] text-mute/60">
+          {usage && !busy && (
+            <span
+              title={`Last reply: ${usage.input} tokens in, ${usage.output} out.\nThis session: ${spent.input} in, ${spent.output} out.`}
+            >
+              {k(usage.input)} in · {k(usage.output)} out
+            </span>
+          )}
           {busy ? (
             <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
@@ -209,38 +308,57 @@ export default function Muse({ series, chapter, onProposal }) {
         ))}
       </div>
 
-      {/* A whole-chapter revision is waiting (2.9, D45). The Muse cannot write:
-          this is the author's decision, and nothing has changed until Accept. */}
-      {proposal && (
+      {/* Staged changes waiting for review, across every file in this book (2.9 → 3.1).
+          The Muse cannot save: this is the author's decision, and nothing has changed
+          until Accept. */}
+      {pending.length > 0 && (
         <div className="mx-3 mb-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-accent">◆</span>
             <span className="min-w-0 flex-1 text-[11px] text-ink">
-              {hunkCount
-                ? `${hunkCount} ${hunkCount === 1 ? 'change' : 'changes'} proposed — none applied.`
-                : 'A full-chapter revision is ready — not applied.'}
+              {totalHunks
+                ? `${totalHunks} ${totalHunks === 1 ? 'change' : 'changes'}`
+                : 'Changes'}
+              {pending.length > 1 ? ` in ${pending.length} files` : ''} — none applied.
             </span>
-            <Button variant="accent" size="sm" onClick={() => onProposal && onProposal(proposal)}>
-              {hunkCount ? 'Review changes' : 'Review diff'}
-            </Button>
-            <Button
-              size="sm"
-              onClick={async () => {
-                try { await api.discardProposal(proposal) } catch { /* gone is gone */ }
-                setProposal('')
-              }}
-            >
-              Discard
+            <Button variant="accent" size="sm" onClick={() => onReview && onReview(pending[0].id)}>
+              Review
             </Button>
           </div>
+          <ul className="mt-1.5 space-y-0.5">
+            {pending.map((p) => (
+              <li key={p.id} className="flex items-center gap-2 text-[10.5px]">
+                <button
+                  onClick={() => onReview && onReview(p.id)}
+                  className="min-w-0 flex-1 truncate text-left text-mute hover:text-ink"
+                  title={p.stale ? 'This file changed since the Muse read it' : `Review ${p.path}`}
+                >
+                  {fileLabel(p.path)}
+                  {typeof p.hunk_count === 'number' ? ` · ${p.hunk_count}` : ''}
+                  {p.stale ? ' · ⚠ out of date' : ''}
+                </button>
+                <button
+                  onClick={async () => {
+                    try { await api.discardProposal(p.id) } catch { /* gone is gone */ }
+                    refreshPending()
+                  }}
+                  className="text-mute/60 hover:text-err"
+                  title="Discard this change"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
       {/* Thread */}
       <div ref={threadRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-2">
         {messages.length === 0 && !streaming && (
-          <div className="flex h-full items-center justify-center text-[11px] text-mute/50">
-            Tell the Muse what to write.
+          <div className="flex h-full flex-col items-center justify-center gap-1 text-center text-[11px] text-mute/50">
+            <span>Tell the Muse what to write — or what to change.</span>
+            <span className="text-[10px] text-mute/40">@ to point at a chapter or bible file</span>
           </div>
         )}
 
@@ -281,20 +399,35 @@ export default function Muse({ series, chapter, onProposal }) {
       </div>
 
       {/* Composer */}
-      <div className="shrink-0 border-t hairline p-3">
+      <div className="relative shrink-0 border-t hairline p-3">
+        {mention && matches.length > 0 && (
+          <ul className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-56 overflow-y-auto rounded-md border hairline bg-panel py-1 shadow-lg shadow-black/40">
+            {matches.map((f, i) => (
+              <li key={f.token}>
+                <button
+                  onMouseDown={(e) => { e.preventDefault(); takeMention(f) }}
+                  className={
+                    'flex w-full items-center gap-2 px-2.5 py-1 text-left text-[11px] ' +
+                    (i === pick ? 'bg-panel-2 text-ink' : 'text-mute')
+                  }
+                >
+                  <span className="text-accent/80">@</span>
+                  <span className="truncate">{f.label}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
+          ref={composerRef}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              send(draft)
-            }
-          }}
+          onChange={onDraftChange}
+          onKeyDown={onComposerKey}
+          onBlur={() => setTimeout(() => setMention(null), 120)}
           rows={2}
           disabled={busy}
           className="w-full resize-none rounded-md border hairline bg-base px-2.5 py-2 text-[12.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-60"
-          placeholder="Tell the Muse what to write…"
+          placeholder="Tell the Muse what to write… (@ to attach a file)"
         />
         <div className="mt-2 flex items-center justify-between">
           <div className="flex gap-1.5">

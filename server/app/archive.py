@@ -523,6 +523,18 @@ BIBLE_SCAFFOLD: dict[str, str] = {
         "- What it looks / sounds like:\n"
         "- Who is here:\n"
     ),
+    # The author's standing orders for the Muse (3.1, D56). Everything in the
+    # template is comment, heading or an empty bullet, so an untouched file sends
+    # nothing; the first real line becomes a rule the Muse always follows.
+    "rules.md": (
+        "# Rules\n\n"
+        "<!-- The Muse reads this file on every request and always follows it.\n"
+        "     One rule per bullet — spelling, style, things that must never happen.\n"
+        "     e.g.  - British spelling.\n"
+        "           - No em-dashes.\n"
+        "           - Kael never swears. -->\n\n"
+        "- \n"
+    ),
     "timeline.md": (
         "# Timeline\n\n"
         "One bullet per event, in story order. Note the chapter where it is "

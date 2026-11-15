@@ -6,6 +6,7 @@ import Muse, { museApi } from './components/Muse.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
 import ProposalReview from './components/ProposalReview.jsx'
+import HistoryPanel from './components/HistoryPanel.jsx'
 import SweepPanel from './components/SweepPanel.jsx'
 import BiblePanel from './components/BiblePanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
@@ -17,6 +18,8 @@ import { getSetting, setSetting } from './lib/settings.js'
 import { pickChapter, pickSeries, newestChapter } from './lib/resume.js'
 import { useMediaQuery } from './lib/useMediaQuery.js'
 import { useTheme } from './lib/useTheme.js'
+import { countWords as countWordsOf } from './lib/text.js'
+import { Button } from './ui/Button.jsx'
 
 export default function App() {
   const { theme, choose } = useTheme()
@@ -38,10 +41,16 @@ export default function App() {
   const currentBook = (archive || [])
     .flatMap((s) => s.books || [])
     .find((b) => b.id === series?.book) || null
-  // A whole-chapter revision the Muse handed over, waiting for approval (2.9, D45):
-  // {id, content, original}. Nothing is written until the author accepts it.
+  // A change the Muse staged, open for review (2.9, D45; any file since 3.1):
+  // {id, kind, path, chapter, original, hunks, stale, dropped, siblings}. Nothing is
+  // written until the author accepts it.
   const [proposal, setProposal] = useState(null)
   const [proposalBusy, setProposalBusy] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [ghostOn, setGhostOn] = useState(() => getSetting('ghost', false))
+  // Inline edit on a selection (3.1): null = closed, else {text: instruction}.
+  const [inlineAsk, setInlineAsk] = useState(null)
+  const [inlineBusy, setInlineBusy] = useState(false)
 
   const [sweepOpen, setSweepOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -119,6 +128,7 @@ export default function App() {
       if (e.key === 'Escape') {
         setPaletteOpen(false)
         setRewriteOpen(false)
+        setInlineAsk(null)
         setFocusMode(false)
       }
     }
@@ -260,6 +270,60 @@ export default function App() {
     } catch { /* the refresh above already surfaced any failure */ }
   }
 
+  // --- inline edit on a selection (3.1, D57) -----------------------------
+  // The IDE's "edit this, here": the author selects a passage and says what to do with
+  // it; the Muse stages one edit on exactly that passage and the review opens on it.
+  const openInline = () => {
+    if (selection?.text && !inlineBusy) setInlineAsk({ text: '' })
+  }
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'i' && selection?.text) {
+        e.preventDefault()
+        openInline()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  const runInline = async () => {
+    const instruction = (inlineAsk?.text || '').trim()
+    const sel = selection
+    if (!instruction || !sel?.text || !museApi.ask) return
+    setInlineAsk(null)
+    setInlineBusy(true)
+    try {
+      // The Muse reads the file, so the passage must be on disk first.
+      if (editorApi.flush) await editorApi.flush()
+      const ids = await museApi.ask(
+        `Selected passage (in ${chapter?.id}), exactly as it stands in the file:\n<<<\n${sel.text}\n>>>\n\nInstruction: ${instruction}`,
+        { chip: 'inline', chapterId: activeChapterId }
+      )
+      if (ids && ids.length) await openProposal(ids[ids.length - 1])
+      else if (isMobile) setPane(2)          // no change staged: the Muse's reply says why
+    } catch { /* the Muse panel shows the error */ }
+    finally {
+      setInlineBusy(false)
+    }
+  }
+
+  // --- Fix a continuity issue from the sweep (3.1, D60) ------------------
+  const fixIssue = async (issue) => {
+    if (!series || !book) return
+    setSweepOpen(false)
+    const ids = new Set((book.chapters || []).map((c) => c.id))
+    const target = issue.refs.find((r) => ids.has(r)) || activeChapter
+    if (!target) return
+    if (target !== activeChapter) jumpTo(target)
+    if (isMobile) setPane(2)
+    const staged = await museApi.ask?.(
+      `Fix this continuity issue — [${issue.refs.join(', ')}] ${issue.text}`,
+      { chip: 'fix', chapterId: `${series.series}/${series.book}/${target}` }
+    )
+    if (staged && staged.length) await openProposal(staged[0])
+  }
+
   // --- rewrite flow ------------------------------------------------------
   const runRewrite = async (sel, style) => {
     if (!sel || !sel.text) return
@@ -290,45 +354,72 @@ export default function App() {
     setSelection(null)   // offsets are stale once the text is replaced
   }
 
-  // The Muse handed over a whole-chapter revision (2.9, D45). Fetch it together
-  // with the chapter as it stands, so the author reads a word-level diff instead of
-  // a wall of prose — and nothing is written until they accept.
-  // A revision can be reviewed one change at a time (3.0, D48): the pane needs the prose
-  // the Muse was looking at (`base_content`) and the hunks cut from it.
-  const openProposal = async (id) => {
-    if (!series || !activeChapter) return
+  // Open a staged change for review (2.9 → 3.1). The pane needs the text the Muse was
+  // looking at (`base_content`), the hunks cut from it, and every other file with
+  // changes waiting in this book, so a multi-file change is reviewed in one place.
+  const pendingInBook = async () => {
     try {
-      const [p, ch] = await Promise.all([
-        api.getProposal(id),
-        api.getChapter(series.series, series.book, activeChapter)
-      ])
-      setProposal({
-        id,
-        content: p.content || '',
-        original: p.base_content ?? ch.content ?? '',
-        hunks: p.hunks || [],
-        stale: !!p.stale
-      })
+      const r = await api.listProposals()
+      return (r.proposals || []).filter(
+        (p) => series && p.series === series.series && p.book === series.book
+      )
     } catch {
-      setProposal(null)   // gone or unreadable: no banner, no half-open overlay
+      return []
     }
   }
 
-  // Accepting is a normal save on the server (revision snapshot and all), so the editor is
-  // loaded from what the server actually stored. `ids` narrows it to the changes the author
-  // ticked; anything left unticked stays pending, and the pane reopens on the rest.
+  const openProposal = async (id) => {
+    if (!series) return
+    try {
+      const [p, siblings] = await Promise.all([api.getProposal(id), pendingInBook()])
+      setProposal({
+        id,
+        kind: p.kind || 'chapter',
+        path: p.path || '',
+        chapter: p.chapter || '',
+        content: p.content || '',
+        original: p.base_content ?? '',
+        hunks: p.hunks || [],
+        stale: !!p.stale,
+        dropped: p.dropped || [],
+        siblings
+      })
+    } catch {
+      setProposal(null)   // gone or unreadable: no half-open review
+      museApi.refreshPending?.()
+    }
+  }
+
+  // After a decision on one file: stay on it if hunks remain, else go to the next file
+  // that is still waiting, else close.
+  const afterDecision = async (id) => {
+    const left = await pendingInBook()
+    museApi.refreshPending?.()
+    const same = left.find((p) => p.id === id)
+    const next = same || left[0]
+    if (next) await openProposal(next.id)
+    else setProposal(null)
+  }
+
+  // A saved chapter goes straight into the editor as the saved baseline — never through
+  // autosave, which would write it a second time and make the rest stale (3.1).
+  const landSaved = (saved) => {
+    if (!saved) return
+    if (saved.kind === 'bible') {
+      setBibleKey((k) => k + 1)
+    } else if (saved.id === activeChapter && editorApi.loadSaved) {
+      editorApi.loadSaved(saved.content, saved.title, saved.revision)
+    }
+  }
+
+  // Accepting is a normal save on the server (revision snapshot and all). `ids` narrows
+  // it to the changes the author ticked; anything left unticked stays pending.
   const acceptProposal = async (ids = null) => {
     if (!proposal) return
     setProposalBusy(true)
     try {
-      const saved = await api.acceptProposal(proposal.id, ids)
-      if (editorApi.replaceAll) editorApi.replaceAll(saved.content, saved.title)
-      const left = await api
-        .listProposals()
-        .then((r) => (r.proposals || []).some((p) => p.id === proposal.id))
-        .catch(() => false)
-      if (left) await openProposal(proposal.id)
-      else setProposal(null)
+      landSaved(await api.acceptProposal(proposal.id, ids))
+      await afterDecision(proposal.id)
       await refreshArchive()
     } catch {
       /* leave the review open — the author can accept again */
@@ -336,12 +427,57 @@ export default function App() {
       setProposalBusy(false)
     }
   }
+
+  const acceptAllFiles = async () => {
+    setProposalBusy(true)
+    try {
+      for (const p of await pendingInBook()) {
+        if (p.stale) continue
+        try { landSaved(await api.acceptProposal(p.id, null)) } catch { /* keep going */ }
+      }
+      await afterDecision(proposal?.id)
+      await refreshArchive()
+    } finally {
+      setProposalBusy(false)
+    }
+  }
+
+  const discardProposal = async () => {
+    if (!proposal) return
+    try { await api.discardProposal(proposal.id) } catch { /* gone is gone */ }
+    await afterDecision(proposal.id)
+  }
+
   const onRetry = () => { if (selection) runRewrite(selection, rewriteStyle) }
   const onStyleChange = (s) => {
     setRewriteStyle(s)
     if (rewriteOpen && selection) runRewrite(selection, s)
   }
   const onCloseRewrite = () => { setRewriteOpen(false); setProposed('') }
+
+  // The open chapter's own changes are reviewed on the page itself (3.1, D60); anything
+  // else — a bible file, another chapter, a phone — in the modal pane.
+  const inlineReview = !!proposal && !isMobile && proposal.kind === 'chapter' &&
+    proposal.chapter === activeChapter
+  const reviewNode = (inline) => (
+    <ProposalReview
+      id={proposal.id}
+      kind={proposal.kind}
+      path={proposal.path}
+      original={proposal.original}
+      hunks={proposal.hunks}
+      stale={proposal.stale}
+      dropped={proposal.dropped}
+      siblings={proposal.siblings}
+      inline={inline}
+      busy={proposalBusy}
+      onAccept={(ids) => acceptProposal(ids)}
+      onAcceptAllFiles={acceptAllFiles}
+      onDiscard={discardProposal}
+      onSwitch={openProposal}
+      onClose={() => setProposal(null)}
+    />
+  )
 
   // --- mobile swipe ------------------------------------------------------
   const onTouchStart = (e) => {
@@ -366,16 +502,54 @@ export default function App() {
 
   const pageNode = (
     <div className="relative h-full min-h-0">
-      <Editor chapter={chapter} series={series} focus={focusMode} onSelection={onSelection} />
-      {selection && selection.text && !rewriteOpen && (
-        <button
-          onClick={onRewriteClick}
-          className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-accent/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-accent shadow-lg shadow-black/40 hover:bg-accent/10"
-          title="Rewrite the selected text with the Muse"
-        >
-          ✎ Rewrite selection
-        </button>
+      <Editor
+        chapter={chapter}
+        series={series}
+        focus={focusMode}
+        onSelection={onSelection}
+        onHistory={() => setHistoryOpen(true)}
+        ghost={ghostOn}
+      />
+      {selection && selection.text && !rewriteOpen && !inlineAsk && (
+        <div className="absolute right-6 top-6 z-30 flex items-center gap-1.5">
+          <button
+            onClick={openInline}
+            disabled={inlineBusy}
+            className="flex items-center gap-1.5 rounded-md border border-accent/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-accent shadow-lg shadow-black/40 hover:bg-accent/10 disabled:opacity-60"
+            title="Tell the Muse what to do with the selection — its edit comes to you for review (Ctrl/⌘+I)"
+          >
+            {inlineBusy ? '✦ editing…' : '✦ Edit with Muse'}
+          </button>
+          <button
+            onClick={onRewriteClick}
+            className="flex items-center gap-1.5 rounded-md border hairline bg-panel px-3 py-1.5 text-[11px] font-medium text-mute shadow-lg shadow-black/40 hover:text-ink"
+            title="Rewrite the selected text with the Muse"
+          >
+            ✎ Rewrite
+          </button>
+        </div>
       )}
+      {inlineAsk && (
+        <form
+          onSubmit={(e) => { e.preventDefault(); runInline() }}
+          className="absolute left-1/2 top-6 z-30 flex w-[min(560px,90%)] -translate-x-1/2 items-center gap-2 rounded-lg border border-accent/40 bg-panel px-3 py-2 shadow-2xl shadow-black/50"
+        >
+          <span className="text-[11px] text-accent">✦</span>
+          <input
+            autoFocus
+            value={inlineAsk.text}
+            onChange={(e) => setInlineAsk({ text: e.target.value })}
+            onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setInlineAsk(null) } }}
+            placeholder={`What should change in the selected ${countWordsOf(selection?.text)} words?`}
+            className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink placeholder:text-mute/50 focus:outline-none"
+          />
+          <Button variant="accent" size="sm" type="submit" disabled={!inlineAsk.text.trim()}>
+            Edit
+          </Button>
+          <button type="button" onClick={() => setInlineAsk(null)} className="text-mute hover:text-ink">×</button>
+        </form>
+      )}
+      {proposal && inlineReview && reviewNode(true)}
       {nudge && !focusMode && (
         <div className="absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border hairline bg-panel px-3 py-1.5 text-[11px] text-mute shadow-lg shadow-black/40">
           <span>Still going?</span>
@@ -395,6 +569,8 @@ export default function App() {
   )
 
   const commands = [
+    ...(chapter ? [{ id: 'history', label: 'Revision history', hint: 'Chapter', run: () => setHistoryOpen(true) }] : []),
+    ...(selection?.text ? [{ id: 'inline', label: 'Edit selection with the Muse', hint: 'Ctrl/⌘+I', run: openInline }] : []),
     {
       id: 'focus',
       label: focusMode ? 'Exit focus mode' : 'Enter focus mode',
@@ -462,7 +638,7 @@ export default function App() {
                 </div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
                 <div className="flex h-full w-full shrink-0 overflow-hidden">
-                  <Muse series={series} chapter={chapter} onProposal={openProposal} />
+                  <Muse series={series} chapter={chapter} book={book} onReview={openProposal} />
                 </div>
               </div>
             </div>
@@ -511,7 +687,11 @@ export default function App() {
               onEditBook={() => setBookFace(true)}
             />
             {pageNode}
-            {!focusMode && <Muse series={series} chapter={chapter} onProposal={openProposal} />}
+            {/* Kept mounted in focus mode (just hidden), so a reply in flight — an inline
+                edit, a Fix — is not cut off by toggling focus. */}
+            <div className={focusMode ? 'hidden' : 'contents'}>
+              <Muse series={series} chapter={chapter} book={book} onReview={openProposal} />
+            </div>
           </div>
         )
       ) : loadError ? (
@@ -568,30 +748,27 @@ export default function App() {
           onClose={onCloseRewrite}
         />
       )}
-      {proposal && (proposal.hunks?.length ? (
-        <ProposalReview
-          id={proposal.id}
-          original={proposal.original}
-          hunks={proposal.hunks}
-          stale={proposal.stale}
-          busy={proposalBusy}
-          onAccept={(ids) => acceptProposal(ids)}
-          onDiscard={() => api.discardProposal(proposal.id)}
-          onClose={() => setProposal(null)}
+      {proposal && !inlineReview && reviewNode(false)}
+      {historyOpen && series && chapter && (
+        <HistoryPanel
+          series={series}
+          chapter={chapter}
+          current={editorApi.current ? editorApi.current() : null}
+          onRestored={(saved) => {
+            landSaved({ ...saved, kind: 'chapter' })
+            refreshArchive()
+            museApi.refreshPending?.()     // waiting edits replay onto the restored text
+          }}
+          onClose={() => setHistoryOpen(false)}
         />
-      ) : (
-        <DiffOverlay
-          title="Revision"
-          original={proposal.original}
-          proposed={proposal.content}
-          busy={proposalBusy}
-          showStyles={false}
-          onAccept={() => acceptProposal(null)}
-          onClose={() => setProposal(null)}
-        />
-      ))}
+      )}
       {sweepOpen && series && (
-        <SweepPanel series={series} onClose={() => setSweepOpen(false)} />
+        <SweepPanel
+          series={series}
+          onClose={() => setSweepOpen(false)}
+          onFix={fixIssue}
+          onReview={(id) => { setSweepOpen(false); openProposal(id) }}
+        />
       )}
       {bibleName !== null && series && (
         <BiblePanel
@@ -617,6 +794,8 @@ export default function App() {
           onGoal={(v) => { setGoal(v); setSetting('goal', v === '' ? null : Number(v)) }}
           nudge={nudgeOn}
           onNudge={(v) => { setNudgeOn(v); setSetting('nudge', v) }}
+          ghost={ghostOn}
+          onGhost={(v) => { setGhostOn(v); setSetting('ghost', v) }}
           onClose={() => setSettingsOpen(false)}
           onRestored={refreshArchive}
           theme={theme}

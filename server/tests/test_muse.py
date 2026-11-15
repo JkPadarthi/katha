@@ -146,7 +146,7 @@ def _payload_from_lines(lines) -> str:
         if not line.startswith("data:"):
             continue
         payload = line[6:] if len(line) > 5 and line[5] == " " else line[5:]
-        if payload.strip() == "[DONE]" or payload.startswith("[STATUS]"):
+        if payload.strip() == "[DONE]" or payload.startswith(("[STATUS]", "[PROPOSAL]", "[USAGE]")):
             continue
         assert not payload.startswith("[ERROR]"), f"stream error event: {payload}"
         out.append(_SSE_TOKEN_RE.sub(_sse_un, payload))
@@ -690,8 +690,9 @@ def test_sweep_report_streams(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_sweep_bible_streams_and_approval_writes(monkeypatch: pytest.MonkeyPatch):
-    """target='bible' streams a proposed rewrite of one bible file. The
-    approval step (PUT) then writes it to disk — md is the truth."""
+    """target='bible' streams a proposed rewrite of one bible file and stages it as a
+    proposal (3.1, D54). Nothing is written until the author accepts it in review —
+    and accepting writes it to disk, md being the truth."""
     from app.config import ARCHIVE_ROOT
 
     proposed_text = "# Characters\n\n## Kael\n- Grey eyes, carries a debt.\n"
@@ -704,6 +705,7 @@ def test_sweep_bible_streams_and_approval_writes(monkeypatch: pytest.MonkeyPatch
 
     name = "sweep-check.md"
     series_slug, book_slug = ar.slugify("The Ember Throne"), ar.slugify("The First Flame")
+    dest = ARCHIVE_ROOT / series_slug / book_slug / "bible" / name
 
     with TestClient(app) as client:
         with client.stream(
@@ -713,17 +715,22 @@ def test_sweep_bible_streams_and_approval_writes(monkeypatch: pytest.MonkeyPatch
                   "target": "bible", "bible_name": name},
         ) as r:
             assert r.status_code == 200
-            proposed = _sse_payload(r)
+            lines = list(r.iter_lines())
+        proposed = _payload_from_lines(lines)
+        assert proposed == proposed_text
+        pids = [ln.split("[PROPOSAL]", 1)[1].strip() for ln in lines if "[PROPOSAL]" in ln]
+        assert len(pids) == 1, lines
+        assert not dest.exists(), "staged, not written"
 
-        put = client.put(
-            f"/api/books/{series_slug}/{book_slug}/bible/{name}",
-            json={"content": proposed},
-        )
-        assert put.status_code == 200
-        assert put.json()["files"][name] == proposed
+        detail = client.get(f"/api/muse/proposals/{pids[0]}").json()
+        assert detail["kind"] == "bible" and detail["path"] == f"bible/{name}"
+        assert detail["hunks"], "a new file is one change to review"
 
-    on_disk = (ARCHIVE_ROOT / series_slug / book_slug / "bible" / name).read_text(encoding="utf-8")
-    assert on_disk == proposed
+        acc = client.post(f"/api/muse/proposals/{pids[0]}/accept")
+        assert acc.status_code == 200, acc.text
+        assert acc.json()["remaining"] == 0
+
+    assert dest.read_text(encoding="utf-8") == proposed_text
 
 
 def test_sweep_bible_rejects_bad_name(monkeypatch: pytest.MonkeyPatch):
@@ -1079,8 +1086,9 @@ def test_the_agent_prompt_forbids_announcing_tool_use_and_claims_no_write(monkey
     system = " ".join(m["content"] for m in captured["body"]["messages"]
                       if m["role"] == "system")
     assert "CALL the tool in the same turn" in system
-    assert "read-only" in system and "cannot write" in system
-    assert "proposal" in system
+    # 3.0.10: the Muse edits like a coding assistant, but can never save.
+    assert "edit_file" in system and "cannot save" in system
+    assert "proposal" in system and "read-only" not in system
 
 
 def test_status_lines_read_like_progress_not_function_names(monkeypatch: pytest.MonkeyPatch):

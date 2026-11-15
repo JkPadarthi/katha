@@ -336,6 +336,10 @@ async def _stream_ollama(payload: dict, client: httpx.AsyncClient) -> AsyncItera
                 event["content"] = msg["content"]
             if msg.get("tool_calls"):
                 event["tool_calls"] = msg["tool_calls"]
+            # The final chunk carries the counts (3.1, D59).
+            if obj.get("done") and ("prompt_eval_count" in obj or "eval_count" in obj):
+                event["usage"] = {"input": obj.get("prompt_eval_count") or 0,
+                                  "output": obj.get("eval_count") or 0}
             if event:
                 yield event
 
@@ -369,6 +373,12 @@ async def _stream_openai(payload: dict, client: httpx.AsyncClient) -> AsyncItera
             except json.JSONDecodeError:
                 continue
 
+            # Usage rides on the last chunk when the gateway sends it (some always
+            # do; we don't ask, so a strict gateway never sees an unknown field).
+            if obj.get("usage"):
+                use = obj["usage"]
+                yield {"usage": {"input": use.get("prompt_tokens") or 0,
+                                 "output": use.get("completion_tokens") or 0}}
             choices = obj.get("choices") or []
             if not choices:
                 continue
@@ -424,6 +434,7 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
     calls: dict[int, dict] = {}
     text_seen = False
     stop_reason = ""
+    usage = {"input": 0, "output": 0}
 
     async with client.stream(
         "POST", chat_url(), json=body, headers=headers(), timeout=timeout(),
@@ -446,9 +457,16 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
                 err = obj.get("error") or {}
                 raise RuntimeError(err.get("message") or "upstream error")
 
+            if kind == "message_start":
+                use = (obj.get("message") or {}).get("usage") or {}
+                usage["input"] = use.get("input_tokens") or usage["input"]
+                usage["output"] = use.get("output_tokens") or usage["output"]
+
             if kind == "message_delta":
                 stop_reason = ((obj.get("delta") or {}).get("stop_reason")
                                or obj.get("stop_reason") or stop_reason)
+                use = obj.get("usage") or {}
+                usage["output"] = use.get("output_tokens") or usage["output"]
 
             if kind == "content_block_start":
                 block = obj.get("content_block") or {}
@@ -493,18 +511,24 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
         # reasoning-heavy prompt with a small ceiling can finish having written nothing at
         # all. The sweep did exactly that (0 chars, stop_reason=max_tokens) and the panel
         # showed an empty report with no explanation (3.0.9).
+        # `notice` marks it as a message to the author, never content — so nothing
+        # downstream can stage it as a file's new text (3.1).
         if stop_reason == "max_tokens":
-            yield {"content": (
+            yield {"notice": True, "content": (
                 "\n\n_[The model spent its entire output budget on reasoning and never "
                 "reached the answer. Nothing is wrong with your book — ask again, or ask "
                 "for something smaller (one chapter at a time).]_"
             )}
         else:
-            yield {"content": "\n\n_[The model returned an empty reply. Try again.]_"}
+            yield {"notice": True,
+                   "content": "\n\n_[The model returned an empty reply. Try again.]_"}
+    if usage["input"] or usage["output"]:
+        yield {"usage": usage}
 
 
 async def stream_events(payload: dict, client: httpx.AsyncClient) -> AsyncIterator[dict]:
-    """Stream normalized `{"content"|"tool_calls"}` events from the active upstream."""
+    """Stream normalized `{"content"|"tool_calls"|"usage"|"notice"}` events from the
+    active upstream."""
     if is_messages():
         gen = _stream_anthropic(payload, client)
     elif is_openai():

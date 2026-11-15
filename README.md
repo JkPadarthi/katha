@@ -1,10 +1,10 @@
 # Katha (कथा)
 
-A self-hosted story-writing IDE. Three panes — chapters, the page, the Muse — with an AI companion that reads your story's folder, rewrites your drafts into proper novel English, and writes in your characters' voices.
+A self-hosted story-writing IDE. Three panes — chapters, the page, the Muse — with an AI companion that reads your story's folder and edits your chapters and story bible the way a coding assistant edits files: every change is staged, shown to you hunk by hunk, and saved only when you accept it.
 
 Built to be *yours*: no SaaS, no stores. One FastAPI server on a Raspberry Pi 5 serves **both** the API and an installable **PWA**; your Markdown archive never leaves the Pi.
 
-**Status:** Phase 1.0 — see STATUS.md.
+**Status:** 3.1 — see STATUS.md.
 
 ## Stack
 
@@ -12,7 +12,7 @@ Built to be *yours*: no SaaS, no stores. One FastAPI server on a Raspberry Pi 5 
 |---|---|
 | Client | Installable **PWA** (React + Vite + Tailwind) — desktop **and** mobile, one codebase |
 | Backend | FastAPI + SQLite (index only) + Markdown archive on disk |
-| AI routing | Direct Ollama on a trusted LAN box (over Tailscale); no API key |
+| AI routing | Ollama on a LAN box, any OpenAI-compatible gateway, or a Messages-shape gateway (`KATHA_MUSE_API`) |
 | Host | Pi 5, Docker Compose, Tailscale + `tailscale serve` for HTTPS |
 | Storage truth | `series/book/chapters/*.md` + `bible/` — portable, git-able |
 

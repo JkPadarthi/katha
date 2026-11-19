@@ -71,7 +71,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
     groups[folder].push(n)
   }
   const rowClass = (n, indent) =>
-    'w-full truncate rounded-lg py-1.5 text-left text-[14px] ' +
+    'w-full truncate rounded-md py-1.5 text-left text-[12px] ' +
     (indent ? 'pl-5 pr-2 ' : 'px-2 ') +
     (n === active
       ? 'bg-panel-2 text-ink ring-1 ring-accent/40'
@@ -212,7 +212,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
           onClick={() => onDeleteFile(name)}
           title={`Delete ${name} — moves it to the trash`}
           aria-label={`Delete ${name}`}
-          className="shrink-0 rounded px-1 py-0.5 text-[13px] leading-none text-transparent transition-colors hover:text-err group-hover:text-mute/60"
+          className="shrink-0 rounded px-1 py-0.5 text-[11px] leading-none text-transparent transition-colors hover:text-err group-hover:text-mute/60"
         >
           ×
         </button>
@@ -230,19 +230,19 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
         onChange={(e) => setNewName(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') onCreate() }}
         placeholder={placeholder}
-        className="w-full rounded border hairline bg-base px-2 py-1 text-[13.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-accent/50"
+        className="w-full rounded border hairline bg-base px-2 py-1 text-[11.5px] text-ink placeholder:text-mute/50 focus:outline-none focus:ring-1 focus:ring-accent/50"
       />
       <div className="mt-1 flex justify-end gap-1">
         <button
           onClick={cancelCreate}
-          className="rounded border hairline px-2 py-0.5 text-[12px] text-mute hover:text-ink"
+          className="rounded border hairline px-2 py-0.5 text-[10px] text-mute hover:text-ink"
         >
           cancel
         </button>
         <button
           onClick={onCreate}
           disabled={saving || !newName.trim()}
-          className="rounded bg-accent px-2 py-0.5 text-[12px] font-semibold text-onaccent hover:brightness-110 disabled:opacity-40"
+          className="rounded bg-accent px-2 py-0.5 text-[10px] font-semibold text-onaccent hover:brightness-110 disabled:opacity-40"
         >
           create
         </button>
@@ -258,7 +258,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
           title="Bible"
           onClose={onClose}
           extra={
-            <span className="text-[12px] text-mute/60">
+            <span className="text-[10px] text-mute/60">
               {names.length} file{names.length === 1 ? '' : 's'}
             </span>
           }
@@ -269,7 +269,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
           <div className="flex w-44 shrink-0 flex-col border-r hairline md:w-60">
             <ul className="min-h-0 flex-1 overflow-y-auto p-1.5">
               {names.length === 0 && (
-                <li className="px-2 py-2 text-[13px] text-mute/60">
+                <li className="px-2 py-2 text-[11px] text-mute/60">
                   No bible files yet. Use the buttons below or create the
                   starter bible.
                 </li>
@@ -283,7 +283,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
                 .sort(([a], [b]) => a.localeCompare(b))
                 .map(([folder, items]) => (
                   <li key={folder} className="mt-1">
-                    <div className="px-2 py-1 text-[12px] font-semibold text-mute/50">
+                    <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-mute/50">
                       {folder}/
                     </div>
                     <ul className="space-y-0.5">
@@ -305,21 +305,21 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
                 <button
                   onClick={() => { if (guardDirty()) { setCreating('character'); setNewName('') } }}
                   disabled={saving}
-                  className="w-full rounded-lg border border-accent/40 px-2 py-1 text-[12.5px] font-medium text-accent hover:bg-accent/10 disabled:opacity-40"
+                  className="w-full rounded-md border border-accent/40 px-2 py-1 text-[10.5px] font-medium text-accent hover:bg-accent/10 disabled:opacity-40"
                 >
                   + Main character
                 </button>
                 <button
                   onClick={openSideCharacters}
                   disabled={saving}
-                  className="w-full rounded-lg border hairline px-2 py-1 text-[12.5px] text-mute hover:text-ink disabled:opacity-40"
+                  className="w-full rounded-md border hairline px-2 py-1 text-[10.5px] text-mute hover:text-ink disabled:opacity-40"
                 >
                   NPCs / side characters
                 </button>
                 <button
                   onClick={() => { if (guardDirty()) { setCreating('file'); setNewName('') } }}
                   disabled={saving}
-                  className="w-full rounded-lg border hairline px-2 py-1 text-[12.5px] text-mute hover:text-ink disabled:opacity-40"
+                  className="w-full rounded-md border hairline px-2 py-1 text-[10.5px] text-mute hover:text-ink disabled:opacity-40"
                 >
                   + other file
                 </button>
@@ -330,24 +330,24 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
           {/* editor */}
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="flex items-center justify-between border-b hairline px-4 py-2">
-              <span className="truncate text-[14px] text-ink">{active || 'No file selected'}</span>
+              <span className="truncate text-[12px] text-ink">{active || 'No file selected'}</span>
               <div className="flex items-center gap-2">
-                {dirty && <span className="text-[12px] text-warn">unsaved</span>}
+                {dirty && <span className="text-[10px] text-warn">unsaved</span>}
                 <button
                   onClick={save}
                   disabled={!active || saving || !dirty}
-                  className="rounded-lg border border-accent/40 px-2.5 py-1 text-[12.5px] font-medium text-ink transition-colors hover:bg-accent/10 disabled:opacity-40"
+                  className="rounded-md border border-accent/40 px-2.5 py-1 text-[10.5px] font-medium text-ink transition-colors hover:bg-accent/10 disabled:opacity-40"
                 >
                   {saving ? '…' : 'Save'}
                 </button>
               </div>
             </div>
-            {error && <div className="border-b hairline px-4 py-2 text-[12.5px] text-err">{error}</div>}
+            {error && <div className="border-b hairline px-4 py-2 text-[10.5px] text-err">{error}</div>}
 
             {names.length === 0 ? (
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-                <div className="text-[14px] text-ink">This book has no bible yet.</div>
-                <div className="max-w-[46ch] text-[13px] leading-relaxed text-mute/70">
+                <div className="text-[12.5px] text-ink">This book has no bible yet.</div>
+                <div className="max-w-[46ch] text-[11px] leading-relaxed text-mute/70">
                   The canonical shape: one file per <span className="text-ink">main character</span> under{' '}
                   <code className="text-accent-dim">characters/</code>, one shared file for{' '}
                   <span className="text-ink">NPCs / side characters</span>, plus{' '}
@@ -357,7 +357,7 @@ export default function BiblePanel({ series, initial, onClose, onChanged, refres
                 <button
                   onClick={scaffold}
                   disabled={saving}
-                  className="rounded-lg border border-accent/40 px-3 py-1.5 text-[13px] font-medium text-accent hover:bg-accent/10 disabled:opacity-40"
+                  className="rounded-md border border-accent/40 px-3 py-1.5 text-[11px] font-medium text-accent hover:bg-accent/10 disabled:opacity-40"
                 >
                   {saving ? 'creating…' : 'Create starter bible'}
                 </button>

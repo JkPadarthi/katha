@@ -21,13 +21,12 @@
         try {
           var pref = JSON.parse(localStorage.getItem('katha.theme') || 'null')
           var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
-          var color = { day: '#fbfbf9', hermes: '#0e0e12', paper: '#f6f1e7', slate: '#0f1419' }
-          var theme = color[pref] ? pref : (light ? 'day' : 'hermes')
+          var theme = (pref === 'hermes' || pref === 'paper' || pref === 'slate')
+            ? pref : (light ? 'paper' : 'hermes')
           document.documentElement.dataset.theme = theme
-          var m = JSON.parse(localStorage.getItem('katha.measure') || 'null')
-          document.documentElement.dataset.measure = m || 'medium'
+          var color = { hermes: '#0e0e12', paper: '#f6f1e7', slate: '#0f1419' }[theme]
           var meta = document.querySelector('meta[name="theme-color"]')
-          if (meta) meta.setAttribute('content', color[theme])
+          if (meta && color) meta.setAttribute('content', color)
         } catch (e) {}
       })()
     </script>

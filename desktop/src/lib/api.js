@@ -94,15 +94,6 @@ export function saveChapter(series, bookId, chapterId, content, title) {
   })
 }
 
-// --- the time machine (D9): every save is a full snapshot ------------------
-export function listRevisions(series, bookId, chapterId) {
-  return req(`/books/${series}/${bookId}/chapters/${chapterId}/revisions`)
-}
-
-export function getRevision(series, bookId, chapterId, number) {
-  return req(`/books/${series}/${bookId}/chapters/${chapterId}/revisions/${number}`)
-}
-
 export function createChapter(series, bookId, title, content = '', number = null) {
   const body = { title, content }
   // 0 = a prologue (chapter 0). Omitted entirely when not asked for.
@@ -171,7 +162,7 @@ function unescapeSse(s) {
   return s.replace(/\\n|\\\\/g, (m) => (m === '\\n' ? '\n' : '\\'))
 }
 
-async function streamSse(path, body, { onDelta, onStatus, onProposal, onUsage, signal }) {
+async function streamSse(path, body, { onDelta, onStatus, onProposal, signal }) {
   const res = await fetch(`/api${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -212,11 +203,6 @@ async function streamSse(path, body, { onDelta, onStatus, onProposal, onUsage, s
           if (onProposal) onProposal(payload.slice(10).trim())
           continue
         }
-        // What the reply cost in tokens (3.1): {input, output}, summed over every round.
-        if (payload.startsWith('[USAGE]')) {
-          try { if (onUsage) onUsage(JSON.parse(payload.slice(7).trim())) } catch { /* cosmetic */ }
-          continue
-        }
         if (payload.startsWith('[ERROR]')) {
           throw new Error(payload.slice(7).trim() || 'Muse error')
         }
@@ -229,33 +215,17 @@ async function streamSse(path, body, { onDelta, onStatus, onProposal, onUsage, s
   return acc
 }
 
-export function museChat({ messages, chapterId, chip, onDelta, onStatus, onProposal, onUsage, signal }) {
+export function museChat({ messages, chapterId, chip, onDelta, onStatus, onProposal, signal }) {
   return streamSse('/muse/chat', {
     messages,
     chapter_id: chapterId || null,
     chip: chip || null
-  }, { onDelta, onStatus, onProposal, onUsage, signal })
+  }, { onDelta, onStatus, onProposal, signal })
 }
 
-// Ghost text (3.1): a one-sentence continuation of the prose before the cursor.
-// Always resolves — a failed upstream is simply no suggestion.
-export async function museComplete({ before, chapterId, signal }) {
-  const res = await fetch('/api/muse/complete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ before, chapter_id: chapterId || null }),
-    signal
-  })
-  handleAuth(res)
-  if (!res.ok) return ''
-  const j = await res.json()
-  return j.text || ''
-}
-
-// --- staged changes (2.9, D45; any chapter or bible file since 3.1) --------
+// --- whole-chapter revisions (2.9, D45) -----------------------------------
 // The Muse proposes; the author disposes. `acceptProposal` runs the same save path
-// as an edit the author made (chapter autosave + revision, or the bible PUT).
-// Each proposal carries {kind: 'chapter'|'bible', path, chapter, batch, stale, …}.
+// as autosave on the server, so accepting one snapshots a revision like any edit.
 export function listProposals() {
   return req('/muse/proposals')
 }
@@ -276,12 +246,12 @@ export function discardProposal(id) {
   return req(`/muse/proposals/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-export function museRewrite({ text, style, chapterId, onDelta, onUsage, signal }) {
+export function museRewrite({ text, style, chapterId, onDelta, signal }) {
   return streamSse('/muse/rewrite', {
     text,
     style: style || 'novel',
     chapter_id: chapterId || null
-  }, { onDelta, onUsage, signal })
+  }, { onDelta, signal })
 }
 
 export function museModels() {
@@ -351,15 +321,14 @@ export function museThread(chapterId) {
   return req(`/muse/thread?chapter_id=${encodeURIComponent(chapterId || '')}`)
 }
 
-// target: 'report' (whole-book audit) | 'bible' (rewrite of one file, staged as a
-// proposal — `onProposal` gets its id when the stream ends)
-export function museSweep({ series, bookId, target, bibleName, onDelta, onStatus, onProposal, onUsage, signal }) {
+// target: 'report' (whole-book audit) | 'bible' (proposed rewrite of one file)
+export function museSweep({ series, bookId, target, bibleName, onDelta, signal }) {
   return streamSse('/muse/sweep', {
     series,
     book_id: bookId,
     target: target || 'report',
     bible_name: bibleName || null
-  }, { onDelta, onStatus, onProposal, onUsage, signal })
+  }, { onDelta, signal })
 }
 
 // --- bible ----------------------------------------------------------------
@@ -421,57 +390,4 @@ export async function exportEpub(series, bookId, filename) {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
-}
-
-// --- settings changed in the app: the Muse's brain + the lock (3.2) --------
-// The API key is write-only: the server never sends it back, only `key_set` and a
-// `key_hint` (its last four characters). Every change asks for the current password
-// while the lock is on. Errors carry the server's own sentence (`detail`).
-async function settingsReq(path, method, body) {
-  const res = await fetch(`/api${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  })
-  handleAuth(res)
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    const err = new Error(data.detail || `${res.status} ${res.statusText}`)
-    err.status = res.status
-    throw err
-  }
-  return data
-}
-
-export function getSettings() {
-  return settingsReq('/settings', 'GET')
-}
-
-// key: undefined/null = keep the stored key, '' = remove it, else the new key
-export function saveMuseSettings({ api, base, key, agentModel, rewriteModel, currentPassword }) {
-  const body = {
-    api, base: base || '', agent_model: agentModel || '', rewrite_model: rewriteModel || '',
-    current_password: currentPassword || ''
-  }
-  if (key !== undefined && key !== null) body.key = key
-  return settingsReq('/settings/muse', 'PUT', body)
-}
-
-// The models a connection offers, for the form as typed (4.1). `key` null = the stored one.
-export function listMuseModels({ api, base, key, currentPassword }) {
-  const body = { api, base: base || '', current_password: currentPassword || '' }
-  if (key) body.key = key
-  return settingsReq('/settings/muse/models', 'POST', body)
-}
-
-export function resetMuseSettings(currentPassword) {
-  return settingsReq('/settings/muse/reset', 'POST', { current_password: currentPassword || '' })
-}
-
-export function testMuseConnection() {
-  return settingsReq('/settings/muse/test', 'POST')
-}
-
-export function changePassword({ current, next, disable = false }) {
-  return settingsReq('/settings/password', 'PUT', { current: current || '', new: next || '', disable })
 }

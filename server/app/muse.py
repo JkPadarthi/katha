@@ -1,27 +1,26 @@
-"""The Muse — the story's AI companion, behind one HTTP boundary (D16/D17/D19).
+"""Muse proxy — talks to a friend's Ollama box, hides the upstream from the
+client (D16/D17/D19).
 
-The upstream brain is any of three wire dialects (Ollama on the LAN, an
-OpenAI-compatible gateway, or a Messages-shape gateway); `app/upstream.py` is the
-only place that knows which. Everything here speaks one internal shape.
+Public functions:
+    chat(messages, chapter_id=None, chip=None) -> AsyncIterator[str]
+    rewrite(text, style, chapter_id=None)      -> AsyncIterator[str]
 
-Public surface:
-    chat(messages, chapter_id, chip)        agentic: reads the story with tools and
-                                            stages edits to chapters/bible (never saves)
-    rewrite(text, style, chapter_id)        one-shot rewrite of a selection
-    complete_text(before, chapter_id)       one-sentence ghost-text continuation
-    sweep_report / sweep_bible              whole-book continuity pass
-    list/read/delete/refresh_proposal       the staged-change store (.katha/proposals)
+Both yield visible prose tokens (never <think> blocks). The HTTP layer wraps
+these in SSE.
 
-Streams yield visible prose (never <think> blocks) plus marker objects —
-`Status`, `Proposal`, `Usage` — that the HTTP layer turns into SSE events.
-
-The upstream client lives at module scope so tests can swap its transport via
+The Ollama client lives at module scope so tests can swap its transport via
 `monkeypatch.setattr(muse_mod, "_client", mock_client)`.
 
-Context the Muse gets: the story's file index, a cached style digest (D19), the
-author's rules from `bible/rules.md` (D56), and any files @-mentioned (D57). The
-rewrite path additionally gets the current chapter + FTS-ranked bible hits (D18).
-Every exchange is appended to `archive/.katha/muse/<book>-<chapter>.md` (D19, D35).
+Canon context (D18): if a `chapter_id` like "series/book/ch-01" is passed, the
+system prompt is prefixed with the current chapter + up to 4 FTS5-ranked bible
+hits, capped at MUSECONTEXT_MAX_TOKENS (~6000 tokens).
+
+Style learning (D19): the first time a book is touched, we read the last N
+chapters and ask the Muse to summarize its cadence/syntax/tone. Cached to
+`archive/.katha/muse/style-<book-slug>.md`.
+
+Thread persistence (D19): every Muse exchange (user + assistant pair) is
+appended to `archive/.katha/muse/<chapter-slug>.md`.
 """
 
 from __future__ import annotations
@@ -42,8 +41,6 @@ from .config import (
     ARCHIVE_ROOT,
     MUSE_AGENT_MAX_TOKENS,
     MUSE_AGENT_MODEL,
-    MUSE_COMPLETE_MAX_TOKENS,
-    MUSE_COMPLETE_MODEL,
     MUSE_MAX_TOOL_ROUNDS,
     MUSE_NUM_PREDICT,
     MUSE_REWRITE_MODEL,
@@ -58,9 +55,21 @@ _client = httpx.AsyncClient(timeout=MUSE_UPSTREAM_TIMEOUT)
 # Muse-side data lives inside the archive under `.katha/muse/`. Already
 # git-ignored because archive/ is git-ignored.
 _MUSE_ROOT = ARCHIVE_ROOT / ".katha" / "muse"
-# Staged changes (proposals) live beside the threads in `.katha/proposals/` —
-# inside the archive, so a backup covers them, and under a dot-directory, so no
-# listing or search ever sees them. See the "staged changes" section below.
+# Whole-chapter revisions the Muse hands to the author for approval (2.9, D45).
+# They live beside the threads — inside the archive, so a backup covers them, and
+# under a dot-directory, so no listing or search ever sees them. Nothing here is
+# ever applied without the author's word.
+_PROPOSAL_ROOT = ARCHIVE_ROOT / ".katha" / "proposals"
+PROPOSAL_MIN_CHARS = 200     # shorter than this is not a chapter, it's a fragment
+PROPOSAL_KEEP = 3            # newest N per book+chapter; older ones are pruned
+_PID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,120}$")
+
+# What a read tool is doing, when its arguments don't say (2.9.3): the author saw
+# 'reading list_story_files…' in the panel and it read like a bug rather than progress.
+_TOOL_LABELS = {
+    "list_story_files": "the story index",
+    "search_story": "the story",
+}
 
 
 # --- token stripping ------------------------------------------------------
@@ -173,9 +182,25 @@ def _plain_snippet(text: str) -> str:
 
 
 # --- upstream call --------------------------------------------------------
-# The dialect (Ollama-native vs OpenAI-compatible vs Messages) lives in
-# app/upstream.py — this module only ever sees normalized
-# `{"content"|"tool_calls"|"usage"|"notice"}` events (D20).
+# The dialect (Ollama-native vs OpenAI-compatible) lives in app/upstream.py —
+# this module only ever sees normalized `{"content"|"tool_calls"}` events (D20).
+
+async def _post_chat(payload: dict) -> AsyncIterator[str]:
+    """Stream a turn from the active upstream; yield visible-only deltas."""
+    filt = ThinkStreamFilter()
+    async for event in up_mod.stream_events({**payload, "stream": True}, _client):
+        visible = filt.feed(event.get("content") or "")
+        if visible:
+            yield visible
+    tail = filt.finish()
+    if tail:
+        yield tail
+
+
+# --- agentic chat: the model fetches story files via tools (1.1) ----------
+# Instead of pre-injecting the chapter, the chat model gets tools to read the
+# story on demand. Scope: the current book + the series root, .md only, never
+# hidden dirs (.katha/) or anything outside the story archive.
 
 class Status:
     """Marker yielded from a Muse generator to emit an SSE `[STATUS]` event
@@ -188,67 +213,13 @@ class Status:
 
 class Proposal:
     """Marker yielded from a Muse generator to emit an SSE `[PROPOSAL] <id>` event:
-    the Muse has staged a change to a story file and is waiting for the author to
-    review it (2.9, D45; any file since 3.1, D54)."""
+    the Muse has handed over a whole-chapter revision and is waiting for the
+    author to accept it (2.9, D45)."""
     __slots__ = ("proposal_id",)
 
     def __init__(self, proposal_id: str):
         self.proposal_id = proposal_id
 
-
-class Usage:
-    """Marker yielded at the end of a Muse reply to emit an SSE `[USAGE]` event: how
-    many tokens the reply cost, summed over every round (3.1, D59). Only emitted
-    when the upstream actually reported a count."""
-    __slots__ = ("input", "output")
-
-    def __init__(self, input: int = 0, output: int = 0):
-        self.input = int(input or 0)
-        self.output = int(output or 0)
-
-    def add(self, usage: dict | None) -> None:
-        if usage:
-            self.input += int(usage.get("input") or 0)
-            self.output += int(usage.get("output") or 0)
-
-    def __bool__(self) -> bool:
-        return bool(self.input or self.output)
-
-
-async def _stream_visible(payload: dict, meta: dict) -> AsyncIterator[str]:
-    """Stream one upstream turn; yield visible text only (never <think> blocks).
-
-    Side channels land in `meta`: `tool_calls` (list), `usage` (a Usage), and
-    `notice` (True when the only text was the adapter's "the model wrote nothing"
-    sentence — which must never be mistaken for a file's new contents).
-    """
-    meta.setdefault("tool_calls", [])
-    meta.setdefault("usage", Usage())
-    filt = ThinkStreamFilter()
-    async for event in up_mod.stream_events({**payload, "stream": True}, _client):
-        for tc in event.get("tool_calls") or []:
-            meta["tool_calls"].append(tc)
-        meta["usage"].add(event.get("usage"))
-        if event.get("notice"):
-            meta["notice"] = True
-        visible = filt.feed(event.get("content") or "")
-        if visible:
-            yield visible
-    tail = filt.finish()
-    if tail:
-        yield tail
-
-
-async def _post_chat(payload: dict, meta: dict | None = None) -> AsyncIterator[str]:
-    """Stream a turn from the active upstream; yield visible-only deltas."""
-    async for visible in _stream_visible(payload, meta if meta is not None else {}):
-        yield visible
-
-
-# --- agentic chat: the model fetches story files via tools (1.1) ----------
-# Instead of pre-injecting the chapter, the chat model gets tools to read the
-# story on demand. Scope: the current book + the series root, .md only, never
-# hidden dirs (.katha/) or anything outside the story archive.
 
 class _ToolCtx:
     __slots__ = ("series_dir", "book_dir", "cid")
@@ -305,7 +276,7 @@ def _safe_story_path(ctx: _ToolCtx, rel: str) -> Path | None:
     return None
 
 
-def _story_files(ctx: _ToolCtx) -> list[str]:
+def _list_story_files(ctx: _ToolCtx) -> str:
     out: list[str] = []
     for f in ar_mod.chapter_files(ctx.book_dir / "chapters"):
         out.append(f"chapters/{f.name}")
@@ -316,11 +287,6 @@ def _story_files(ctx: _ToolCtx) -> list[str]:
         out.append(f.name)
     for f in sorted(ctx.series_dir.glob("*.md")):
         out.append(f"series/{f.name}")
-    return out
-
-
-def _list_story_files(ctx: _ToolCtx) -> str:
-    out = _story_files(ctx)
     return "\n".join(out) if out else "(no files)"
 
 
@@ -328,16 +294,6 @@ def _read_story_file(ctx: _ToolCtx, rel: str) -> str:
     p = _safe_story_path(ctx, rel)
     if p is None:
         return "ERROR: path not allowed — only story .md files in this book or the series root."
-    # If the Muse already has a change waiting on this file, it must read *that*: its
-    # next edit applies on top of the draft, so an `old_text` copied from the file on
-    # disk would not match (3.1, D55).
-    target = _edit_target(ctx, rel)
-    if isinstance(target, tuple):
-        draft = _live_draft(ctx, target[1])
-        if draft is not None:
-            return (f"[Your pending revision of {target[1]} — NOT yet accepted by the "
-                    "author. Further edits apply on top of this text.]\n\n"
-                    + (draft.get("content") or ""))
     try:
         return p.read_text(encoding="utf-8")
     except OSError as e:
@@ -362,134 +318,7 @@ def _search_story(ctx: _ToolCtx, query: str) -> str:
     )
 
 
-# --- the author's rules (3.1, D56) ----------------------------------------
-# `bible/rules.md` is the book's standing orders — "British spelling", "no
-# em-dashes", "Kael never swears". The style digest is the Muse's *guess* at the
-# voice; the rules are the author's word, so every Muse call carries them.
-
-RULES_FILE = "rules.md"
-_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-
-
-def load_rules(bdir: Path | None) -> str:
-    """The author's rules for this book, or "" when there are none worth sending.
-
-    The scaffolded template is all comment, heading and an empty bullet — that is
-    not a rule, and sending it would only cost tokens."""
-    if bdir is None:
-        return ""
-    p = bdir / "bible" / RULES_FILE
-    if not p.is_file():
-        return ""
-    try:
-        text = _COMMENT_RE.sub("", p.read_text(encoding="utf-8"))
-    except OSError:
-        return ""
-    real = [ln for ln in text.splitlines()
-            if ln.strip() and not ln.lstrip().startswith("#")
-            and ln.strip() not in ("-", "*")]
-    return "\n".join(real).strip() if real else ""
-
-
-def _rules_block(bdir: Path | None) -> str:
-    rules = load_rules(bdir)
-    return ("## THE AUTHOR'S RULES FOR THIS BOOK (always follow these)\n\n" + rules
-            if rules else "")
-
-
-# --- @-mentions (3.1, D57) ------------------------------------------------
-# `@ch-03` or `@kael` in a message attaches that file to the turn, so the Muse
-# doesn't have to go looking for what the author already pointed at.
-
-_MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9][\w./-]*)")
-_CH_MENTION_RE = re.compile(r"^(?:ch|chapter)-?(\d{1,3})$")
-_MENTION_CAP = 16000           # chars per attached file
-_MENTION_TOTAL = 40000         # chars across every attachment in one message
-
-
-def resolve_mentions(ctx: _ToolCtx, text: str) -> list[str]:
-    """Story paths named by `@…` tokens in `text`, in order, without repeats."""
-    files = _story_files(ctx)
-    lower = {f.lower(): f for f in files}
-    out: list[str] = []
-    for raw in _MENTION_RE.findall(text or ""):
-        t = raw.rstrip(".,;:!?)'\"").lower()
-        if not t:
-            continue
-        hit = (lower.get(t) or lower.get(t + ".md")
-               or lower.get(f"bible/{t}") or lower.get(f"bible/{t}.md"))
-        if hit is None:
-            m = _CH_MENTION_RE.match(t)
-            if m:
-                n = int(m.group(1))
-                hit = lower.get(f"chapters/ch-{n:02d}.md") or lower.get(f"chapters/ch-{n}.md")
-        if hit is None:
-            stems = [f for f in files if Path(f).stem.lower() == t]
-            if len(stems) == 1:
-                hit = stems[0]
-        if hit and hit not in out:
-            out.append(hit)
-    return out
-
-
-def _mention_block(ctx: _ToolCtx, paths: list[str]) -> str:
-    parts: list[str] = []
-    used = 0
-    for rel in paths:
-        body = _read_story_file(ctx, rel)
-        if body.startswith("ERROR"):
-            continue
-        body = body[:_MENTION_CAP]
-        if used + len(body) > _MENTION_TOTAL:
-            break
-        used += len(body)
-        parts.append(f"### {rel}\n\n{body.strip()}")
-    if not parts:
-        return ""
-    return ("## FILES THE AUTHOR ATTACHED WITH @ (already read for you)\n\n"
-            + "\n\n---\n\n".join(parts))
-
-
-# --- staged changes: the Muse proposes, the author disposes (2.9 → 3.1) ----
-# Every change the Muse makes is a *proposal*: a JSON file under
-# `.katha/proposals/`, never the story file itself. A proposal targets one file —
-# a chapter or a bible file (3.1, D54) — and there is at most ONE live draft per
-# file: new edits stack onto it (D55), a full rewrite supersedes it. Accepting is a
-# normal save, so the time machine keeps everything (D9, D45).
-#
-# Record shape:
-#   id, series, book, kind ('chapter'|'bible'), path ('chapters/ch-03.md' |
-#   'bible/characters/kael.md'), chapter (the chapter id for chapter kind),
-#   origin (the chapter the conversation was in), batch (the turn that made it),
-#   created_at, content, words,
-#   base_revision (chapter kind: the revision the Muse read),
-#   base_content  (bible kind: the text the Muse read — bible files keep no
-#                  revisions),
-#   edits         (the find/replace edits that built it, or None for a full
-#                  rewrite — what lets a draft survive the author typing, D58),
-#   dropped       (edits that no longer applied after the author's changes).
-
-_PROPOSAL_ROOT = ARCHIVE_ROOT / ".katha" / "proposals"
-PROPOSAL_MIN_CHARS = 200     # shorter than this is not a chapter, it's a fragment
-PROPOSAL_KEEP = 1            # one live draft per file (3.1, D55)
-_PID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,120}$")
-_CHAPTER_PATH_RE = re.compile(r"^chapters/(ch-\d+)\.md$")
-_BARE_CHAPTER_RE = re.compile(r"^(ch-\d+)(?:\.md)?$")
-
-# What a read tool is doing, when its arguments don't say (2.9.3): the author saw
-# 'reading list_story_files…' in the panel and it read like a bug rather than progress.
-_TOOL_LABELS = {
-    "list_story_files": "the story index",
-    "search_story": "the story",
-}
-
-
-def proposal_target(p: dict) -> tuple[str, str]:
-    """(kind, book-relative path) of a proposal — pre-3.1 records only had `chapter`."""
-    kind = p.get("kind") or "chapter"
-    path = p.get("path") or (f"chapters/{p.get('chapter', '')}.md" if kind == "chapter" else "")
-    return kind, path
-
+# --- whole-chapter proposals (2.9, D45) -----------------------------------
 
 def _proposal_path(pid: str) -> Path | None:
     """Resolve a proposal id to its file, or None.
@@ -503,14 +332,8 @@ def _proposal_path(pid: str) -> Path | None:
     return p if p.is_file() else None
 
 
-def _write_proposal(meta: dict) -> None:
-    _PROPOSAL_ROOT.mkdir(parents=True, exist_ok=True)
-    (_PROPOSAL_ROOT / f"{meta['id']}.json").write_text(json.dumps(meta, indent=2),
-                                                       encoding="utf-8")
-
-
 def list_proposals() -> list[dict]:
-    """Pending changes, newest first — metadata only, never the body."""
+    """Pending revisions, newest first — metadata only, never the chapter body."""
     if not _PROPOSAL_ROOT.is_dir():
         return []
     out: list[dict] = []
@@ -521,20 +344,14 @@ def list_proposals() -> list[dict]:
             meta = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        kind, path = proposal_target(meta)
         out.append({
             "id": meta.get("id", p.stem),
             "series": meta.get("series", ""),
             "book": meta.get("book", ""),
-            "kind": kind,
-            "path": path,
             "chapter": meta.get("chapter", ""),
-            "origin": meta.get("origin", meta.get("chapter", "")),
-            "batch": meta.get("batch", ""),
             "created_at": meta.get("created_at", ""),
             "words": meta.get("words", 0),
             "base_revision": meta.get("base_revision", 0),
-            "edit_based": meta.get("edits") is not None,
         })
     return out
 
@@ -557,26 +374,26 @@ def delete_proposal(pid: str) -> bool:
     return True
 
 
-def rebase_proposal(pid: str, base_revision: int | None = None,
-                    base_content: str | None = None) -> bool:
-    """After a partial accept the file moved, so the text the proposal was built
+def rebase_proposal(pid: str, base_revision: int) -> bool:
+    """After a partial accept the chapter moved, so the revision the proposal was built
     against is no longer the file. Re-point it (the content is unchanged and still
     applies) so the remaining hunks stay reviewable and honest about their base."""
-    meta = read_proposal(pid)
-    if meta is None:
+    p = _proposal_path(pid)
+    if p is None:
         return False
-    if base_revision is not None:
-        meta["base_revision"] = int(base_revision)
-    if base_content is not None:
-        meta["base_content"] = base_content
-    _write_proposal(meta)
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    meta["base_revision"] = int(base_revision)
+    p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return True
 
 
 def delete_proposals_for(book: str = "", series: str = "") -> int:
-    """Drop pending changes for a book or a whole series (2.9.1).
+    """Drop pending revisions for a book or a whole series (2.9.1).
 
-    A proposal for a file that no longer exists is a banner nobody can act on, so
+    A proposal for a chapter that no longer exists is a banner nobody can act on, so
     it goes with the book. (Found by leaving one behind during verification.)
     """
     gone = 0
@@ -586,15 +403,15 @@ def delete_proposals_for(book: str = "", series: str = "") -> int:
     return gone
 
 
-def _supersede(book: str, path: str, keep_id: str) -> None:
-    """One live draft per file: a new one replaces any older one (3.1, D55).
+def _prune_proposals(book: str, cid: str) -> None:
+    """Keep the newest PROPOSAL_KEEP revisions for one chapter.
 
-    Unaccepted changes are drafts. Nothing else prunes them, on purpose — like the
-    trash, they are never erased by time alone."""
-    mine = [m for m in list_proposals() if m["book"] == book and m["path"] == path]
-    for stale in mine:
-        if stale["id"] != keep_id:
-            delete_proposal(stale["id"])
+    Unaccepted revisions are drafts; a handful per chapter is plenty. Nothing else
+    prunes them, on purpose — like the trash, they are never erased by time alone.
+    """
+    mine = [m for m in list_proposals() if m["book"] == book and m["chapter"] == cid]
+    for stale in mine[PROPOSAL_KEEP:]:
+        delete_proposal(stale["id"])
 
 
 _HEADING_RE = re.compile(r"^\s*#\s+(\S.*?)\s*$", re.M)
@@ -614,236 +431,11 @@ def split_heading(text: str, fallback: str = "") -> tuple[str, str]:
     return text[m.end():].lstrip("\n").rstrip(), (m.group(1).strip() or fallback)
 
 
-def _edit_target(ctx: _ToolCtx, rel: str | None):
-    """Resolve an editable path → (kind, normalized path, Path), or an ERROR string.
+def _propose_rewrite(ctx: _ToolCtx, content: str, out: dict | None) -> str:
+    """Park a whole-chapter revision for approval; tell the model what happened.
 
-    Editable: a chapter of this book (`chapters/ch-03.md`, or just `ch-03`), or a
-    bible file (`bible/places.md`, which may be new). Nothing else — not notes,
-    not the series root, not hidden files. Empty → the conversation's chapter.
-    """
-    rel = (rel or "").strip().strip("/")
-    if not rel:
-        if not ctx.cid:
-            return "ERROR: no chapter in context — name the file to edit."
-        rel = f"chapters/{ctx.cid}.md"
-    m = _BARE_CHAPTER_RE.match(rel)
-    if m:
-        rel = f"chapters/{m.group(1)}.md"
-    m = _CHAPTER_PATH_RE.match(rel)
-    if m:
-        chapter = ar_mod.get_chapter(ctx.book_dir, m.group(1))
-        if chapter is None:
-            return f"ERROR: {rel} is not a chapter of this book."
-        return ("chapter", f"chapters/{chapter.stem}.md", chapter)
-    if rel.startswith("bible/"):
-        dest = ar_mod.safe_bible_path(ctx.book_dir, rel[len("bible/"):])
-        if dest is None:
-            return f"ERROR: {rel} is not an editable bible file (bible/<name>.md only)."
-        norm = "bible/" + dest.relative_to(
-            (ctx.book_dir / "bible").resolve()).as_posix()
-        return ("bible", norm, dest)
-    return ("ERROR: you can only edit this book's chapters (chapters/ch-NN.md) and "
-            "bible files (bible/<name>.md).")
-
-
-def file_text(kind: str, f: Path) -> str:
-    """What the file says now ("" for a bible file that doesn't exist yet)."""
-    try:
-        return f.read_text(encoding="utf-8") if f.is_file() else ""
-    except OSError:
-        return ""
-
-
-def proposal_file(p: dict, bdir: Path) -> Path | None:
-    """The story file a proposal targets, or None if it can no longer be resolved."""
-    kind, path = proposal_target(p)
-    if kind == "chapter":
-        return ar_mod.get_chapter(bdir, p.get("chapter") or Path(path).stem)
-    if path.startswith("bible/"):
-        return ar_mod.safe_bible_path(bdir, path[len("bible/"):])
-    return None
-
-
-def is_stale(p: dict, bdir: Path) -> bool:
-    """Has the file moved since the Muse read it?"""
-    f = proposal_file(p, bdir)
-    if f is None:
-        return True
-    kind, _ = proposal_target(p)
-    if kind == "chapter":
-        return int(p.get("base_revision") or 0) != ar_mod._read_revision_marker(f)
-    return file_text(kind, f) != (p.get("base_content") or "")
-
-
-def _normalized(text: str) -> str:
-    return " ".join((text or "").split())
-
-
-def _apply_strict(text: str, edits) -> tuple[str, str]:
-    """Apply find/replace edits all-or-nothing → (new text, "") or (text, error)."""
-    if not isinstance(edits, list) or not edits:
-        return text, ("ERROR: send `edits` as a non-empty list of {old_text, new_text}. "
-                      "Nothing was changed.")
-    for n, e in enumerate(edits, 1):
-        if not isinstance(e, dict):
-            return text, f"ERROR: edit {n} is not an object. Nothing was changed."
-        old, new = e.get("old_text"), e.get("new_text")
-        if not isinstance(new, str) or not isinstance(old, str):
-            return text, (f"ERROR: edit {n} needs an `old_text` and a `new_text` "
-                          "(empty to delete). Nothing was changed.")
-        if not old:
-            if text.strip():
-                return text, (f"ERROR: edit {n} needs a non-empty `old_text` — only a "
-                              "brand-new file may be written from nothing. Nothing was "
-                              "changed.")
-            text = new
-            continue
-        hits = text.count(old)
-        if hits == 0:
-            return text, (f"ERROR: edit {n}: `old_text` was not found. Copy it exactly — "
-                          "same words, punctuation and line breaks — from the file as "
-                          "read_story_file returned it (or as your earlier edits left "
-                          "it). Nothing was changed.")
-        if hits > 1:
-            return text, (f"ERROR: edit {n}: `old_text` appears {hits} times. Include "
-                          "more of the surrounding text so it matches exactly once. "
-                          "Nothing was changed.")
-        text = text.replace(old, new, 1)
-    return text, ""
-
-
-def replay_edits(text: str, edits: list[dict]) -> tuple[str, list[dict]]:
-    """Re-apply a draft's edits to a file the author has changed since (D58).
-
-    Lenient where the tool call is strict: an edit whose `old_text` is gone but
-    whose result is already there (the author accepted it, or wrote the same thing)
-    is satisfied and skipped; one that matches is applied; anything else no longer
-    applies and is returned in `dropped` — the author's newer prose always wins.
-    """
-    dropped: list[dict] = []
-    for e in edits or []:
-        old, new = e.get("old_text") or "", e.get("new_text") or ""
-        if not old:
-            if not text.strip():
-                text = new
-            continue
-        hits = text.count(old)
-        if hits == 1:
-            text = text.replace(old, new, 1)
-        elif hits == 0 and (not new or new in text):
-            continue                       # already says what the edit wanted
-        else:
-            dropped.append(e)
-    return text, dropped
-
-
-def refresh_proposal(p: dict, bdir: Path) -> dict:
-    """Bring a stale, edit-built draft up to date with the file (D58).
-
-    A full rewrite can't be replayed (there is nothing to replay), so it stays stale
-    and the accept route refuses it, as before (D49). Returns the (possibly
-    rewritten) record; `p["empty"]` is set when nothing of the draft survives.
-    """
-    if not is_stale(p, bdir) or p.get("edits") is None:
-        return p
-    f = proposal_file(p, bdir)
-    if f is None:
-        return p
-    kind, _ = proposal_target(p)
-    current = file_text(kind, f)
-    text, dropped = replay_edits(current, p["edits"])
-    p["content"] = text
-    p["words"] = ar_mod._count_words(text)
-    p["edits"] = [e for e in p["edits"] if e not in dropped]
-    p["dropped"] = (p.get("dropped") or []) + dropped
-    if kind == "chapter":
-        p["base_revision"] = ar_mod._read_revision_marker(f)
-    else:
-        p["base_content"] = current
-    if _normalized(text) == _normalized(current):
-        p["empty"] = True
-    _write_proposal(p)
-    return p
-
-
-def _live_draft(ctx: _ToolCtx, path: str) -> dict | None:
-    """The pending draft for `path` that new edits should stack on, if any (D55)."""
-    for meta in list_proposals():
-        if meta["book"] != ctx.book_dir.name or meta["path"] != path:
-            continue
-        full = read_proposal(meta["id"])
-        if full is None:
-            continue
-        full = refresh_proposal(full, ctx.book_dir)
-        if full.get("empty"):
-            delete_proposal(full["id"])
-            return None
-        return None if is_stale(full, ctx.book_dir) else full
-    return None
-
-
-def _new_pid(book: str, path: str, now: datetime) -> str:
-    stem = path[:-3] if path.endswith(".md") else path
-    tag = stem.split("/", 1)[1] if stem.startswith("chapters/") else stem
-    tag = re.sub(r"[^a-z0-9]+", "-", tag.lower()).strip("-")[:48] or "file"
-    # Microseconds, deliberately: two drafts in the same second must not share an id,
-    # or the second silently overwrites the first.
-    return f"{book[:48]}-{tag}-{now.strftime('%Y%m%dt%H%M%S%f')}"
-
-
-def _park(ctx: _ToolCtx, kind: str, path: str, f: Path, text: str,
-          edits: list | None, turn: dict | None) -> str:
-    """Write a new pending draft of `path` holding `text`; return its id."""
-    now = datetime.now(timezone.utc)
-    pid = _new_pid(ctx.book_dir.name, path, now)
-    meta = {
-        "id": pid,
-        "series": ctx.series_dir.name,
-        "book": ctx.book_dir.name,
-        "kind": kind,
-        "path": path,
-        "chapter": f.stem if kind == "chapter" else "",
-        "origin": ctx.cid,
-        "batch": (turn or {}).get("batch", ""),
-        "created_at": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "content": text,
-        "words": ar_mod._count_words(text),
-        "edits": list(edits) if edits is not None else None,
-    }
-    if kind == "chapter":
-        meta["base_revision"] = ar_mod._read_revision_marker(f)
-    else:
-        meta["base_content"] = file_text(kind, f)
-    _write_proposal(meta)
-    _supersede(ctx.book_dir.name, path, pid)
-    _touch(turn, path, pid)
-    return pid
-
-
-def _touch(turn: dict | None, path: str, pid: str) -> None:
-    """Remember, for this turn, which draft holds `path` — and that it changed."""
-    if turn is None:
-        return
-    turn.setdefault("staged", {})[path] = pid
-    touched = turn.setdefault("touched", [])
-    if pid not in touched:
-        touched.append(pid)
-    turn["proposal_id"] = pid
-
-
-def _save_draft(meta: dict, text: str, turn: dict | None) -> None:
-    meta["content"] = text
-    meta["words"] = ar_mod._count_words(text)
-    if turn and turn.get("batch"):
-        meta["batch"] = turn["batch"]
-    _write_proposal(meta)
-    _touch(turn, proposal_target(meta)[1], meta["id"])
-
-
-def _propose_rewrite(ctx: _ToolCtx, content: str, turn: dict | None) -> str:
-    """Stage a whole-chapter revision for approval; tell the model what happened.
-
-    It parks a proposal, the author reviews it, and *accepting* is a normal save —
+    This is the only way the Muse can touch the archive, and it still cannot: it
+    parks a proposal, the author reviews a diff, and *accepting* is a normal save —
     so D9's time machine snapshots it like any other edit. Nothing an LLM says ever
     rewrites the author's prose unattended.
     """
@@ -853,93 +445,62 @@ def _propose_rewrite(ctx: _ToolCtx, content: str, turn: dict | None) -> str:
                 "including its `# Title` line. Nothing was handed over.")
     if not ctx.cid:
         return "ERROR: no chapter in context — nothing was handed over."
+
     chapter = ar_mod.get_chapter(ctx.book_dir, ctx.cid)
     if chapter is None:
         return (f"ERROR: {ctx.cid} is not in this book any more — nothing was "
                 "handed over.")
-    path = f"chapters/{chapter.stem}.md"
 
-    staged_id = ((turn or {}).get("staged") or {}).get(path)
-    prior = read_proposal(staged_id) if staged_id else None
-    if prior is not None and prior.get("edits") is not None:
-        # Edits were staged earlier in this turn and now a whole chapter arrives: it
-        # supersedes them (it was written knowing them, or instead of them).
-        if len(text) >= PROPOSAL_MIN_CHARS:
-            prior["edits"] = None
-            _save_draft(prior, text, turn)
-            return ("The staged edits were replaced by this complete revision — NOT "
-                    "saved. Tell the author it is ready to review.")
-    elif prior is not None:
-        # A later part of the same revision, inside the same turn: append instead of
-        # starting over. This is what makes "send it in parts" real for chapters that
-        # are too long to fit in one response.
-        merged = (prior.get("content") or "").rstrip() + "\n\n" + text
-        _save_draft(prior, merged, turn)
-        return (f"Part appended — the revision now stands at {prior['words']} "
-                "words. Send the next part if the chapter is not finished, "
-                "otherwise tell the author it is ready to review.")
+    # A later part of the same revision, inside the same turn: append instead of
+    # starting over. This is what makes "send it in parts" real for chapters that are
+    # too long to fit in one response.
+    existing_id = (out or {}).get("proposal_id")
+    if existing_id:
+        prior = read_proposal(existing_id)
+        if prior:
+            merged = (prior.get("content") or "").rstrip() + "\n\n" + text
+            prior["content"] = merged
+            prior["words"] = ar_mod._count_words(merged)
+            (_PROPOSAL_ROOT / f"{existing_id}.json").write_text(
+                json.dumps(prior, indent=2), encoding="utf-8")
+            return (f"Part appended — the revision now stands at {prior['words']} "
+                    "words. Send the next part if the chapter is not finished, "
+                    "otherwise tell the author it is ready to review.")
 
     if len(text) < PROPOSAL_MIN_CHARS:
         return (f"ERROR: that is only {len(text)} characters — not a chapter. Send "
                 f"the COMPLETE revision (at least {PROPOSAL_MIN_CHARS} characters) in "
                 "markdown, including its `# Title` line. Nothing was handed over.")
+
     current = chapter.read_text(encoding="utf-8")
-    if _normalized(text) == _normalized(current):
+    if " ".join(text.split()) == " ".join(current.split()):
         return ("ERROR: that is identical to the chapter as it stands, so there is "
                 "nothing for the author to review.")
 
-    _park(ctx, "chapter", path, chapter, text, None, turn)
+    now = datetime.now(timezone.utc)
+    # Microseconds, deliberately: two revisions in the same second must not share an
+    # id, or the second silently overwrites the first.
+    pid = f"{ctx.book_dir.name}-{ctx.cid}-{now.strftime('%Y%m%dt%H%M%S%f')}"
+    meta = {
+        "id": pid,
+        "series": ctx.series_dir.name,
+        "book": ctx.book_dir.name,
+        "chapter": ctx.cid,
+        "created_at": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "content": text,
+        "words": ar_mod._count_words(text),
+        "base_revision": ar_mod._read_revision_marker(chapter),
+    }
+    _PROPOSAL_ROOT.mkdir(parents=True, exist_ok=True)
+    (_PROPOSAL_ROOT / f"{pid}.json").write_text(json.dumps(meta, indent=2),
+                                                encoding="utf-8")
+    _prune_proposals(ctx.book_dir.name, ctx.cid)
+    if out is not None:
+        out["proposal_id"] = pid
     return ("Handed to the author for approval — NOT saved. They are being shown a "
             "diff of your revision against the current chapter. Do NOT paste the "
             "chapter into the chat: reply in one or two sentences telling them to "
             "review the diff and Accept.")
-
-
-def _edit_file(ctx: _ToolCtx, path: str | None, edits, turn: dict | None) -> str:
-    """Targeted find/replace edits to a chapter or bible file, staged for review.
-
-    The IDE-shaped way to change the story: the Muse names the exact passage and its
-    replacement instead of re-sending 5,000 words. The edits apply to a *copy* — the
-    live draft for that file if there is one (D55), else the file as it stands — and
-    the result is parked for the author to review per hunk; accepting is a normal
-    save. A call is all-or-nothing, so a half-applied set of edits can never reach
-    the review pane.
-    """
-    target = _edit_target(ctx, path)
-    if isinstance(target, str):
-        return target
-    kind, rel, f = target
-    current = file_text(kind, f)
-    if kind == "chapter" and not current:
-        return f"ERROR: {rel} could not be read. Nothing was changed."
-
-    staged_id = ((turn or {}).get("staged") or {}).get(rel)
-    prior = read_proposal(staged_id) if staged_id else None
-    if prior is None:
-        prior = _live_draft(ctx, rel)
-    base = prior["content"] if prior is not None else current
-
-    text, err = _apply_strict(base, edits)
-    if err:
-        return err
-    if _normalized(text) == _normalized(current):
-        return ("ERROR: those edits leave the file exactly as it is on disk. Nothing "
-                "was staged.")
-    if kind == "bible" and not text.endswith("\n"):
-        text += "\n"
-
-    if prior is not None:
-        if prior.get("edits") is not None:
-            prior["edits"] = list(prior["edits"]) + list(edits)
-        _save_draft(prior, text, turn)
-    else:
-        _park(ctx, kind, rel, f, text, list(edits), turn)
-    creating = kind == "bible" and not f.is_file()
-    return (f"{len(edits)} edit(s) to {rel} staged for the author's review"
-            f"{' (a new file)' if creating else ''} — NOT saved. Further edit_file calls "
-            "stack on the same draft, and read_story_file now shows you the draft. When "
-            "you are done, tell the author in a sentence or two what you changed and "
-            "that it is waiting for them to review and accept. Do not paste the text.")
 
 
 def _run_tool(ctx: _ToolCtx, name: str, args: dict, out: dict | None = None) -> str:
@@ -951,7 +512,7 @@ def _run_tool(ctx: _ToolCtx, name: str, args: dict, out: dict | None = None) -> 
                 "before the end, which happens when a long single response runs out of "
                 "output room. Nothing was handed over. If the revision is long, send it "
                 "in PARTS: call this tool once per part, in order, and each call appends "
-                "to the same revision — or use edit_file for targeted changes.")
+                "to the same revision.")
     if name == "list_story_files":
         return _list_story_files(ctx)
     if name == "read_story_file":
@@ -960,8 +521,6 @@ def _run_tool(ctx: _ToolCtx, name: str, args: dict, out: dict | None = None) -> 
         return _search_story(ctx, str(args.get("query", "")))
     if name == "propose_chapter_rewrite":
         return _propose_rewrite(ctx, str(args.get("content", "")), out)
-    if name == "edit_file":
-        return _edit_file(ctx, args.get("path"), args.get("edits"), out)
     return f"ERROR: unknown tool {name}"
 
 
@@ -973,9 +532,7 @@ _TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "read_story_file",
-        "description": ("Read one story file by its exact path as returned by "
-                        "list_story_files. If you have a change waiting on that file, "
-                        "you get your pending draft (edits apply on top of it)."),
+        "description": "Read one story file by its exact path as returned by list_story_files.",
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string",
@@ -993,48 +550,11 @@ _TOOLS = [
         },
     }},
     {"type": "function", "function": {
-        "name": "edit_file",
-        "description": (
-            "Edit a chapter or bible file with targeted find-and-replace changes. Use "
-            "this for any change smaller than a full rewrite: fixing lines, tightening "
-            "paragraphs, renaming, inserting or cutting a passage, updating the bible. "
-            "Call it once per file; a change that spans files (e.g. renaming a "
-            "character everywhere) is one call per file. Each `old_text` must be copied "
-            "EXACTLY from the file (read it first with read_story_file) and must match "
-            "exactly once; `new_text` replaces it (empty deletes it). To create a NEW "
-            "bible file, send a single edit with an empty `old_text` and the whole file "
-            "as `new_text`. The edits are staged, NOT saved: the author reviews each "
-            "change and accepts or rejects it. More calls on the same file stack on the "
-            "same draft."),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string",
-                         "description": "chapters/ch-NN.md or bible/<name>.md; omit "
-                                        "for the chapter the author has open"},
-                "edits": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "old_text": {"type": "string",
-                                         "description": "exact text currently in the file"},
-                            "new_text": {"type": "string",
-                                         "description": "what replaces it"},
-                        },
-                        "required": ["old_text", "new_text"],
-                    },
-                },
-            },
-            "required": ["edits"],
-        },
-    }},
-    {"type": "function", "function": {
         "name": "propose_chapter_rewrite",
         "description": (
-            "Hand the author a COMPLETE revised version of the open chapter for "
-            "approval. Use this only when they ask you to write, rewrite or restructure "
-            "the whole chapter — for smaller changes use edit_file. It is NOT saved and you "
+            "Hand the author a COMPLETE revised version of the chapter for approval. "
+            "Use this whenever they ask you to write, rewrite, fix, tighten, "
+            "restructure or clean up the whole chapter. It is NOT saved and you "
             "cannot save it: the author is shown a word-level diff and accepting it "
             "creates a normal revision snapshot. Send the entire chapter in "
             "markdown, including its `# Title` line. One call is enough for a normal "
@@ -1062,20 +582,34 @@ AGENT_SYSTEM = (
     # Two rules learned the hard way (2.8.1):
     #  * the model would announce a tool use and end the turn — the author was
     #    left with "I'll re-open ch-01…" and no work;
-    #  * it would offer to fix a chapter without producing the prose.
+    #  * it would offer to fix a chapter without producing the prose, expecting a
+    #    write tool it does not have.
     "If you need to read something, CALL the tool in the same turn you decide to: "
     "never end a reply with a statement of intent ('I'll re-open ch-01', 'let me "
     "read that file') instead of calling it, because that leaves the author with "
-    "nothing to act on. You edit the story the way a coding assistant edits files: "
-    "when the author asks you to write, fix, tighten or rewrite anything in a "
-    "chapter or the bible, make the change yourself with edit_file (targeted "
-    "edits, any chapter or bible file) or propose_chapter_rewrite (the whole open "
-    "chapter). You cannot save: every change is staged as a proposal the author "
-    "reviews and accepts, so make the edit rather than describing it, and don't "
-    "paste the changed text into the chat. Never answer a writing request with a "
-    "plan to do it later. "
+    "nothing to act on. Your tools are read-only — you cannot write or save any "
+    "file. So when the author asks you to write, fix, tighten or rewrite "
+    "anything, put the actual prose in your reply, ready to apply, and state "
+    "plainly that it is a proposal for them to accept. Never answer a writing "
+    "request with a plan to do it later. "
     "When you have what you need, answer the author directly and concisely."
 )
+
+
+async def _stream_turn(payload: dict, holder: dict) -> AsyncIterator[str]:
+    """Stream one assistant turn. Yields visible text; collects any tool calls
+    into holder['tool_calls']."""
+    holder["tool_calls"] = []
+    filt = ThinkStreamFilter()
+    async for event in up_mod.stream_events({**payload, "stream": True}, _client):
+        for tc in event.get("tool_calls") or []:
+            holder["tool_calls"].append(tc)
+        visible = filt.feed(event.get("content") or "")
+        if visible:
+            yield visible
+    tail = filt.finish()
+    if tail:
+        yield tail
 
 
 # --- public: chat ---------------------------------------------------------
@@ -1085,27 +619,7 @@ CHIP_PROMPTS: dict[str, str] = {
     "continue": "Continue the scene from where it left off, matching the established voice and cadence. Write 1–3 paragraphs.",
     "scene": "Write a new scene that follows naturally from the current chapter. Include a setting, characters from the bible if relevant, and a hook at the end.",
     "canon": "Check the user's claim against the canon (the chapter text + bible). Reply with: VERIFIED / CONTRADICTS / UNCLEAR, then one short sentence explaining.",
-    # Inline edit on a selection (3.1, D57): the IDE's "edit this, here".
-    "inline": (
-        "The author selected a passage in the open chapter and gave an instruction "
-        "for it. Change ONLY that passage, with ONE edit_file call on the open "
-        "chapter whose `old_text` is the selected passage exactly as quoted (it is "
-        "already saved in the file) and whose `new_text` carries out the "
-        "instruction. Do not touch anything outside the selection and do not read "
-        "other files unless the instruction needs them. Then reply with one short "
-        "sentence."),
-    # A Fix button on a continuity issue (3.1, D60).
-    "fix": (
-        "The author wants a continuity issue fixed. Read the files involved, decide "
-        "which side is wrong (the bible usually records intent; the latest chapter "
-        "usually records what the author wrote last), and fix it with edit_file — "
-        "one call per file, smallest change that resolves the issue. Then say in one "
-        "or two sentences what you changed and why."),
 }
-
-
-def _new_batch() -> str:
-    return datetime.now(timezone.utc).strftime("t%Y%m%d%H%M%S%f")
 
 
 async def chat(
@@ -1117,16 +631,13 @@ async def chat(
 
     `messages` is the full OpenAI-style thread (last item is the user turn).
     When `chapter_id` resolves, the model is given tools to fetch the story on
-    demand — we hand it the file index + style digest + the author's rules, NOT
-    the chapter itself (plus whatever the author @-mentioned).
-    `chip` (rewrite/continue/scene/canon/inline/fix) rides along as a system hint.
+    demand — we hand it the file index + style digest, NOT the chapter itself.
+    `chip` (rewrite/continue/scene/canon) rides along as a system hint.
     """
-    up_mod.set_session(chapter_id)
     ctx = _tool_ctx(chapter_id)
     sys_parts: list[dict] = [{"role": "system", "content": AGENT_SYSTEM}]
     if chip and chip in CHIP_PROMPTS:
         sys_parts.append({"role": "system", "content": CHIP_PROMPTS[chip]})
-    attached: list[str] = []
     if ctx is not None:
         index = _list_story_files(ctx)
         if index and index != "(no files)":
@@ -1134,18 +645,6 @@ async def chat(
         digest = await _load_style_summary(ctx.book_dir.name, ctx.book_dir)
         if digest:
             sys_parts.append({"role": "system", "content": "## STORY STYLE (keep this voice)\n\n" + digest})
-        rules = _rules_block(ctx.book_dir)
-        if rules:
-            sys_parts.append({"role": "system", "content": rules})
-        last_user = next((m.get("content") or "" for m in reversed(messages)
-                          if m.get("role") == "user"), "")
-        attached = resolve_mentions(ctx, last_user)
-        block = _mention_block(ctx, attached)
-        if block:
-            sys_parts.append({"role": "system", "content": block})
-
-    if attached:
-        yield Status("attached " + ", ".join(Path(a).name for a in attached))
 
     payload: dict = {
         "model": MUSE_AGENT_MODEL,
@@ -1159,17 +658,17 @@ async def chat(
 
     full_text_parts: list[str] = []
     hit_limit = False
-    usage = Usage()
     # These live OUTSIDE the round loop: a revision can span several tool calls (and
     # therefore several rounds), and it is announced once the whole turn is finished.
-    turn: dict = {"batch": _new_batch()}
+    pending_announce: list[str] = []
+    announced: set = set()
+    turn: dict = {}
     for _round in range(MUSE_MAX_TOOL_ROUNDS):
-        meta: dict = {}
-        async for delta in _stream_visible(payload, meta):
+        holder: dict = {}
+        async for delta in _stream_turn(payload, holder):
             full_text_parts.append(delta)
             yield delta
-        usage.add({"input": meta["usage"].input, "output": meta["usage"].output})
-        calls = meta.get("tool_calls") or []
+        calls = holder.get("tool_calls") or []
         if not calls or ctx is None:
             hit_limit = False
             break
@@ -1194,8 +693,6 @@ async def chat(
                 # Not a read: the Muse is handing over a whole-chapter revision for
                 # approval (2.9, D45).
                 yield Status("preparing a full-chapter revision…")
-            elif name == "edit_file":
-                yield Status(f"editing {args.get('path') or 'the chapter'}…")
             else:
                 label = args.get("path") or args.get("query")
                 if not label:
@@ -1205,24 +702,24 @@ async def chat(
                 yield Status(f"reading {label}…")
             result = _run_tool(ctx, name, args, turn)
             payload["messages"].append({"role": "tool", "tool_name": name, "content": result})
+            pid = turn.get("proposal_id")
+            if pid and pid not in announced:
+                announced.add(pid)
+                # Announced only once the turn is over: a revision that arrives in
+                # parts must not raise the "review diff" banner while it is still
+                # half-sent, or the author could accept a third of a chapter (2.9.2).
+                pending_announce.append(pid)
+
+    for pid in pending_announce:
+        yield Proposal(pid)
 
     if hit_limit:
         # Ran out of rounds mid-fetch: force a final answer with no tools.
         payload.pop("tools", None)
-        meta = {}
-        async for delta in _stream_visible(payload, meta):
+        holder = {}
+        async for delta in _stream_turn(payload, holder):
             full_text_parts.append(delta)
             yield delta
-        usage.add({"input": meta["usage"].input, "output": meta["usage"].output})
-
-    # Announced only once the turn is over: a revision that arrives in parts must not
-    # raise the "review" banner while it is still half-sent, or the author could
-    # accept a third of a chapter (2.9.2).
-    for pid in turn.get("touched", []):
-        if read_proposal(pid) is not None:
-            yield Proposal(pid)
-    if usage:
-        yield usage
 
     # Persist the exchange AFTER the stream finishes.
     if chapter_id and messages:
@@ -1242,15 +739,10 @@ async def rewrite(
     text: str,
     style: str = "novel",
     chapter_id: str | None = None,
-) -> AsyncIterator:
+) -> AsyncIterator[str]:
     """Stream a single rewrite proposal for `text` in the chosen `style`."""
-    up_mod.set_session(chapter_id)
     sys_parts: list[dict] = [{"role": "system", "content": STYLE_PROMPTS.get(style, STYLE_PROMPTS["novel"])}]
     if chapter_id:
-        parsed = _parse_chapter_id(chapter_id)
-        rules = _rules_block(_resolve_bdir(parsed[0], parsed[1]) if parsed else None)
-        if rules:
-            sys_parts.append({"role": "system", "content": rules})
         canon = await _load_canon_context(chapter_id, user_prompt=text)
         if canon:
             sys_parts.append({"role": "system", "content": canon})
@@ -1264,57 +756,11 @@ async def rewrite(
         "options": {"num_predict": MUSE_NUM_PREDICT, "temperature": 0.7},
     }
     full_text_parts: list[str] = []
-    meta: dict = {}
-    async for delta in _post_chat(payload, meta):
+    async for delta in _post_chat(payload):
         full_text_parts.append(delta)
         yield delta
-    if meta.get("usage"):
-        yield meta["usage"]
     if chapter_id:
         _persist_thread(chapter_id, [{"role": "user", "content": text}], "".join(full_text_parts))
-
-
-# --- public: ghost-text completion (3.1, D59) ------------------------------
-
-COMPLETE_SYSTEM = (
-    "You are an autocomplete inside a novelist's editor. Continue the text from "
-    "exactly where it stops: at most one sentence (under 25 words), in the same "
-    "voice, tense and point of view. Reply with ONLY the continuation — no quotes, "
-    "no preamble, no explanation. If the text ends mid-word, finish the word."
-)
-COMPLETE_CONTEXT = 3000       # chars before the cursor the model sees
-
-
-async def complete_text(before: str, chapter_id: str | None = None) -> str:
-    """A short continuation of `before` — one sentence, for Tab-to-accept ghost text."""
-    before = (before or "")[-COMPLETE_CONTEXT:]
-    up_mod.set_session(chapter_id)
-    if not before.strip():
-        return ""
-    sys_parts = [{"role": "system", "content": COMPLETE_SYSTEM}]
-    parsed = _parse_chapter_id(chapter_id) if chapter_id else None
-    rules = _rules_block(_resolve_bdir(parsed[0], parsed[1]) if parsed else None)
-    if rules:
-        sys_parts.append({"role": "system", "content": rules})
-    payload = {
-        "model": MUSE_COMPLETE_MODEL,
-        "messages": [*sys_parts, {"role": "user", "content": before}],
-        "stream": False,
-        "options": {"num_predict": MUSE_COMPLETE_MAX_TOKENS, "temperature": 0.7},
-    }
-    obj = await up_mod.complete(payload, _client)
-    text = strip_think((obj.get("message") or {}).get("content") or "")
-    text = text.split("\n", 1)[0].rstrip()
-    text = text.strip("\"“”")
-    if not text.strip():
-        return ""
-    # Glue: the model rarely knows whether the cursor sits after a space. After
-    # whitespace, no leading space; after a word or punctuation, a new word needs one.
-    if before[-1:].isspace():
-        text = text.lstrip()
-    elif text[:1].isalnum():
-        text = " " + text
-    return text[:240]
 
 
 # --- public: models info --------------------------------------------------
@@ -1695,22 +1141,16 @@ def thread_messages(chapter_id: str) -> list[dict]:
 
 # --- canon sweep (0.4) ----------------------------------------------------
 # A whole-manuscript continuity pass. Two targets:
-#   report → stream a markdown audit, one located issue per bullet (read-only;
-#            each issue gets a Fix button in the app, 3.1, D60)
-#   bible  → a proposed rewrite of one bible file, staged as a proposal and
-#            reviewed per hunk like any other Muse change (3.1, D54)
+#   report → stream a markdown audit of contradictions / drift (read-only)
+#   bible  → stream a proposed rewrite of one bible file (approval-gated)
 
 SWEEP_REPORT_PROMPT = (
     "You are a continuity editor for a novel-in-progress. Read the whole "
-    "manuscript and its story bible below, then write a concise markdown report "
-    "with exactly these four sections: `## Canon contradictions`, `## Timeline "
-    "errors`, `## Character inconsistencies` (names, traits, voice), `## Open "
-    "questions`. Under each, write ONE bullet per issue, and start every bullet "
-    "with where the issue is, in square brackets: the chapter id (`- [ch-03] …`), "
-    "a bible file (`- [bible/timeline.md] …`), several separated by commas "
-    "(`- [ch-02, bible/characters/kael.md] …`), or `[general]`. Then state the "
-    "issue in one or two sentences, quoting the conflicting details. Report only "
-    "real issues; if a section is clean, write a single bullet `- none`."
+    "manuscript and its story bible below, then write a concise markdown "
+    "report covering: (1) canon contradictions, (2) timeline errors, "
+    "(3) character inconsistencies (names, traits, voice), (4) open questions "
+    "worth resolving. Cite the chapter or bible entry where relevant. Report "
+    "only real issues; if a section is clean, say so in one line."
 )
 
 SWEEP_BIBLE_PROMPT = (
@@ -1730,7 +1170,7 @@ def _load_full_book_context(bdir: Path) -> str:
     """Whole-book context: every chapter + every bible file, char-capped."""
     parts: list[str] = []
     for f in ar_mod.chapter_files(bdir / "chapters"):
-        parts.append(f"### CHAPTER {f.stem}\n\n{f.read_text(encoding='utf-8').strip()}")
+        parts.append(f.read_text(encoding="utf-8").strip())
     bd = bdir / "bible"
     for f in ar_mod._iter_bible_files(bd):  # type: ignore[attr-defined]
         rel = f.relative_to(bd).as_posix()
@@ -1741,39 +1181,31 @@ def _load_full_book_context(bdir: Path) -> str:
     return block
 
 
-async def sweep_report(series: str, book_id: str) -> AsyncIterator:
+async def sweep_report(series: str, book_id: str) -> AsyncIterator[str]:
     """Stream a whole-book continuity audit (read-only)."""
     bdir = _resolve_bdir(series, book_id)
     if bdir is None:
         yield "Book not found."
         return
     context = _load_full_book_context(bdir) or "(this book has no chapters yet)"
-    system = SWEEP_REPORT_PROMPT
-    rules = _rules_block(bdir)
-    if rules:
-        system += "\n\n" + rules
     payload = {
         "model": MUSE_REWRITE_MODEL,
         "messages": [
-            {"role": "system", "content": system},
+            {"role": "system", "content": SWEEP_REPORT_PROMPT},
             {"role": "user", "content": context},
         ],
         "options": {"num_predict": MUSE_NUM_PREDICT, "temperature": 0.3},
     }
-    meta: dict = {}
-    async for delta in _post_chat(payload, meta):
+    async for delta in _post_chat(payload):
         yield delta
-    if meta.get("usage"):
-        yield meta["usage"]
 
 
-async def sweep_bible(series: str, book_id: str, bible_name: str) -> AsyncIterator:
-    """Stream a proposed rewrite of one bible file, then stage it for review.
+async def sweep_bible(series: str, book_id: str, bible_name: str) -> AsyncIterator[str]:
+    """Stream a proposed rewrite of one bible file (approval-gated).
 
     `bible_name` may be nested (`characters/kael.md`); the shared guard is the
     same one the PUT route uses, so sweep and save accept exactly the same
-    paths and nothing outside bible/*.md. The streamed text is only a preview:
-    what the author decides on is the staged proposal (`[PROPOSAL] <id>`)."""
+    paths and nothing outside bible/*.md."""
     bdir = _resolve_bdir(series, book_id)
     if bdir is None:
         yield "Book not found."
@@ -1796,24 +1228,5 @@ async def sweep_bible(series: str, book_id: str, bible_name: str) -> AsyncIterat
         ],
         "options": {"num_predict": MUSE_NUM_PREDICT, "temperature": 0.4},
     }
-    parts: list[str] = []
-    meta: dict = {}
-    async for delta in _post_chat(payload, meta):
-        parts.append(delta)
+    async for delta in _post_chat(payload):
         yield delta
-    if meta.get("usage"):
-        yield meta["usage"]
-
-    text = "".join(parts).strip()
-    # The adapter's "the model wrote nothing" sentence is a message to the author,
-    # never a bible file — staging it would offer to replace the canon with an apology.
-    if not text or meta.get("notice"):
-        return
-    text += "\n"
-    if _normalized(text) == _normalized(file_text("bible", target)):
-        yield Status("the bible file already matches the manuscript")
-        return
-    ctx = _ToolCtx(bdir.parent, bdir, "")
-    rel = "bible/" + target.relative_to((bdir / "bible").resolve()).as_posix()
-    pid = _park(ctx, "bible", rel, target, text, None, {"batch": _new_batch()})
-    yield Proposal(pid)

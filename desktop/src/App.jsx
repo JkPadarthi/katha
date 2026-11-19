@@ -1,107 +1,135 @@
-import React, { useEffect, useState } from 'react'
-import TopBar from './shell/TopBar.jsx'
-import Dock from './shell/Dock.jsx'
-import Conversation from './shell/Conversation.jsx'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import TitleBar from './components/TitleBar.jsx'
+import Rail from './components/Rail.jsx'
 import Editor, { editorApi } from './components/Editor.jsx'
+import Muse, { museApi } from './components/Muse.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import DiffOverlay from './components/DiffOverlay.jsx'
 import ProposalReview from './components/ProposalReview.jsx'
-import HistoryPanel from './components/HistoryPanel.jsx'
-import SecurityPanel from './components/SecurityPanel.jsx'
 import SweepPanel from './components/SweepPanel.jsx'
 import BiblePanel from './components/BiblePanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import ConfirmDeleteDialog from './components/ConfirmDeleteDialog.jsx'
 import NewBookDialog from './components/NewBookDialog.jsx'
 import BookDetailsDialog from './components/BookDetailsDialog.jsx'
-import Icon from './ui/Icon.jsx'
-import { Button } from './ui/Button.jsx'
 import * as api from './lib/api.js'
 import { getSetting, setSetting } from './lib/settings.js'
+import { pickChapter, pickSeries, newestChapter } from './lib/resume.js'
+import { useMediaQuery } from './lib/useMediaQuery.js'
 import { useTheme } from './lib/useTheme.js'
-import { useBook } from './lib/useBook.js'
-import { useMuse, museApi } from './lib/useMuse.js'
-import { useReview } from './lib/useReview.js'
-import { useStats } from './lib/useStats.js'
-import { useMeasure, MEASURES } from './lib/useMeasure.js'
 
-// KATHA 4.0 — "One Page" (D63). The manuscript has the whole window. Where you are is a
-// breadcrumb at the top that opens the book; the Muse is a dock at the bottom of the
-// page; its changes are reviewed in the prose itself. The same layout on a phone.
 export default function App() {
   const { theme, choose } = useTheme()
-  const nav = useBook()
-  const { archive, series, book, chapter, chapterKey, activeChapter } = nav
-  const muse = useMuse({ series, chapter, book })
 
-  // panels
+  const [archive, setArchive] = useState(null)
+  const [confirmTarget, setConfirmTarget] = useState(null)   // delete → confirm (2.3)
+  const [series, setSeries] = useState(null)
+  const [activeChapter, setActiveChapter] = useState(null)
+  const [railCollapsed, setRailCollapsed] = useState(() => getSetting('railCollapsed', false))
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [focusMode, setFocusMode] = useState(() => getSetting('focus', false))
-  const [threadOpen, setThreadOpen] = useState(() => getSetting('thread', false))
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [securityOpen, setSecurityOpen] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  // Bumped when a bible file is deleted: the panel re-reads from the server
+  // rather than guessing at the new list.
+  const [bibleKey, setBibleKey] = useState(0)
+  // The book's face (2.8): author + cover live in the tree, so the dialog reads
+  // them from there and never drifts from what the rail shows.
+  const [bookFace, setBookFace] = useState(false)
+  const currentBook = (archive || [])
+    .flatMap((s) => s.books || [])
+    .find((b) => b.id === series?.book) || null
+  // A whole-chapter revision the Muse handed over, waiting for approval (2.9, D45):
+  // {id, content, original}. Nothing is written until the author accepts it.
+  const [proposal, setProposal] = useState(null)
+  const [proposalBusy, setProposalBusy] = useState(false)
+
   const [sweepOpen, setSweepOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [newBookOpen, setNewBookOpen] = useState(false)
-  const [bookFace, setBookFace] = useState(false)
-  const [bibleName, setBibleName] = useState(null)        // null = closed
-  const [bibleKey, setBibleKey] = useState(0)             // bumped: the bible re-reads
-  const [confirmTarget, setConfirmTarget] = useState(null)
-
-  // preferences
-  const [ghostOn, setGhostOn] = useState(() => getSetting('ghost', false))
+  const [bibleName, setBibleName] = useState(null)   // null = closed
   const [goal, setGoal] = useState(() => getSetting('goal', '') ?? '')
   const [nudgeOn, setNudgeOn] = useState(() => getSetting('nudge', false))
   const [nudge, setNudge] = useState(false)
-  const stats = useStats(goal)
-  const [measure, setMeasure] = useMeasure()
 
-  // the selection on the page, and what the Muse does with it
+  // Rewrite flow
   const [selection, setSelection] = useState(null)
-  const [inlineBusy, setInlineBusy] = useState(false)
   const [rewriteOpen, setRewriteOpen] = useState(false)
   const [proposed, setProposed] = useState('')
   const [rewriteBusy, setRewriteBusy] = useState(false)
   const [rewriteStyle, setRewriteStyle] = useState('novel')
 
-  useEffect(() => { setSetting('focus', focusMode) }, [focusMode])
-  useEffect(() => { setSetting('thread', threadOpen) }, [threadOpen])
+  // Mobile: one pane at a time — bottom tabs + horizontal swipe.
+  const isMobile = useMediaQuery('(max-width: 767px)')
+  const [pane, setPane] = useState(1)                 // 0=Chapters 1=Page 2=Muse
+  const touchRef = useRef({ x0: 0, dx: 0, active: false })
 
-  // A saved file goes straight into the editor as the saved baseline — never through
-  // autosave, which would write it a second time and make the rest stale (3.1, D61).
-  const landSaved = (saved) => {
-    if (!saved) return
-    if (saved.kind === 'bible') {
-      setBibleKey((k) => k + 1)
-    } else if (saved.id === activeChapter && editorApi.loadSaved) {
-      editorApi.loadSaved(saved.content, saved.title, saved.revision)
-      setSelection(null)       // its offsets point into the text that was just replaced
+  // Load the archive.
+  useEffect(() => {
+    let alive = true
+    setLoadError('')
+    api
+      .loadArchive()
+      .then((a) => {
+        if (!alive) return
+        setArchive(a)
+        // Land where the author actually was: the chapter they last had open, else the
+        // one written most recently — never simply the first in the rail (3.0.8, D52).
+        const remembered = getSetting('lastChapter', null)
+        const target = pickSeries({ archive: a, remembered })
+        if (target) {
+          setSeries(target)
+          setActiveChapter(pickChapter({ archive: a, ...target, remembered }))
+        }
+        // An empty archive is a legitimate state, not a failure: `archive` stays
+        // set (to []) and the render shows the empty panel below. Reporting it as
+        // a load error told the author the server was down when it had answered
+        // perfectly — and hid the Trash, which is where a deleted book waits.
+      })
+      .catch((err) => {
+        if (alive) setLoadError(`${err.message || err}`)
+      })
+    return () => { alive = false }
+  }, [])
+
+  // Remember where the author is, so a refresh (or reopening the installed app) resumes
+  // there instead of jumping to the first chapter.
+  useEffect(() => {
+    if (series && activeChapter) {
+      setSetting('lastChapter', { series: series.series, book: series.book, id: activeChapter })
     }
-  }
-  const review = useReview({ series, landSaved, refreshArchive: nav.refresh })
-  const { proposal } = review
+  }, [series, activeChapter])
 
-  const jump = (id) => {
-    nav.setActiveChapter(id)
-    setSelection(null)
-  }
+  // Re-fetch the tree without disturbing the current selection.
+  const refreshArchive = useCallback(async () => {
+    try {
+      setArchive(await api.loadArchive())
+    } catch { /* keep the existing tree */ }
+  }, [])
 
-  // keyboard: ⌘K palette, ⌘⇧F focus, ⌘I edit the selection, Esc backs out
   useEffect(() => {
     const onKey = (e) => {
-      const mod = e.metaKey || e.ctrlKey
-      const key = e.key.toLowerCase()
-      if (mod && key === 'k') { e.preventDefault(); setPaletteOpen((v) => !v) }
-      if (mod && e.shiftKey && key === 'f') { e.preventDefault(); setFocusMode((v) => !v) }
-      if (mod && !e.shiftKey && key === 'i') { e.preventDefault(); setFocusMode(false); setTimeout(() => museApi.focus?.(), 0) }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setFocusMode((v) => !v)
+      }
       if (e.key === 'Escape') {
         setPaletteOpen(false)
         setRewriteOpen(false)
+        setFocusMode(false)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  useEffect(() => { setSetting('focus', focusMode) }, [focusMode])
+  // The rail's retracted state sticks too — in focus mode it is the one control
+  // you use on purpose, and it should stay where you left it.
+  useEffect(() => { setSetting('railCollapsed', railCollapsed) }, [railCollapsed])
 
   // Proactive nudge (D11): off by default.
   useEffect(() => {
@@ -123,51 +151,128 @@ export default function App() {
     }
   }, [nudgeOn, paletteOpen, rewriteOpen, sweepOpen, settingsOpen])
 
-  // --- inline edit on a selection (3.1, D57) — sent from the dock since 4.0 -----------
-  const runInline = async (instruction) => {
-    const sel = selection
-    if (!instruction || !sel?.text || !museApi.ask) return
-    setInlineBusy(true)
-    try {
-      // The Muse reads the file, so the passage must be on disk first.
-      if (editorApi.flush) await editorApi.flush()
-      const ids = await museApi.ask(
-        `Selected passage (in ${chapter?.id}), exactly as it stands in the file:\n<<<\n${sel.text}\n>>>\n\nInstruction: ${instruction}`,
-        { chip: 'inline', chapterId: chapterKey }
-      )
-      if (ids && ids.length) {
-        muse.dismiss()
-        await review.open(ids[ids.length - 1])
-      }
-    } catch { /* the reply card shows the error */ }
-    finally {
-      setInlineBusy(false)
+  const jumpTo = (id) => {
+    setActiveChapter(id)
+    setSelection(null)
+    setPaletteOpen(false)
+  }
+
+  // Switch series/book — the archive holds every book; the rail is the picker.
+  const selectBook = (seriesName, bookId) => {
+    if (!archive) return
+    const s = archive.find((x) => x.name === seriesName)
+    if (!s) return
+    const b = s.books.find((x) => x.id === bookId) || s.books[0]
+    if (!b) return
+    setSeries({ series: s.name, book: b.id })
+    setActiveChapter(b.chapters[0]?.id || null)
+    setSelection(null)
+    if (isMobile) setPane(1)
+  }
+
+  // Search hits carry their own series/book — open the right one, not the
+  // current book's chapter with the same id. Bible hits open the canon file.
+  const openHit = (hit) => {
+    if (!hit) return
+    const s = archive?.find((x) => x.name === hit.series)
+    const b = s?.books?.find((x) => x.id === hit.book_id) || s?.books?.[0]
+    setSeries({ series: hit.series, book: b?.id || hit.book_id })
+    setSelection(null)
+    setPaletteOpen(false)
+    if (hit.kind === 'chapter') {
+      setActiveChapter(hit.doc_id)
+      setPane(1)
+    } else if (hit.kind === 'bible') {
+      setBibleName(hit.doc_id)
     }
   }
 
-  // --- Fix a continuity issue from the sweep (3.1, D60) -------------------------------
-  const fixIssue = async (issue) => {
-    if (!series || !book) return
-    setSweepOpen(false)
-    const ids = new Set((book.chapters || []).map((c) => c.id))
-    const target = issue.refs.find((r) => ids.has(r)) || activeChapter
-    if (!target) return
-    if (target !== activeChapter) jump(target)
-    const staged = await museApi.ask?.(
-      `Fix this continuity issue — [${issue.refs.join(', ')}] ${issue.text}`,
-      { chip: 'fix', chapterId: `${series.series}/${series.book}/${target}` }
-    )
-    if (staged && staged.length) await review.open(staged[0])
+  const onBookCreated = async (b) => {
+    setNewBookOpen(false)
+    if (!b) return
+    await refreshArchive()
+    setSeries({ series: b.series, book: b.id })
+    setActiveChapter(b.chapters?.[0]?.id || null)
+    setSelection(null)
   }
 
-  // --- rewrite a selection in a chosen style, side by side ------------------------------
+  const book = useMemo(
+    () => (archive && series ? archive.find((s) => s.name === series.series)?.books?.find((b) => b.id === series.book) : null),
+    [archive, series]
+  )
+  const chapter = useMemo(
+    () => book?.chapters?.find((c) => c.id === activeChapter) || null,
+    [book, activeChapter]
+  )
+  const activeChapterId = series && chapter ? `${series.series}/${series.book}/${chapter.id}` : null
+
+  const newChapter = async (kind = 'chapter') => {
+    if (!series) return
+    // A prologue is chapter 0 — opt-in per book, and only offered when the book
+    // doesn't have one already.
+    const prologue = kind === 'prologue'
+    try {
+      const c = await api.createChapter(
+        series.series,
+        series.book,
+        prologue ? 'Prologue' : 'Untitled',
+        '',
+        prologue ? 0 : null
+      )
+      await refreshArchive()
+      setActiveChapter(c.id)
+      setSelection(null)
+      if (isMobile) setPane(1)
+    } catch { /* the archive refresh will surface any failure */ }
+  }
+
+  // Deleting moves the files to the trash (D33). The rail must forget them at
+  // once, and if we deleted what was open, land on whatever is left — or on the
+  // empty-archive panel if that was the last thing in the archive.
+  const onDeleted = async (manifest) => {
+    setConfirmTarget(null)
+    if (manifest.kind === 'bible') {
+      // The book's tree is unchanged — only the bible panel needs to re-read.
+      setBibleKey((k) => k + 1)
+      refreshArchive()
+      return
+    }
+    const wasActive = manifest.kind === 'chapter' && manifest.chapter_id === activeChapter
+    const tookOpenBook = manifest.kind === 'book' || manifest.kind === 'series'
+    await refreshArchive()
+    if (!wasActive && !tookOpenBook) return
+    try {
+      const tree = await api.loadArchive()
+      const s = tree.find((x) => x.name === manifest.series) || tree.find((x) => x.books.some((b) => b.chapters.length))
+      const b = s?.books.find((x) => x.id === manifest.book_id && x.chapters.length) ||
+                s?.books.find((x) => x.chapters.length)
+      if (s && b) {
+        selectBook(s.name, b.id)
+        if (b.chapters[0]) {
+          setActiveChapter(newestChapter(b.chapters))
+          setSelection(null)
+        }
+      } else {
+        setSeries(null)
+        setActiveChapter(null)
+        setSelection(null)
+      }
+    } catch { /* the refresh above already surfaced any failure */ }
+  }
+
+  // --- rewrite flow ------------------------------------------------------
   const runRewrite = async (sel, style) => {
     if (!sel || !sel.text) return
     setProposed('')
     setRewriteBusy(true)
     setRewriteOpen(true)
     try {
-      const full = await api.museRewrite({ text: sel.text, style, chapterId: chapterKey, onDelta: (acc) => setProposed(acc) })
+      const full = await api.museRewrite({
+        text: sel.text,
+        style,
+        chapterId: activeChapterId,
+        onDelta: (acc) => setProposed(acc)
+      })
       setProposed(full)
     } catch (e) {
       setProposed('— Muse unavailable: ' + (e.message || 'unknown error') + ' —')
@@ -175,184 +280,277 @@ export default function App() {
       setRewriteBusy(false)
     }
   }
-  const onRewriteAccept = () => {
+
+  const onSelection = (sel) => setSelection(sel)
+  const onRewriteClick = () => { if (selection?.text) runRewrite(selection, rewriteStyle) }
+  const onAccept = () => {
     if (editorApi.replaceSelection && proposed) editorApi.replaceSelection(proposed)
     setRewriteOpen(false)
     setProposed('')
     setSelection(null)   // offsets are stale once the text is replaced
   }
 
-  // The open chapter's own changes are reviewed on the page itself (3.1, D60 — on a
-  // phone too since 4.0); a bible file or another chapter in the review sheet.
-  const inlineReview = !!proposal && proposal.kind === 'chapter' && proposal.chapter === activeChapter
-  const reviewNode = (inline) => (
-    <ProposalReview
-      id={proposal.id}
-      kind={proposal.kind}
-      path={proposal.path}
-      original={proposal.original}
-      hunks={proposal.hunks}
-      stale={proposal.stale}
-      dropped={proposal.dropped}
-      siblings={proposal.siblings}
-      inline={inline}
-      busy={review.busy}
-      onAccept={(ids) => review.accept(ids)}
-      onAcceptAllFiles={review.acceptAll}
-      onDiscard={review.discard}
-      onSwitch={review.open}
-      onClose={review.close}
-    />
-  )
-
-  const deleteChapter = (c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })
-  const deleteBook = () => {
-    const s = archive?.find((x) => x.name === series?.series)
-    setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: s?.title || series.series, label: book?.title || series.book })
-  }
-  const exportEpub = () => series && api.exportEpub(series.series, series.book, `${series.book}.epub`).catch(() => {})
-
-  // Every action the top bar and the palette can take, in one place.
-  const actions = {
-    jump,
-    selectBook: (s, b) => { nav.selectBook(s, b); setSelection(null) },
-    newChapter: async (kind) => { const c = await nav.newChapter(kind); if (c) setSelection(null) },
-    newBook: () => setNewBookOpen(true),
-    openBible: (name) => setBibleName(name || ''),
-    sweep: () => setSweepOpen(true),
-    editBook: () => setBookFace(true),
-    exportEpub,
-    deleteChapter,
-    deleteBook,
-    palette: () => setPaletteOpen(true),
-    settings: () => setSettingsOpen(true),
-    security: () => setSecurityOpen(true),
-    toggleFocus: () => setFocusMode((v) => !v),
-    chooseTheme: choose,
-    measure,
-    setMeasure
+  // The Muse handed over a whole-chapter revision (2.9, D45). Fetch it together
+  // with the chapter as it stands, so the author reads a word-level diff instead of
+  // a wall of prose — and nothing is written until they accept.
+  // A revision can be reviewed one change at a time (3.0, D48): the pane needs the prose
+  // the Muse was looking at (`base_content`) and the hunks cut from it.
+  const openProposal = async (id) => {
+    if (!series || !activeChapter) return
+    try {
+      const [p, ch] = await Promise.all([
+        api.getProposal(id),
+        api.getChapter(series.series, series.book, activeChapter)
+      ])
+      setProposal({
+        id,
+        content: p.content || '',
+        original: p.base_content ?? ch.content ?? '',
+        hunks: p.hunks || [],
+        stale: !!p.stale
+      })
+    } catch {
+      setProposal(null)   // gone or unreadable: no banner, no half-open overlay
+    }
   }
 
-  const commands = [
-    ...(chapter ? [{ id: 'history', label: 'Revision history', hint: 'Chapter', run: () => setHistoryOpen(true) }] : []),
-    ...(selection?.text ? [{ id: 'inline', label: 'Edit selection with the Muse', hint: 'Ctrl/⌘+I', run: () => museApi.focus?.() }] : []),
-    { id: 'thread', label: threadOpen ? 'Hide the conversation' : 'Show the conversation with the Muse', hint: 'Muse', run: () => setThreadOpen((v) => !v) },
-    { id: 'focus', label: focusMode ? 'Leave focus mode' : 'Focus mode', hint: 'Ctrl+Shift+F', run: actions.toggleFocus },
-    { id: 'new-chapter', label: 'New chapter', hint: 'Write', run: () => actions.newChapter('chapter') },
-    { id: 'new-book', label: 'New book', hint: 'Write', run: actions.newBook },
-    { id: 'bible', label: 'Open bible', hint: 'Canon', run: () => setBibleName('') },
-    { id: 'sweep', label: 'Canon sweep', hint: 'Muse', run: actions.sweep },
-    ...(series ? [{ id: 'export', label: 'Export EPUB', hint: 'Deliver', run: exportEpub }] : []),
-    { id: 'theme', label: theme === 'hermes' ? 'Light mode' : 'Dark mode', hint: 'Theme', run: () => choose(theme === 'hermes' ? 'day' : 'hermes') },
-    ...MEASURES.filter((m) => m.id !== measure).map((m) => ({ id: 'measure-' + m.id, label: `Page width: ${m.label}`, hint: 'View', run: () => setMeasure(m.id) })),
-    { id: 'settings', label: 'Settings', hint: '', run: actions.settings },
-    { id: 'security', label: 'Muse & security (provider, API key, password)', hint: 'Settings', run: actions.security },
-    { id: 'lock', label: 'Lock', hint: '', run: api.signOut }
-  ]
+  // Accepting is a normal save on the server (revision snapshot and all), so the editor is
+  // loaded from what the server actually stored. `ids` narrows it to the changes the author
+  // ticked; anything left unticked stays pending, and the pane reopens on the rest.
+  const acceptProposal = async (ids = null) => {
+    if (!proposal) return
+    setProposalBusy(true)
+    try {
+      const saved = await api.acceptProposal(proposal.id, ids)
+      if (editorApi.replaceAll) editorApi.replaceAll(saved.content, saved.title)
+      const left = await api
+        .listProposals()
+        .then((r) => (r.proposals || []).some((p) => p.id === proposal.id))
+        .catch(() => false)
+      if (left) await openProposal(proposal.id)
+      else setProposal(null)
+      await refreshArchive()
+    } catch {
+      /* leave the review open — the author can accept again */
+    } finally {
+      setProposalBusy(false)
+    }
+  }
+  const onRetry = () => { if (selection) runRewrite(selection, rewriteStyle) }
+  const onStyleChange = (s) => {
+    setRewriteStyle(s)
+    if (rewriteOpen && selection) runRewrite(selection, s)
+  }
+  const onCloseRewrite = () => { setRewriteOpen(false); setProposed('') }
 
-  const nudgeNode = nudge && !focusMode && (
-    <div className="float mb-2 flex items-center gap-2 rounded-full py-1 pl-4 pr-1 text-[13.5px] text-mute">
-      <span className="flex-1">Still going?</span>
-      <button
-        onClick={() => { museApi.setDraft?.('Continue the scene from where I left off.'); setNudge(false) }}
-        className="h-8 rounded-full px-3 text-[13px] font-medium text-accent hover:bg-accent/10"
-      >
-        Ask the Muse
-      </button>
-      <button onClick={() => setNudge(false)} aria-label="Dismiss" className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-panel-2">
-        <Icon name="x" size={15} />
-      </button>
+  // --- mobile swipe ------------------------------------------------------
+  const onTouchStart = (e) => {
+    const t = e.target
+    if (t && t.closest && t.closest('textarea,input,[contenteditable]')) {
+      touchRef.current.active = false
+      return
+    }
+    const p = e.touches[0]
+    touchRef.current = { x0: p.clientX, dx: 0, active: true }
+  }
+  const onTouchMove = (e) => {
+    if (touchRef.current.active) touchRef.current.dx = e.touches[0].clientX - touchRef.current.x0
+  }
+  const onTouchEnd = () => {
+    const { dx, active } = touchRef.current
+    touchRef.current.active = false
+    if (active && Math.abs(dx) > 60) {
+      setPane((p) => Math.max(0, Math.min(2, p + (dx < 0 ? 1 : -1))))
+    }
+  }
+
+  const pageNode = (
+    <div className="relative h-full min-h-0">
+      <Editor chapter={chapter} series={series} focus={focusMode} onSelection={onSelection} />
+      {selection && selection.text && !rewriteOpen && (
+        <button
+          onClick={onRewriteClick}
+          className="absolute right-6 top-6 z-30 flex items-center gap-1.5 rounded-md border border-accent/40 bg-panel px-3 py-1.5 text-[11px] font-medium text-accent shadow-lg shadow-black/40 hover:bg-accent/10"
+          title="Rewrite the selected text with the Muse"
+        >
+          ✎ Rewrite selection
+        </button>
+      )}
+      {nudge && !focusMode && (
+        <div className="absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border hairline bg-panel px-3 py-1.5 text-[11px] text-mute shadow-lg shadow-black/40">
+          <span>Still going?</span>
+          <button
+            onClick={() => {
+              if (museApi.setDraft) museApi.setDraft('Continue the scene from where I left off.')
+              setNudge(false)
+            }}
+            className="rounded-full border border-accent/40 px-2 py-0.5 text-[10.5px] font-medium text-accent hover:bg-accent/10"
+          >
+            Ask the Muse
+          </button>
+          <button onClick={() => setNudge(false)} className="text-mute hover:text-ink">×</button>
+        </div>
+      )}
     </div>
   )
 
+  const commands = [
+    {
+      id: 'focus',
+      label: focusMode ? 'Exit focus mode' : 'Enter focus mode',
+      hint: 'Ctrl+Shift+F',
+      run: () => setFocusMode((v) => !v)
+    },
+    { id: 'new-chapter', label: 'New chapter', hint: 'Write', run: newChapter },
+    { id: 'new-book', label: 'New book', hint: 'Write', run: () => setNewBookOpen(true) },
+    { id: 'bible', label: 'Open bible', hint: 'Canon', run: () => setBibleName('') },
+    { id: 'sweep', label: 'Canon sweep', hint: 'Muse', run: () => setSweepOpen(true) },
+    ...(series
+      ? [{
+          id: 'export',
+          label: 'Export EPUB',
+          hint: 'Deliver',
+          run: () => api.exportEpub(series.series, series.book, `${series.book}.epub`).catch(() => {})
+        }]
+      : []),
+    { id: 'settings', label: 'Settings', hint: '', run: () => setSettingsOpen(true) }
+  ]
+
   return (
     <div className="flex h-full flex-col bg-base">
-      {!focusMode && (
-        <TopBar
-          archive={archive}
-          series={series}
-          book={book}
-          chapter={chapter}
-          stats={stats}
-          theme={theme}
-          focus={focusMode}
-          a={actions}
-        />
-      )}
+      <TitleBar
+        focus={focusMode}
+        onToggleFocus={() => setFocusMode((v) => !v)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        theme={theme}
+        onChooseTheme={choose}
+      />
 
       {archive && series ? (
-        <div className="relative flex min-h-0 flex-1">
-          <div className="relative min-w-0 flex-1">
-            <Editor
-              chapter={chapter}
-              series={series}
-              focus={focusMode}
-              onSelection={setSelection}
-              onHistory={() => setHistoryOpen(true)}
-              ghost={ghostOn}
-            />
-            {inlineReview && reviewNode(true)}
-            {!inlineReview && !focusMode && (
-              <Dock
-                muse={muse}
-                selection={selection}
-                onInline={runInline}
-                onRewrite={selection?.text ? () => runRewrite(selection, rewriteStyle) : null}
-                inlineBusy={inlineBusy}
-                onReview={review.open}
-                onAcceptAll={review.acceptAll}
-                reviewBusy={review.busy}
-                threadOpen={threadOpen}
-                onToggleThread={() => setThreadOpen((v) => !v)}
-                disabled={!chapter}
+        isMobile ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              <div
+                className="flex h-full"
+                style={{
+                  transform: `translateX(-${pane * 100}%)`,
+                  transition: 'transform 220ms ease',
+                  touchAction: 'pan-y',
+                  willChange: 'transform'
+                }}
+                onTouchStart={onTouchStart}
+                onTouchMove={onTouchMove}
+                onTouchEnd={onTouchEnd}
               >
-                {nudgeNode}
-              </Dock>
-            )}
-            {focusMode && (
-              <button
-                onClick={() => setFocusMode(false)}
-                className="absolute right-4 top-4 z-30 inline-flex h-9 items-center gap-2 rounded-lg px-3 text-[13px] text-mute opacity-40 transition-opacity hover:bg-panel-2 hover:text-ink hover:opacity-100 focus:opacity-100"
-                title="Leave focus mode (Ctrl+Shift+F)"
-              >
-                <Icon name="focus" size={16} /> Leave focus
-              </button>
-            )}
+                <div className="flex h-full w-full shrink-0 overflow-hidden">
+                  <Rail
+                    collapsed={false}
+                    onToggle={() => setRailCollapsed((v) => !v)}
+                    active={activeChapter}
+                    onSelect={(id) => { jumpTo(id); setPane(1) }}
+                    archive={archive}
+                    current={series}
+                    onSelectBook={selectBook}
+                    onNewBook={() => setNewBookOpen(true)}
+                    onOpenBible={(name) => setBibleName(name || '')}
+                    onNewChapter={() => newChapter('chapter')}
+                    onNewPrologue={() => newChapter('prologue')}
+                    onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
+                    onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
+                    onEditBook={() => setBookFace(true)}
+                  />
+                </div>
+                <div className="flex h-full w-full shrink-0 overflow-hidden">{pageNode}</div>
+                <div className="flex h-full w-full shrink-0 overflow-hidden">
+                  <Muse series={series} chapter={chapter} onProposal={openProposal} />
+                </div>
+              </div>
+            </div>
+            <nav
+              className="flex shrink-0 border-t hairline bg-panel"
+              style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+            >
+              {['Chapters', 'Page', 'Muse'].map((label, i) => (
+                <button
+                  key={label}
+                  onClick={() => setPane(i)}
+                  className={'flex-1 py-2.5 text-[11.5px] ' + (pane === i ? 'text-accent' : 'text-mute')}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
           </div>
-          {threadOpen && !focusMode && (
-            <Conversation muse={muse} chapterTitle={chapter?.title} onClose={() => setThreadOpen(false)} />
-          )}
-        </div>
-      ) : nav.loadError ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-          <div className="text-[15px] font-medium text-err">Couldn't load the archive</div>
-          <div className="text-[13px] text-mute">{nav.loadError}</div>
-          <div className="text-[12.5px] text-mute">
-            Tried <code className="text-ink">{window.location.origin}</code>. Open DevTools (F12) → Network for details.
+        ) : (
+          <div
+            className="grid min-h-0 flex-1"
+            style={{
+              // Focus mode keeps the chapter list — a writer wants the map of the
+              // book while writing — but the rail's toggle retracts it to the
+              // 48px strip of chapter numbers, and that choice is remembered.
+              gridTemplateColumns: focusMode
+                ? railCollapsed ? '48px 1fr' : '232px 1fr'
+                : railCollapsed ? '48px 1fr 320px' : '232px 1fr 320px',
+              transition: 'grid-template-columns 160ms ease'
+            }}
+          >
+            <Rail
+              collapsed={railCollapsed}
+              onToggle={() => setRailCollapsed((v) => !v)}
+              active={activeChapter}
+              onSelect={jumpTo}
+              archive={archive}
+              current={series}
+              onSelectBook={selectBook}
+              onNewBook={() => setNewBookOpen(true)}
+              onOpenBible={(name) => setBibleName(name || '')}
+              onNewChapter={() => newChapter('chapter')}
+              onNewPrologue={() => newChapter('prologue')}
+              onDeleteChapter={(c) => setConfirmTarget({ kind: 'chapter', series: series.series, book: series.book, chapter: c.id, label: c.title })}
+              onDeleteBook={() => setConfirmTarget({ kind: 'book', series: series.series, book: series.book, seriesTitle: series.title || series.name, label: series.title || series.name })}
+              onEditBook={() => setBookFace(true)}
+            />
+            {pageNode}
+            {!focusMode && <Muse series={series} chapter={chapter} onProposal={openProposal} />}
+          </div>
+        )
+      ) : loadError ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center text-mute">
+          <div className="text-[12px] text-err">Couldn't load the archive</div>
+          <div className="text-[10.5px] text-mute/70">{loadError}</div>
+          <div className="text-[10px] text-mute/50">
+            Tried <code className="text-ink">{window.location.origin}</code>.
+            Open DevTools (F12) → Network for details.
           </div>
         </div>
       ) : archive ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-          <h1 className="font-serif text-[30px] font-semibold text-ink">Your archive is empty</h1>
-          <p className="max-w-sm text-[14px] leading-relaxed text-mute">
-            Start a series and a book — that's the whole setup. The chapters, the bible and
-            the Muse all hang off it.
-          </p>
-          <Button variant="primary" size="lg" onClick={() => setNewBookOpen(true)}>New book</Button>
-          <p className="text-[13px] text-mute">Deleted something? It is waiting in Settings → Trash.</p>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+          <div className="text-[12px] text-ink">Your archive is empty</div>
+          <div className="max-w-sm text-[10.5px] leading-relaxed text-mute/70">
+            Nothing here yet. Start a series and a book — that's the whole setup; the
+            chapter list, the bible and the Muse all hang off it.
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setNewBookOpen(true)}
+              className="rounded-md border border-accent/40 px-2.5 py-1 text-[11px] text-accent transition-colors hover:bg-accent/10"
+            >
+              New book / series
+            </button>
+          </div>
+          <div className="text-[10px] text-mute/50">
+            Deleted something? It is waiting in Settings → Trash.
+          </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center text-[14px] text-mute">Opening the archive…</div>
+        <div className="flex min-h-0 flex-1 items-center justify-center text-mute">Loading archive…</div>
       )}
 
       {paletteOpen && archive && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
-          onJump={jump}
-          onOpenHit={(hit) => {
-            setSelection(null)
-            if (nav.openHit(hit) === 'bible') setBibleName(hit.doc_id)
-          }}
+          onJump={jumpTo}
+          onOpenHit={openHit}
           series={series}
           archive={archive}
           commands={commands}
@@ -364,42 +562,53 @@ export default function App() {
           proposed={proposed}
           busy={rewriteBusy}
           style={rewriteStyle}
-          onStyleChange={(s) => { setRewriteStyle(s); if (selection) runRewrite(selection, s) }}
-          onAccept={onRewriteAccept}
-          onRetry={() => selection && runRewrite(selection, rewriteStyle)}
-          onClose={() => { setRewriteOpen(false); setProposed('') }}
+          onStyleChange={onStyleChange}
+          onAccept={onAccept}
+          onRetry={onRetry}
+          onClose={onCloseRewrite}
         />
       )}
-      {proposal && !inlineReview && reviewNode(false)}
-      {historyOpen && series && chapter && (
-        <HistoryPanel
-          series={series}
-          chapter={chapter}
-          current={editorApi.current ? editorApi.current() : null}
-          onRestored={(saved) => {
-            landSaved({ ...saved, kind: 'chapter' })
-            nav.refresh()
-            museApi.refreshPending?.()     // waiting edits replay onto the restored text
-          }}
-          onClose={() => setHistoryOpen(false)}
+      {proposal && (proposal.hunks?.length ? (
+        <ProposalReview
+          id={proposal.id}
+          original={proposal.original}
+          hunks={proposal.hunks}
+          stale={proposal.stale}
+          busy={proposalBusy}
+          onAccept={(ids) => acceptProposal(ids)}
+          onDiscard={() => api.discardProposal(proposal.id)}
+          onClose={() => setProposal(null)}
         />
-      )}
+      ) : (
+        <DiffOverlay
+          title="Revision"
+          original={proposal.original}
+          proposed={proposal.content}
+          busy={proposalBusy}
+          showStyles={false}
+          onAccept={() => acceptProposal(null)}
+          onClose={() => setProposal(null)}
+        />
+      ))}
       {sweepOpen && series && (
-        <SweepPanel
-          series={series}
-          onClose={() => setSweepOpen(false)}
-          onFix={fixIssue}
-          onReview={(id) => { setSweepOpen(false); review.open(id) }}
-        />
+        <SweepPanel series={series} onClose={() => setSweepOpen(false)} />
       )}
       {bibleName !== null && series && (
         <BiblePanel
           series={series}
           initial={bibleName}
           onClose={() => setBibleName(null)}
-          onChanged={nav.refresh}
+          onChanged={refreshArchive}
           refreshKey={bibleKey}
-          onDeleteFile={(name) => setConfirmTarget({ kind: 'bible', series: series.series, book: series.book, path: name, label: name })}
+          onDeleteFile={(name) =>
+            setConfirmTarget({
+              kind: 'bible',
+              series: series.series,
+              book: series.book,
+              path: name,
+              label: name
+            })
+          }
         />
       )}
       {settingsOpen && (
@@ -408,46 +617,39 @@ export default function App() {
           onGoal={(v) => { setGoal(v); setSetting('goal', v === '' ? null : Number(v)) }}
           nudge={nudgeOn}
           onNudge={(v) => { setNudgeOn(v); setSetting('nudge', v) }}
-          ghost={ghostOn}
-          onGhost={(v) => { setGhostOn(v); setSetting('ghost', v) }}
-          onOpenSecurity={() => setSecurityOpen(true)}
           onClose={() => setSettingsOpen(false)}
-          onRestored={nav.refresh}
+          onRestored={refreshArchive}
           theme={theme}
           onChooseTheme={choose}
         />
       )}
-      {securityOpen && <SecurityPanel onClose={() => setSecurityOpen(false)} />}
       {newBookOpen && (
-        <NewBookDialog
-          onClose={() => setNewBookOpen(false)}
-          onCreated={async (b) => { setNewBookOpen(false); await nav.onBookCreated(b); setSelection(null) }}
-        />
+        <NewBookDialog onClose={() => setNewBookOpen(false)} onCreated={onBookCreated} />
       )}
       {bookFace && series && (
         <BookDetailsDialog
           series={series.series}
           book={series.book}
-          title={book?.title || series.book}
-          author={book?.author || ''}
-          hasCover={!!book?.has_cover}
+          title={currentBook?.title || series.title || series.name}
+          author={currentBook?.author || ''}
+          hasCover={!!currentBook?.has_cover}
           onClose={() => setBookFace(false)}
-          onSaved={nav.refresh}
+          onSaved={refreshArchive}
         />
       )}
       {confirmTarget && (
         <ConfirmDeleteDialog
           target={confirmTarget}
           onClose={() => setConfirmTarget(null)}
-          onDeleted={async (manifest) => {
-            setConfirmTarget(null)
-            if (manifest.kind === 'bible') setBibleKey((k) => k + 1)
-            await nav.onDeleted(manifest)
-            setSelection(null)
-          }}
+          onDeleted={onDeleted}
           onDeleteSeries={
             confirmTarget.kind === 'book'
-              ? () => setConfirmTarget({ kind: 'series', series: confirmTarget.series, label: confirmTarget.seriesTitle || confirmTarget.series })
+              ? () =>
+                  setConfirmTarget({
+                    kind: 'series',
+                    series: confirmTarget.series,
+                    label: confirmTarget.seriesTitle || confirmTarget.series
+                  })
               : undefined
           }
         />

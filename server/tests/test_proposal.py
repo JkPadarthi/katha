@@ -285,16 +285,14 @@ def test_a_revision_identical_to_the_chapter_is_refused(monkeypatch: pytest.Monk
 
 # --- 5. housekeeping + hardening ------------------------------------------
 
-def test_a_new_revision_supersedes_the_pending_one_for_that_chapter(monkeypatch: pytest.MonkeyPatch):
-    """One live draft per file (3.1, D55): the review pane shows one change set per
-    file, never a pile of competing drafts of the same chapter."""
-    for i in range(3):
+def test_only_the_newest_three_revisions_are_kept(monkeypatch: pytest.MonkeyPatch):
+    for i in range(muse_mod.PROPOSAL_KEEP + 1):
         _make_proposal(monkeypatch, f"# Revision {i}\n\n" + (f"draft number {i}. " * 40))
     keep = _mine()
-    assert len(keep) == muse_mod.PROPOSAL_KEEP == 1
-    assert keep[0]["id"].startswith(f"{BID}-")
-    draft = (muse_mod.read_proposal(keep[0]["id"]) or {}).get("content", "")
-    assert "draft number 2." in draft, "the newest one is the one kept"
+    assert len(keep) == muse_mod.PROPOSAL_KEEP
+    assert all(p["id"].startswith(f"{BID}-") for p in keep)
+    drafts = [(muse_mod.read_proposal(p["id"]) or {}).get("content", "") for p in keep]
+    assert not any("draft number 0." in d for d in drafts), "the oldest should be pruned"
 
 
 def test_a_traversal_shaped_id_is_a_404_not_a_file_read():
@@ -625,134 +623,3 @@ def test_a_revision_written_before_the_authors_latest_save_cannot_be_accepted(mo
     assert file.read_text(encoding="utf-8") == before, "the newer prose is untouched"
     assert len(_mine()) == 1, "and the revision is still there to discard or re-ask"
     client.delete(f"/api/muse/proposals/{pid}")
-
-
-# --- edit_file: targeted edits, staged for review (3.0.10) --------------
-# The Muse edits a chapter the way a coding assistant edits a file — find/replace —
-# and every edit lands in the same review pane as a whole-chapter rewrite. Nothing
-# is saved until the author accepts.
-
-EDIT_BODY = "\n\n".join([
-    "Kael counted the coins he owed and said nothing.",
-    "The harbour lay grey under a low sky.",
-    "Somewhere a bell rang twice and then fell silent.",
-    "He walked on, and the mist took the rest.",
-])
-
-
-def _fresh_chapter(title: str) -> tuple[str, Path]:
-    r = client.post(f"/api/books/{SID}/{BID}/chapters",
-                    json={"title": title, "content": EDIT_BODY})
-    assert r.status_code == 201
-    cid = r.json()["id"]
-    path = ar.get_chapter(ar.book_dir(SERIES, BOOK), cid)
-    assert path is not None
-    return cid, path
-
-
-def _ctx(cid: str):
-    ctx = muse_mod._tool_ctx(f"{SID}/{BID}/{cid}")
-    assert ctx is not None
-    return ctx
-
-
-def test_edit_file_is_offered_and_says_it_is_not_saved(monkeypatch: pytest.MonkeyPatch):
-    _, _, bodies = _chat(monkeypatch, NEW_TEXT)
-    tools = {t["function"]["name"]: t["function"] for t in _streamed(bodies)[0]["tools"]}
-    assert "edit_file" in tools
-    assert "NOT saved" in tools["edit_file"]["description"]
-
-
-def test_edits_are_staged_and_the_chapter_is_untouched():
-    cid, path = _fresh_chapter("Edit Staging")
-    before, rev = path.read_text(encoding="utf-8"), ar._read_revision_marker(path)
-    turn: dict = {}
-    msg = muse_mod._run_tool(_ctx(cid), "edit_file", {"edits": [
-        {"old_text": "grey under a low sky", "new_text": "pewter under a sagging sky"},
-    ]}, turn)
-    assert "NOT saved" in msg
-    assert path.read_text(encoding="utf-8") == before, "the chapter was written!"
-    assert ar._read_revision_marker(path) == rev
-    staged = muse_mod.read_proposal(turn["proposal_id"])
-    assert "pewter under a sagging sky" in staged["content"]
-    assert "Kael counted the coins" in staged["content"], "the rest of the chapter survives"
-    muse_mod.delete_proposal(turn["proposal_id"])
-
-
-def test_edit_calls_in_one_turn_stack_on_one_revision():
-    cid, _ = _fresh_chapter("Edit Stacking")
-    ctx, turn = _ctx(cid), {}
-    muse_mod._run_tool(ctx, "edit_file", {"edits": [
-        {"old_text": "rang twice", "new_text": "rang three times"}]}, turn)
-    first = turn["proposal_id"]
-    # the second call can target text that only exists after the first
-    msg = muse_mod._run_tool(ctx, "edit_file", {"edits": [
-        {"old_text": "three times", "new_text": "three times, thin and cold,"}]}, turn)
-    assert "staged" in msg and turn["proposal_id"] == first
-    content = muse_mod.read_proposal(first)["content"]
-    assert "rang three times, thin and cold, and then" in content
-    assert len([p for p in muse_mod.list_proposals() if p["chapter"] == cid
-                and p["book"] == BID]) == 1
-    muse_mod.delete_proposal(first)
-
-
-@pytest.mark.parametrize("edits, needle", [
-    ([{"old_text": "not in the chapter at all", "new_text": "x"}], "not found"),
-    ([{"old_text": "the", "new_text": "a"}], "appears"),
-    ([{"old_text": "", "new_text": "x"}], "non-empty"),
-    ([], "non-empty list"),
-    ([{"old_text": "Kael", "new_text": "Kael"}], "exactly as it is"),
-])
-def test_a_bad_edit_is_named_and_nothing_is_staged(edits, needle):
-    cid, path = _fresh_chapter("Edit Refusal")
-    before, turn = path.read_text(encoding="utf-8"), {}
-    msg = muse_mod._run_tool(_ctx(cid), "edit_file", {"edits": edits}, turn)
-    assert msg.startswith("ERROR") and needle in msg
-    assert "proposal_id" not in turn
-    assert path.read_text(encoding="utf-8") == before
-
-
-def test_one_bad_edit_sinks_the_whole_call():
-    """All-or-nothing: a half-applied set of edits never reaches the review pane."""
-    cid, _ = _fresh_chapter("Edit Atomic")
-    turn: dict = {}
-    msg = muse_mod._run_tool(_ctx(cid), "edit_file", {"edits": [
-        {"old_text": "rang twice", "new_text": "rang once"},
-        {"old_text": "no such sentence", "new_text": "y"},
-    ]}, turn)
-    assert "edit 2" in msg and "proposal_id" not in turn
-
-
-def test_accepting_staged_edits_is_a_normal_save_and_hunks_are_per_edit():
-    cid, path = _fresh_chapter("Edit Accept")
-    rev = ar._read_revision_marker(path)
-    turn: dict = {}
-    muse_mod._run_tool(_ctx(cid), "edit_file", {"edits": [
-        {"old_text": "said nothing", "new_text": "kept his silence"},
-        {"old_text": "the mist took the rest", "new_text": "the fog closed behind him"},
-    ]}, turn)
-    pid = turn["proposal_id"]
-    detail = client.get(f"/api/muse/proposals/{pid}").json()
-    assert len(detail["hunks"]) == 2, "two separate places, two separate decisions"
-
-    # take only the first change
-    r = client.post(f"/api/muse/proposals/{pid}/accept", json={"hunks": [0]})
-    assert r.status_code == 200
-    text = path.read_text(encoding="utf-8")
-    assert "kept his silence" in text and "the mist took the rest" in text
-    assert text.startswith("# Edit Accept\n"), "the heading is written once"
-    assert text.count("# Edit Accept") == 1
-    assert ar._read_revision_marker(path) == rev + 1
-    muse_mod.delete_proposal(pid)
-
-
-def test_a_full_rewrite_after_edits_replaces_them():
-    cid, _ = _fresh_chapter("Edit Then Rewrite")
-    ctx, turn = _ctx(cid), {}
-    muse_mod._run_tool(ctx, "edit_file", {"edits": [
-        {"old_text": "rang twice", "new_text": "rang once"}]}, turn)
-    pid = turn["proposal_id"]
-    muse_mod._run_tool(ctx, "propose_chapter_rewrite", {"content": NEW_TEXT}, turn)
-    assert turn["proposal_id"] == pid
-    assert muse_mod.read_proposal(pid)["content"] == NEW_TEXT.strip()
-    muse_mod.delete_proposal(pid)

@@ -8,7 +8,7 @@ Architecture, components, and the API contract.
 Pi 5 (Docker Compose)                         Browser / installed PWA
 ┌───────────────────────────────┐             ┌────────────────────────┐
 │ FastAPI (uvicorn :4901)       │  same origin│ React SPA (Vite)       │
-│  ├ /            → built PWA   │◄───────────►│  TopBar · Page · Dock   │
+│  ├ /            → built PWA   │◄───────────►│  Rail · Page · Muse     │
 │  ├ /api/...     → JSON API    │   /api      │  + CommandPalette,      │
 │  ├ /api/muse/*  → SSE stream  │             │    DiffOverlay, Sweep   │
 │  └ archive/     → md (truth)  │             └────────────────────────┘
@@ -21,41 +21,20 @@ Pi 5 (Docker Compose)                         Browser / installed PWA
 
 ## Components
 
-- **Client** (`desktop/src/`) — React + Vite + Tailwind, no router (4.0, D63).
-  `App.jsx` composes; state lives in hooks: `lib/useBook.js` (archive, open book and
-  chapter, the moves between them), `lib/useMuse.js` (conversation, staged changes,
-  the `museApi` bridge), `lib/useReview.js` (open / accept / discard a staged change),
-  `lib/useStats.js` (rituals), `lib/useTheme.js` (Day/Hermes/Paper/Slate, OS-follow).
-  `lib/api.js` is the entire backend boundary (same-origin `/api` + SSE);
-  `lib/settings.js` holds per-machine prefs; `lib/resume.js` picks the landing chapter.
-  `shell/`: `TopBar` (breadcrumb → book menu, ⌘K, app menu), `Dock` (pending changes,
-  latest reply), `Composer` (the one input: chat, @-mentions, selection edits),
-  `Conversation` (the thread, beside the page or as a sheet). `ui/`: `Overlay` (a
-  full-screen sheet on a phone), `Popover`, `Button`, `Field`, `Icon`. Components:
-  `Editor` (autosave, ghost text), `ReadingView`, `ProposalReview` (per-hunk, marked in
-  the prose, inline or modal, multi-file), `HistoryPanel`, `SecurityPanel`,
+- **Client** (`desktop/src/`) — React + Vite + Tailwind, no router, state in
+  `App.jsx`. `lib/api.js` is the entire backend boundary (same-origin `/api` +
+  SSE streaming); `lib/useTheme.js` drives the theme system (Hermes/Paper/Slate,
+  OS-follow default); `lib/settings.js` holds per-machine prefs. `ui/` holds the
+  shared primitives (`Overlay`, `Button`, `Field`). Components: `TitleBar`,
+  `ThemePicker`, `Rail` (book picker), `Editor`, `ReadingView`, `Muse`,
   `CommandPalette`, `DiffOverlay`, `SweepPanel`, `BiblePanel`, `RitualsCard`,
-  `SettingsPanel`, `NewBookDialog`, `BookDetailsDialog`, `ConfirmDeleteDialog`. Fonts
-  (Literata, Inter) are bundled. `public/sw.js` caches the shell only.
-- **Server** (`server/app/`) — `main.py` (HTTP + SSE + static PWA + the lock),
+  `SettingsPanel`, `NewBookDialog`.
+  `public/sw.js` caches the shell only.
+- **Server** (`server/app/`) — `main.py` (HTTP + SSE + static PWA),
   `schemas.py` (contracts), `archive.py` (files = truth), `db.py` (SQLite index
-  + FTS5), `muse.py` (the Muse: agentic chat with story tools, staged edits,
-  rewrite, ghost text, canon sweep), `upstream.py` (the three wire dialects),
-  `hunks.py` (word-level hunks + partial merge), `prose.py` (paragraph rule),
-  `epub.py`, `stats.py`, `trash.py`, `auth.py`, `settings_store.py` (settings
-  changed in the app), `config.py`.
-  `seed.py` bootstraps sample data; `tests/` cover all of it.
-
-## The Muse as an IDE (3.1)
-
-The Muse reads the story with tools (`list_story_files`, `read_story_file`,
-`search_story`) and changes it with `edit_file` (targeted find/replace on a chapter
-or bible file) or `propose_chapter_rewrite` (the whole open chapter). It **cannot
-save**: every change is a *proposal* in `.katha/proposals/`, one live draft per
-file. The author reviews it hunk by hunk; accepting runs the same save path as an
-edit they made. Edit-built drafts replay onto the file if the author types in the
-meantime (D58). Context on every call: the file index, the style digest, the
-author's `bible/rules.md`, and any `@`-mentioned files.
+  + FTS5), `muse.py` (Ollama proxy: agentic chat with story tools, rewrite,
+  canon sweep), `config.py`.
+  `seed.py` bootstraps sample data; `tests/` cover archive + Muse + sweep.
 
 ## Storage (source of truth)
 
@@ -70,17 +49,10 @@ author's `bible/rules.md`, and any `@`-mentioned files.
       bible/characters/side-characters.md  # NPCs / supporting cast
       bible/places.md            # loose files still allowed
       bible/timeline.md
-      bible/rules.md             # the author's rules for the Muse (3.1)
-  .katha/muse/<book>-<chapter>.md  # Muse threads (book-scoped, 2.4)
+  .katha/muse/<chapter>.md       # Muse threads
   .katha/muse/style-<book>.md    # style digest
-  .katha/proposals/<id>.json     # staged Muse changes awaiting review (2.9 → 3.1)
-  .katha/trash/                  # deleted things, restorable (2.3)
   .katha/stats/writing.jsonl     # writing-ritual log (1.0)
 ```
-
-`KATHA_DATA/settings.json` (0600, beside the index, not in backups) holds what the
-author changed in Settings → Muse & security: the Muse's connection and the password
-(as a salted scrypt hash). It wins over the environment when present (D62).
 
 SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 `search_index` — rebuildable from the md at any time.
@@ -89,41 +61,26 @@ SQLite (`data/katha.db`) indexes chapters, revision metadata, and an FTS5
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/health` | status + version + db heartbeat (public) |
-| POST | `/api/auth/login` · `/api/auth/logout` | the lock (D32) |
-| GET | `/api/settings` | Muse connection (key never returned) + lock state |
-| PUT | `/api/settings/muse` | provider, address, key, models (current password) |
-| POST | `/api/settings/muse/reset` · `/api/settings/muse/test` | back to env · test the connection |
-| POST | `/api/settings/muse/models` | list a connection's models, as typed in the form (4.1) |
-| PUT | `/api/settings/password` | set / change / turn off the lock (current password) |
-| GET / POST | `/api/books` | series → books tree / create series + book |
-| PUT | `/api/books/{series}/{book}/meta` | author (per book) |
-| GET / PUT / DELETE | `/api/books/{series}/{book}/cover` | cover image (normalised) |
-| GET / POST | `…/{book}/chapters` | list / create chapter |
-| GET / PUT | `…/chapters/{id}` | read / save (+ revision snapshot) |
+| GET | `/api/health` | status + version + db heartbeat |
+| GET | `/api/books` | series → books tree |
+| POST | `/api/books` | create series + book |
+| GET | `/api/books/{series}/{book}/chapters` | list chapters |
+| POST | `/api/books/{series}/{book}/chapters` | create chapter |
+| GET/PUT | `/api/books/{series}/{book}/chapters/{id}` | read / autosave (+revision) |
 | GET | `…/chapters/{id}/revisions[/{n}]` | revision history |
-| GET / PUT | `…/chapters/{id}/notes` | reading-mode notes |
-| GET / PUT | `…/{book}/bible[/{name:path}]` | read / write canon (nested paths ok) |
-| POST | `…/{book}/bible/scaffold` | create the starter bible (idempotent) |
+| GET/PUT | `/api/books/{series}/{book}/bible[/{name:path}]` | read / write canon (nested paths ok) |
+| POST | `/api/books/{series}/{book}/bible/scaffold` | create the starter bible (idempotent) |
 | GET | `/api/search?q=&limit=` | FTS5 across chapters + bible |
 | POST | `/api/search/reindex` | rebuild the index from md |
-| GET | `/api/stats` | writing rituals |
-| GET | `…/{book}/export.epub` | EPUB download |
 | GET | `/api/muse/models` | configured models |
 | GET | `/api/muse/thread?chapter_id=` | persisted chat thread for a chapter |
-| POST | `/api/muse/chat` | SSE chat — agentic; reads files and stages edits |
-| POST | `/api/muse/rewrite` | SSE rewrite of a selection |
-| POST | `/api/muse/complete` | ghost text: one-sentence continuation |
-| POST | `/api/muse/sweep` | SSE canon sweep (`report` \| `bible` → proposal) |
-| GET | `/api/muse/proposals[/{id}]` | staged changes (list / one, with hunks) |
-| POST | `/api/muse/proposals/{id}/accept` | accept all or `{hunks: [...]}` |
-| DELETE | `/api/muse/proposals/{id}` | discard |
-| GET / DELETE | `…/impact` · chapter, book, bible file, series | what a delete would take / move to trash |
-| GET / DELETE | `/api/trash[/{entry}]` | list / erase for good |
-| POST | `/api/trash/{entry}/restore` | put it back |
+| POST | `/api/muse/chat` | SSE chat — agentic; the model fetches story files via tools |
+| POST | `/api/muse/rewrite` | SSE rewrite proposal |
+| POST | `/api/muse/sweep` | SSE canon sweep (`report` \| `bible`) |
+| GET | `/api/stats` | writing rituals (1.0) |
+| GET | `/api/books/{series}/{book}/export.epub` | EPUB download (1.0) |
 
 SSE contract: each event is `data: <escaped chunk>\n\n`, terminated by
-`data: [DONE]\n\n`. Side channels, never prose: `data: [STATUS] <msg>` (progress),
-`data: [PROPOSAL] <id>` (a change was staged), `data: [USAGE] {"input","output"}`
-(tokens), and `data: [ERROR] <msg>` (upstream failure). Escaping is single-pass
+`data: [DONE]\n\n`. A progress event is `data: [STATUS] <msg>\n\n` (never prose);
+an upstream failure emits `data: [ERROR] <msg>\n\n`. Escaping is single-pass
 (`\n` → literal, `\` → `\\`) and mirrored exactly on the client.

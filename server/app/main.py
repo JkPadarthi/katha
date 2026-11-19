@@ -1,11 +1,8 @@
-"""Katha Archive API — FastAPI entry point."""
+"""Katha Archive API — FastAPI entry point (2.0.0)."""
 
 from __future__ import annotations
 
 import base64
-import json
-import re
-import secrets
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,7 +26,6 @@ from . import auth
 from . import db
 from . import epub
 from . import hunks as hunks_mod
-from . import settings_store
 from . import stats
 from . import trash
 from .config import (
@@ -53,14 +49,9 @@ from .schemas import (
     ChapterOut,
     ChapterUpdate,
     CoverIn,
-    CurrentPasswordIn,
     HealthOut,
     LoginIn,
-    MuseModelsIn,
-    MuseSettingsIn,
-    PasswordChangeIn,
     MuseChatRequest,
-    MuseCompleteRequest,
     MuseRewriteRequest,
     MuseSweepRequest,
     NoteOut,
@@ -81,10 +72,6 @@ async def lifespan(_app: FastAPI):
     # app boots even before seed.py has run.
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     ar.migrate_archive()
-    # Settings changed in the app win over the environment (3.2, D62). Only when the
-    # file exists: an install that never opened them must boot exactly as before.
-    if settings_store.path().is_file():
-        settings_store.apply()
     # Pre-2.4 Muse threads were named after the chapter alone, so different books
     # shared one conversation. Attribute each of them to its book once (2.4.1).
     adopted = muse_mod.migrate_legacy_threads()
@@ -161,217 +148,6 @@ def logout(response: Response):
     """Drop the session. Public on purpose: logging out must never 401."""
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"ok": True}
-
-
-# ---------- settings changed in the app: the Muse's brain, the lock (3.2, D62) ----
-# Both used to be env-only. Every change here asks for the current password while
-# the lock is on — the address and key decide where the whole manuscript is sent,
-# and a borrowed session must not be enough to redirect it or to lock the author out.
-
-_URL_RE = re.compile(r"^https?://[^\s/]+", re.I)
-
-
-def _require_password(current: str, request: Request) -> None:
-    if not auth.enabled():
-        return
-    ip = request.client.host if request.client else "?"
-    if auth.blocked(ip):
-        raise HTTPException(429, "too many attempts — wait a few minutes")
-    if not auth.verify(current or ""):
-        auth.record_failure(ip)
-        raise HTTPException(403, "that isn't your current password")
-    auth.clear_failures(ip)
-
-
-def _settings_out(note: str = "") -> dict:
-    data = settings_store.load()
-    eff = settings_store.effective_muse(data)
-    pw = data.get("password") or {}
-    lock_source = ("app" if (pw.get("hash") or pw.get("disabled"))
-                   else "environment" if auth.PASSWORD else "none")
-    out = {
-        "lock": {"enabled": auth.enabled(), "source": lock_source},
-        "muse": {
-            "api": eff["api"],
-            "base": eff["base"],
-            "agent_model": eff["agent_model"],
-            "rewrite_model": eff["rewrite_model"],
-            "source": eff["source"],
-            # The key itself is never sent back — only whether there is one.
-            "key_set": bool(eff["key"]),
-            "key_hint": settings_store.key_hint(eff["key"]),
-        },
-        "dialects": list(settings_store.DIALECTS),
-    }
-    if note:
-        out["note"] = note
-    return out
-
-
-@app.get("/api/settings", tags=["settings"])
-def get_settings():
-    return _settings_out()
-
-
-@app.put("/api/settings/muse", tags=["settings"])
-def put_muse_settings(body: MuseSettingsIn, request: Request):
-    """Point the Muse at a brain. Takes effect on the next request — no restart."""
-    _require_password(body.current_password, request)
-    api = settings_store.normalize_dialect(body.api)
-    if api not in settings_store.DIALECTS:
-        raise HTTPException(400, f"unknown dialect {body.api!r}")
-    base = (body.base or "").strip().rstrip("/")
-    if base and not _URL_RE.match(base):
-        raise HTTPException(400, "the address must start with http:// or https://")
-    if api != "ollama" and not base:
-        raise HTTPException(400, "a gateway dialect needs its address (base URL)")
-
-    data = settings_store.load()
-    before = settings_store.effective_muse(data)
-    muse = dict(data.get("muse") or {})
-    muse.update(api=api, base=base,
-                agent_model=(body.agent_model or "").strip(),
-                rewrite_model=(body.rewrite_model or "").strip())
-    note = ""
-    if body.key is not None:
-        muse["key"] = body.key.strip()
-    elif before["key"] and base != before["base"].rstrip("/"):
-        # Never send a key to an address it wasn't given for: whoever changes the
-        # address must also supply the key that belongs to it.
-        muse["key"] = ""
-        if api != "ollama":           # Ollama takes no key: nothing to re-enter
-            note = ("The API key was cleared because the address changed — enter the "
-                    "key for the new address.")
-    data["muse"] = muse
-    settings_store.save(data)
-    settings_store.apply(data)
-    return _settings_out(note)
-
-
-@app.post("/api/settings/muse/reset", tags=["settings"])
-def reset_muse_settings(body: CurrentPasswordIn, request: Request):
-    """Forget the app's Muse settings and go back to the environment's."""
-    _require_password(body.current_password, request)
-    data = settings_store.load()
-    data.pop("muse", None)
-    settings_store.save(data)
-    settings_store.apply(data)
-    return _settings_out()
-
-
-@app.post("/api/settings/muse/test", tags=["settings"])
-async def test_muse_settings():
-    """One tiny round trip to the brain as configured now, so a typo in an address or
-    a key shows up here and not in the middle of a chapter."""
-    from . import upstream as up_mod
-    payload = {
-        "model": muse_mod.MUSE_AGENT_MODEL,
-        "messages": [{"role": "user", "content": "Reply with the single word: ready"}],
-        "stream": False,
-        # roomy on purpose: a thinking model reasons before it answers (D53)
-        "options": {"num_predict": 1024, "temperature": 0},
-    }
-    try:
-        obj = await up_mod.complete(payload, muse_mod._client)
-        text = muse_mod.strip_think((obj.get("message") or {}).get("content") or "").strip()
-        return {"ok": True, "model": muse_mod.MUSE_AGENT_MODEL, "reply": text[:120]}
-    except Exception as e:  # report it, never raise it: this is a diagnostic
-        return {"ok": False, "model": muse_mod.MUSE_AGENT_MODEL,
-                "detail": _plain_error(e, up_mod.MUSE_API_KEY)}
-
-
-def _provider_says(resp) -> str:
-    """The provider's own words for a refusal (`error.message`, `message`, `detail`) —
-    e.g. "unsupported_model: … must be called via /messages" — which tells the author
-    far more than a status code."""
-    try:
-        resp.read()
-        data = resp.json()
-    except Exception:
-        try:
-            return " ".join((resp.text or "").split())[:240]
-        except Exception:
-            return ""
-    err = data.get("error") if isinstance(data, dict) else None
-    for v in ((err or {}).get("message") if isinstance(err, dict) else err,
-              data.get("message") if isinstance(data, dict) else None,
-              data.get("detail") if isinstance(data, dict) else None):
-        if isinstance(v, str) and v.strip():
-            return " ".join(v.split())[:240]
-    return ""
-
-
-def _plain_error(e: Exception, key: str | None) -> str:
-    """A provider failure, said so the author knows what to do next."""
-    import httpx as _h
-    if isinstance(e, _h.HTTPStatusError):
-        code = e.response.status_code
-        if code in (401, 403):
-            return (f"the provider refused the key ({code}). Paste the API key above — "
-                    "an empty or wrong key is the usual cause.")
-        if code == 404:
-            return "nothing at that address (404). Check the address — it usually ends in /v1."
-        said = _provider_says(e.response)
-        if key:
-            said = said.replace(key, "…")
-        return f"the provider answered {code}" + (f": {said}" if said else ".")
-    if isinstance(e, (_h.ConnectError, _h.ConnectTimeout)):
-        return "couldn't reach that address — is the machine on, and on your network?"
-    if isinstance(e, _h.TimeoutException):
-        return "the provider took too long to answer."
-    msg = " ".join(f"{type(e).__name__}: {e}".split())
-    return (msg.replace(key, "…") if key else msg)[:300]
-
-
-@app.post("/api/settings/muse/models", tags=["settings"])
-async def list_muse_models(body: MuseModelsIn, request: Request):
-    """The models a connection offers (4.1) — for the form as typed, so the author can
-    pick a model before saving. Guarded like a save: it sends the key somewhere."""
-    _require_password(body.current_password, request)
-    from . import upstream as up_mod
-    api = settings_store.normalize_dialect(body.api)
-    if api not in settings_store.DIALECTS:
-        raise HTTPException(400, f"unknown dialect {body.api!r}")
-    base = (body.base or "").strip().rstrip("/")
-    eff = settings_store.effective_muse()
-    if api == "ollama" and not base:
-        base = up_mod.OLLAMA_BASE
-    if not base or not _URL_RE.match(base):
-        raise HTTPException(400, "the address must start with http:// or https://")
-    # The stored key only ever goes back to the address it was given for (D62).
-    key = body.key if body.key is not None else (
-        eff["key"] if base == eff["base"].rstrip("/") else "")
-    try:
-        key = (key or "").strip()
-        models, formats = await up_mod.models_and_formats(api, base, key, muse_mod._client)
-        return {"ok": True, "models": models, "formats": formats}
-    except Exception as e:  # a diagnostic, never an error page
-        return {"ok": False, "models": [], "formats": {}, "detail": _plain_error(e, key)}
-
-
-@app.put("/api/settings/password", tags=["settings"])
-def change_password(body: PasswordChangeIn, request: Request, response: Response):
-    """Set, change or remove the lock's password.
-
-    Every other session is signed out (the signing key moves with the password); the
-    device that made the change gets a fresh cookie so it stays signed in."""
-    _require_password(body.current, request)
-    data = settings_store.load()
-    if body.disable:
-        data["password"] = {"disabled": True}
-    else:
-        new = body.new or ""
-        if len(new) < 8:
-            raise HTTPException(400, "use at least 8 characters")
-        data["password"] = {**settings_store.hash_password(new),
-                            "epoch": secrets.token_hex(8)}
-    settings_store.save(data)
-    settings_store.apply(data)
-    if auth.enabled():
-        response.set_cookie(value=auth.issue_token(), **auth.cookie_kwargs(request))
-    else:
-        response.delete_cookie(COOKIE_NAME, path="/")
-    return _settings_out()
 
 
 def reindex_search():
@@ -658,156 +434,114 @@ def get_stats(goal: int | None = None):
     return stats.summary(goal if goal and goal > 0 else DAILY_GOAL)
 
 
-# ---------- staged changes: the Muse proposes, the author disposes ----------
-# (2.9, D45; per hunk 3.0, D48; any chapter or bible file 3.1, D54)
-# The Muse never writes the story. Every change it makes is parked as a proposal and
-# the app shows it hunk by hunk; Accept runs the *same* save path as an edit the
-# author made — the chapter autosave (revision snapshot and all) or the bible PUT.
-
-def _proposal_ctx(p: dict) -> tuple[Path, Path]:
-    """(book dir, target file) for a proposal, or a 404 the author can read."""
-    bdir = _resolve_book_path(p["series"], p["book"])
-    f = muse_mod.proposal_file(p, bdir)
-    kind, path = muse_mod.proposal_target(p)
-    if f is None or (kind == "chapter" and not f.is_file()):
-        raise HTTPException(404, f"{path or 'that file'} is not in this book any more")
-    return bdir, f
-
-
-def _proposal_base(p: dict, bdir: Path, f: Path) -> str:
-    """The file text the change was written against.
-
-    Chapter: if the chapter has moved on since the Muse read it, the snapshot from that
-    moment is the honest base — diffing against today's file would blame the author's own
-    later edits on the Muse. Bible: files keep no revisions, so the proposal carries the
-    text the Muse read.
-    """
-    kind, _ = muse_mod.proposal_target(p)
-    if kind == "bible":
-        return p.get("base_content") or ""
-    rev = int(p.get("base_revision") or 0)
-    current = ar._read_revision_marker(f)
-    if rev and rev < current:
-        snap = ar.get_revision(bdir, p["chapter"], rev)
-        if snap and snap.get("content"):
-            return snap["content"]
-    return f.read_text(encoding="utf-8")
-
-
-def _proposal_full(p: dict, f: Path) -> str:
-    """The Muse's version, in the same shape as the file.
-
-    A chapter revision that arrives without a heading is not "a chapter with the title
-    deleted" — it is a revision of the prose under the author's existing title. Restoring
-    the heading before diffing means the author is never asked to decide a phantom
-    'deleted the heading' hunk, while a revision that *does* rename the chapter shows up
-    as a real one (3.0, D48).
-    """
-    text = p.get("content") or ""
-    kind, _ = muse_mod.proposal_target(p)
-    if kind == "bible" or text.lstrip().startswith("# "):
-        return text
-    return f"# {ar._chapter_title(f)}\n\n{text}"
-
-
-def _fresh(p: dict, bdir: Path) -> dict | None:
-    """Replay a stale, edit-built draft onto the file as it is now (D58).
-
-    Returns None when nothing of the draft survives the author's own changes — then
-    the proposal is gone, the same as if the author had discarded it.
-    """
-    p = muse_mod.refresh_proposal(p, bdir)
-    if p.get("empty"):
-        muse_mod.delete_proposal(p["id"])
-        return None
-    return p
-
+# ---------- whole-chapter proposals (2.9, D45) ----------------------------
+# The Muse can read the story but never write it. When it has a full revision for
+# the author, it parks it here and the app shows a diff; Accept runs the *same*
+# save path as autosave, so the time machine keeps the revision either way.
 
 @app.get("/api/muse/proposals", response_model=dict, tags=["muse"])
 def list_proposals():
-    """Pending changes, newest first. Metadata only — the body is one GET away, and
+    """Pending revisions, newest first. Metadata only — the body is one GET away, and
     `hunk_count` is how many separate decisions are waiting (3.0, D48)."""
     out = []
-    for meta in muse_mod.list_proposals():
+    for p in muse_mod.list_proposals():
         try:
-            full = muse_mod.read_proposal(meta["id"])
-            bdir, f = _proposal_ctx(full)
-            full = _fresh(full, bdir)
-            if full is None:
-                continue
-            meta["stale"] = muse_mod.is_stale(full, bdir)
-            meta["dropped"] = len(full.get("dropped") or [])
-            # The list carries metadata only — the body has to be read, or this counts
-            # the hunks of a revision that isn't there (which is how it reported 1 for
-            # an eleven-change revision).
-            meta["hunk_count"] = len(hunks_mod.hunks(_proposal_base(full, bdir, f),
-                                                     _proposal_full(full, f)))
-        except HTTPException:
-            pass               # a book on its way to the trash must not break the list
-        except Exception:
+            bdir = _resolve_book_path(p["series"], p["book"])
+            chapter = ar.get_chapter(bdir, p["chapter"])
+            if chapter is not None:
+                # The list carries metadata only — the body has to be read, or this counts
+                # the hunks of a revision that isn't there (which is how it reported 1 for
+                # an eleven-change revision).
+                full = muse_mod.read_proposal(p["id"]) or p
+                base = _proposal_base(p, bdir, chapter)
+                p["hunk_count"] = len(hunks_mod.hunks(base, _proposal_full(full, chapter)))
+        except Exception:      # a book on its way to the trash must not break the list
             pass
-        out.append(meta)
+        out.append(p)
     return {"proposals": out}
 
 
 @app.get("/api/muse/proposals/{proposal_id}", response_model=dict, tags=["muse"])
 def read_proposal(proposal_id: str):
-    """A pending change, cut into hunks so it can be reviewed one place at a time."""
+    """A pending revision, cut into hunks so it can be reviewed one place at a time."""
     p = muse_mod.read_proposal(proposal_id)
     if p is None:
         raise HTTPException(404, "no such proposal")
-    bdir, f = _proposal_ctx(p)
-    p = _fresh(p, bdir)
-    if p is None:
-        raise HTTPException(404, "nothing of that change survives your later edits")
-    kind, path = muse_mod.proposal_target(p)
-    base = _proposal_base(p, bdir, f)
-    p["kind"], p["path"] = kind, path
+    bdir = _resolve_book_path(p["series"], p["book"])
+    chapter = ar.get_chapter(bdir, p["chapter"])
+    if chapter is None:
+        raise HTTPException(404, "that chapter is not in this book any more")
+    base = _proposal_base(p, bdir, chapter)
     p["base_content"] = base
-    p["current_revision"] = ar._read_revision_marker(f) if kind == "chapter" else 0
-    # A change is written against the text the Muse *read*. If the author has saved
-    # since (and it could not be replayed, D58), accepting would quietly overwrite prose
-    # the Muse never saw — so the review says so, and the accept route refuses (3.0.1).
-    p["stale"] = muse_mod.is_stale(p, bdir)
-    p["hunks"] = hunks_mod.hunks(base, _proposal_full(p, f))
-    p["dropped"] = p.get("dropped") or []
-    p.pop("edits", None)
+    p["current_revision"] = ar._read_revision_marker(chapter)
+    # A revision is written against the chapter the Muse *read*. If the author has saved
+    # since, accepting would quietly overwrite prose the Muse never saw — so the review
+    # says so, and the accept route refuses (3.0.1).
+    p["stale"] = int(p.get("base_revision") or 0) != p["current_revision"]
+    p["hunks"] = hunks_mod.hunks(base, _proposal_full(p, chapter))
     return p
 
 
-@app.post("/api/muse/proposals/{proposal_id}/accept", response_model=dict,
+def _proposal_base(p: dict, bdir: Path, chapter: Path) -> str:
+    """The file text the revision was written against.
+
+    If the chapter has moved on since the Muse read it, the snapshot from that moment is the
+    honest base — diffing against today's file would blame the author's own later edits on
+    the Muse.
+    """
+    rev = int(p.get("base_revision") or 0)
+    current = ar._read_revision_marker(chapter)
+    if rev and rev < current:
+        snap = ar.get_revision(bdir, p["chapter"], rev)
+        if snap and snap.get("content"):
+            return snap["content"]
+    return chapter.read_text(encoding="utf-8")
+
+
+def _proposal_full(p: dict, chapter: Path) -> str:
+    """The Muse's revision, in the same shape as the chapter file.
+
+    A revision that arrives without a heading is not "a chapter with the title deleted" —
+    it is a revision of the prose under the author's existing title. Restoring the heading
+    before diffing means the author is never asked to decide a phantom 'deleted the heading'
+    hunk, while a revision that *does* rename the chapter shows up as a real one (3.0, D48).
+    """
+    text = p.get("content") or ""
+    if text.lstrip().startswith("# "):
+        return text
+    return f"# {ar._chapter_title(chapter)}\n\n{text}"
+
+
+@app.post("/api/muse/proposals/{proposal_id}/accept", response_model=ChapterOut,
           tags=["muse"])
 def accept_proposal(proposal_id: str, body: ProposalAcceptIn | None = None):
-    """Apply a staged change — all of it, or just the hunks the author ticked.
+    """Apply a proposed revision — all of it, or just the hunks the author ticked.
 
-    Either way this is a normal save, so a partial accept is as undoable as any edit.
-    Hunks left unticked stay pending: the proposal keeps its content and is re-pointed
-    at what was just written.
+    Either way this is a normal save (revision snapshot and all), so a partial accept is as
+    undoable as any edit. Hunks left unticked stay pending: the proposal keeps its content
+    and is re-pointed at the revision that was just written.
     """
     p = muse_mod.read_proposal(proposal_id)
     if p is None:
         raise HTTPException(404, "no such proposal")
-    bdir, f = _proposal_ctx(p)
-    p = _fresh(p, bdir)
-    if p is None:
-        raise HTTPException(404, "nothing of that change survives your later edits")
-    kind, path = muse_mod.proposal_target(p)
-    if muse_mod.is_stale(p, bdir):
+    bdir = _resolve_book_path(p["series"], p["book"])
+    chapter = ar.get_chapter(bdir, p["chapter"])
+    if chapter is None:
+        raise HTTPException(404, "that chapter is not in this book any more")
+    current_rev = ar._read_revision_marker(chapter)
+    base_rev = int(p.get("base_revision") or 0)
+    if base_rev != current_rev:
         # Not a conflict to be clever about: the Muse read one text, the author has since
         # saved another, and merging them silently is how a writer loses a paragraph. The
         # author's newer prose wins by default, and the Muse can revise it properly.
-        if kind == "chapter":
-            current_rev = ar._read_revision_marker(f)
-            base_rev = int(p.get("base_revision") or 0)
-            detail = ("the chapter has been saved since this revision was written "
-                      f"(this revision is based on revision {base_rev}, the chapter is at "
-                      f"{current_rev})")
-        else:
-            detail = f"{path} has been changed since this revision was written"
-        raise HTTPException(409, detail + " — ask the Muse to revise the current text, "
-                                          "or discard this revision")
-    base = _proposal_base(p, bdir, f)
-    proposal_text = _proposal_full(p, f)
+        raise HTTPException(409, (
+            "the chapter has been saved since this revision was written "
+            f"(this revision is based on revision {base_rev}, the chapter is at "
+            f"{current_rev}) — ask the Muse to revise the current chapter, or discard "
+            "this revision"
+        ))
+    base = _proposal_base(p, bdir, chapter)
+    proposal_text = _proposal_full(p, chapter)
     groups = hunks_mod.hunks(base, proposal_text)
     total = len(groups)
     wanted = None if body is None or body.hunks is None else body.hunks
@@ -816,42 +550,28 @@ def accept_proposal(proposal_id: str, body: ProposalAcceptIn | None = None):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    applied = hunks_mod.merge(base, proposal_text, taken) if taken else base
+    if not taken:
+        # Rejecting every hunk is a legitimate answer, and it must not burn a revision.
+        return ChapterOut(
+            **ar._chapter_meta(bdir, chapter.stem, "", chapter),
+            content=chapter.read_text(encoding="utf-8"),
+        )
 
-    if kind == "chapter":
-        if not taken:
-            # Rejecting every hunk is a legitimate answer, and it must not burn a revision.
-            return {"kind": kind, "path": path,
-                    **ChapterOut(**ar._chapter_meta(bdir, f.stem, "", f),
-                                 content=f.read_text(encoding="utf-8")).model_dump()}
-        # The Muse is asked for the whole chapter *with* its heading; the save path writes
-        # its own heading, so take the one it sent and drop the duplicate.
-        text, title = muse_mod.split_heading(applied, ar._chapter_title(f))
-        out = {"kind": kind, "path": path,
-               **_write_chapter_text(p["series"], bdir, f, title, text)}
-        rebase = {"base_revision": out["revision"]}
-    else:
-        if not taken:
-            return {"kind": kind, "path": path, "content": base, "remaining": total}
-        name = path[len("bible/"):]
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(applied, encoding="utf-8")
-        db.index_doc("bible", p["series"], bdir.name, name, Path(name).stem, applied)
-        out = {"kind": kind, "path": path, "content": applied}
-        rebase = {"base_content": applied}
-
+    applied = hunks_mod.merge(base, proposal_text, taken)
+    # The Muse is asked for the whole chapter *with* its heading; the save path writes its
+    # own heading, so take the one it sent and drop the duplicate.
+    text, title = muse_mod.split_heading(applied, ar._chapter_title(chapter))
+    out = _write_chapter_text(p["series"], bdir, chapter, title, text)
     if len(taken) >= total:
         muse_mod.delete_proposal(proposal_id)
-        out["remaining"] = 0
     else:
-        muse_mod.rebase_proposal(proposal_id, **rebase)
-        out["remaining"] = total - len(taken)
-    return out
+        muse_mod.rebase_proposal(proposal_id, out["revision"])
+    return ChapterOut(**out)
 
 
 @app.delete("/api/muse/proposals/{proposal_id}", response_model=dict, tags=["muse"])
 def discard_proposal(proposal_id: str):
-    """Throw a staged change away. The file is untouched — it never was."""
+    """Throw a revision away. The chapter is untouched — it never was."""
     removed = muse_mod.delete_proposal(proposal_id)
     if not removed:
         raise HTTPException(404, "no such proposal")
@@ -975,13 +695,9 @@ async def _sse_from(async_iter) -> AsyncIterator[bytes]:
                 msg = " ".join(chunk.text.split())
                 yield f"data: [STATUS] {_sse_escape(msg)}\n\n".encode("utf-8")
             elif isinstance(chunk, muse_mod.Proposal):
-                # A staged change is waiting for the author (2.9, D45). The id, not the
-                # text: the client fetches it to show the review.
+                # A whole-chapter revision is waiting for the author (2.9, D45).
+                # The id, not the chapter: the client fetches it to show the diff.
                 yield f"data: [PROPOSAL] {_sse_escape(chunk.proposal_id)}\n\n".encode("utf-8")
-            elif isinstance(chunk, muse_mod.Usage):
-                # What the reply cost, in tokens (3.1, D59). JSON has no newlines here.
-                usage = json.dumps({"input": chunk.input, "output": chunk.output})
-                yield f"data: [USAGE] {usage}\n\n".encode("utf-8")
             else:
                 yield f"data: {_sse_escape(chunk)}\n\n".encode("utf-8")
     except Exception as e:
@@ -1026,18 +742,6 @@ async def muse_chat(payload: MuseChatRequest):
     )
 
 
-@app.post("/api/muse/complete", tags=["muse"])
-async def muse_complete(payload: MuseCompleteRequest):
-    """Ghost text (3.1, D59): a one-sentence continuation of the prose before the
-    cursor. Opt-in on the client; a failed upstream is an empty suggestion, not an
-    error the author has to dismiss while typing."""
-    try:
-        text = await muse_mod.complete_text(payload.before, payload.chapter_id)
-    except Exception:
-        text = ""
-    return {"text": text}
-
-
 @app.post("/api/muse/rewrite", tags=["muse"])
 async def muse_rewrite(payload: MuseRewriteRequest):
     """Stream a single rewrite proposal as SSE.
@@ -1066,7 +770,7 @@ async def muse_sweep(payload: MuseSweepRequest):
     Body:
         series, book_id: which book
         target:          'report' (whole-book continuity audit) |
-                         'bible'  (rewrite of one bible file, staged as a proposal)
+                         'bible'  (proposed rewrite of one bible file)
         bible_name:      required when target='bible'
     """
     if payload.target == "bible":

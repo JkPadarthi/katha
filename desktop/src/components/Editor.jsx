@@ -1,20 +1,15 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import * as api from '../lib/api.js'
 import { getSetting, setSetting } from '../lib/settings.js'
 import { countWords, clockNow } from '../lib/text.js'
-import Icon from '../ui/Icon.jsx'
+import { Button } from '../ui/Button.jsx'
 import ReadingView from './ReadingView.jsx'
 
 // THE EDITOR — the quiet center. Loads a chapter and autosaves via PUT (md
 // write + revision snapshot on the server). Owns Edit/Read modes and the
 // chapter's margin notes; exposes apply operations to the rest of the app via
 // the module-level `editorApi` bridge.
-// Ghost text (3.1, D59): after a pause at the end of a line, the Muse offers one
-// sentence in grey; Tab takes it, anything else dismisses it. Opt-in (Settings).
-const GHOST_DELAY = 1400
-const GHOST_MIN_CHARS = 40
-
-export default function Editor({ chapter, series, focus, onSelection, onHistory, ghost = false }) {
+export default function Editor({ chapter, series, focus, onSelection }) {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [savedAt, setSavedAt] = useState('')
@@ -24,23 +19,6 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
   const [mode, setMode] = useState(() => getSetting('mode', 'edit'))
   const [notes, setNotes] = useState([])
   const taRef = useRef(null)
-  const titleRef = useRef(null)
-  // The title is a textarea so a long one wraps instead of running off the page; it
-  // grows to fit its text, on every edit and whenever the window changes width.
-  useLayoutEffect(() => {
-    const fit = () => {
-      const el = titleRef.current
-      if (!el) return
-      el.style.height = 'auto'
-      el.style.height = el.scrollHeight + 'px'
-    }
-    fit()
-    window.addEventListener('resize', fit)
-    return () => window.removeEventListener('resize', fit)
-  })
-  const mirrorRef = useRef(null)
-  const [suggest, setSuggest] = useState(null)     // {at, text} ghost text, or null
-  const ghostRef = useRef({ timer: null, abort: null })
   const lastSelectionRef = useRef({ start: 0, end: 0, text: '' })
   // What is currently on disk for this chapter. Autosave only fires when the
   // buffer differs from this — so merely opening a chapter never writes a
@@ -139,63 +117,6 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
     }
     return () => clearTimeout(t)
   }, [body, title, chapterKey])
-
-  // --- ghost text -----------------------------------------------------------
-  const dropGhost = () => {
-    const g = ghostRef.current
-    clearTimeout(g.timer)
-    if (g.abort) g.abort.abort()
-    g.abort = null
-    setSuggest(null)
-  }
-
-  useEffect(() => {
-    dropGhost()
-    if (!ghost || mode !== 'edit' || !chapterKey || savedRef.current.key !== chapterKey) return
-    const g = ghostRef.current
-    g.timer = setTimeout(async () => {
-      const ta = taRef.current
-      if (!ta || document.activeElement !== ta) return
-      const at = ta.selectionStart
-      if (at !== ta.selectionEnd) return
-      const next = body.charAt(at)
-      if (next && next !== '\n') return                   // only at the end of a line
-      const before = body.slice(0, at)
-      if (before.trim().length < GHOST_MIN_CHARS) return
-      const ac = new AbortController()
-      g.abort = ac
-      try {
-        const text = await api.museComplete({ before, chapterId: chapterKey, signal: ac.signal })
-        if (ac.signal.aborted || !text) return
-        if (taRef.current?.selectionStart !== at) return
-        setSuggest({ at, text })
-      } catch { /* no suggestion is fine */ }
-    }, GHOST_DELAY)
-    return () => clearTimeout(g.timer)
-  }, [body, ghost, mode, chapterKey])
-
-  // keep the ghost layer scrolled with the page
-  const syncMirror = () => {
-    if (mirrorRef.current && taRef.current) mirrorRef.current.scrollTop = taRef.current.scrollTop
-  }
-  useEffect(syncMirror, [suggest])
-
-  const onEditorKey = (e) => {
-    if (!suggest) return
-    if (e.key === 'Tab' && !e.shiftKey) {
-      e.preventDefault()
-      const { at, text } = suggest
-      setSuggest(null)
-      setBody((b) => b.slice(0, at) + text + b.slice(at))
-      requestAnimationFrame(() => {
-        const ta = taRef.current
-        if (ta) ta.setSelectionRange(at + text.length, at + text.length)
-      })
-      return
-    }
-    if (e.key === 'Escape') e.stopPropagation()
-    if (!['Shift', 'Meta', 'Control', 'Alt'].includes(e.key)) dropGhost()
-  }
 
   // Flush the last pending edit if the editor unmounts (app closed/route gone).
   useEffect(() => () => {
@@ -303,7 +224,9 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
       })
     }
 
-    // Replace the whole chapter in the buffer (it will autosave like typing).
+    // Replace the whole chapter — how an accepted Muse proposal lands (2.9, D45).
+    // Deliberately not replaceSelection: accepting a revision must not depend on
+    // whatever happens to be selected when the author clicks Accept.
     editorApi.replaceAll = (newText, newTitle) => {
       setBody(newText)
       if (typeof newTitle === 'string' && newTitle) setTitle(newTitle)
@@ -315,161 +238,81 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
       })
     }
 
-    // Load text the SERVER just saved — an accepted Muse change, a restored revision.
-    // It is already on disk with its own revision, so it becomes the saved baseline:
-    // going through replaceAll made autosave write the same text again a second later,
-    // which burned a revision and made every change still waiting go stale (3.1).
-    editorApi.loadSaved = (newBody, newTitle, newRevision) => {
-      const p = pendingRef.current
-      if (p?.timer) clearTimeout(p.timer)
-      pendingRef.current = null
-      const t = typeof newTitle === 'string' && newTitle ? newTitle : title
-      savedRef.current = { key: chapterKey, body: newBody, title: t }
-      setBody(newBody)
-      setTitle(t)
-      if (newRevision) setRevision(newRevision)
-      setSavedAt('saved · ' + clockNow())
-    }
-
-    // Write any debounced edit now — before the Muse reads the file (inline edit).
-    editorApi.flush = async () => {
-      const p = pendingRef.current
-      if (!p) return
-      clearTimeout(p.timer)
-      pendingRef.current = null
-      const c = await api.saveChapter(p.series, p.book, p.chapter, p.body, p.title)
-      if (p.key === chapterKey) {
-        savedRef.current = { key: p.key, body: p.body, title: p.title }
-        setRevision(c.revision)
-        setSavedAt('saved · ' + clockNow())
-      }
-    }
-
-    editorApi.current = () => ({ title, body, key: chapterKey })
-
     return () => {
       editorApi.replaceSelection = null
       editorApi.insertAtCursor = null
       editorApi.appendToChapter = null
       editorApi.replaceAll = null
-      editorApi.loadSaved = null
-      editorApi.flush = null
-      editorApi.current = null
     }
-  }, [body, title, chapterKey])
+  }, [body])
 
   const reading = mode === 'read'
+  // Focus mode gives the page the whole window — edit and read alike. Normal
+  // mode fills the middle pane.
+  const measure = focus ? 'w-full px-8 xl:px-12' : 'px-10'
 
-  // One measure everywhere (4.0, D63): the column is centred by padding, not by a
-  // narrower box, so the scrollbar stays at the window's edge and the textarea, its
-  // ghost layer, the title and the reading view all share the same left edge.
   return (
-    <main className="page-surface relative flex h-full min-h-0 flex-col">
-      <div className={'measure shrink-0 ' + (focus ? 'pt-16' : 'pt-8 max-md:pt-4')}>
+    <main className="page-surface relative flex h-full min-h-0 flex-col bg-base">
+      <div className={'shrink-0 pb-2 ' + (focus ? measure + ' pt-14' : measure + ' pt-6')}>
         {reading ? (
-          <h1 className="font-serif text-[30px] font-semibold leading-[1.15] tracking-[-0.01em] text-ink max-md:text-[25px]">
+          <h1 className={'font-serif font-semibold text-ink ' + (focus ? 'text-[30px]' : 'text-[26px]')}>
             {title || chapter?.title || ''}
           </h1>
         ) : (
-          <>
-            <label htmlFor="chapter-title" className="sr-only">Chapter title</label>
-            <textarea
-              id="chapter-title"
-              ref={titleRef}
-              rows={1}
-              value={title}
-              onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); taRef.current?.focus() } }}
-              spellCheck={false}
-              className="block w-full resize-none overflow-hidden border-none bg-transparent font-serif text-[30px] font-semibold leading-[1.15] tracking-[-0.01em] text-ink placeholder:text-mute/40 focus:outline-none max-md:text-[25px]"
-              placeholder="Chapter title"
-            />
-          </>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            spellCheck={false}
+            className={'w-full border-none bg-transparent font-serif font-semibold text-ink placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[30px]' : 'text-[26px]')}
+            placeholder="Chapter title"
+          />
         )}
 
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-mute">
+        <div className="mt-1 flex items-center gap-3 text-[10.5px] text-mute/70">
           <span>{words} words</span>
-          <span aria-hidden="true">·</span>
+          <span>·</span>
           <span>{savedAt || '…'}</span>
-          <span aria-hidden="true">·</span>
+          <span>·</span>
           <span>rev {revision}{drafts ? ` · ${drafts} draft${drafts > 1 ? 's' : ''}` : ''}</span>
-          <span className="ml-auto flex items-center gap-0.5">
-            {onHistory && chapter && (
-              <button
-                onClick={onHistory}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-mute transition-colors hover:bg-panel-2 hover:text-ink"
-                title="Revision history — every save, restorable"
-              >
-                <Icon name="history" size={15} /> History
-              </button>
-            )}
+          <span className="ml-auto flex items-center gap-2">
             <button
               onClick={() => setMode((m) => (m === 'edit' ? 'read' : 'edit'))}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-mute transition-colors hover:bg-panel-2 hover:text-ink"
-              title={reading ? 'Back to editing' : 'Read as a book, and keep margin notes'}
+              className="rounded-md border hairline px-2.5 py-0.5 text-[10.5px] font-medium text-mute transition-colors hover:text-ink"
+              title={reading ? 'Back to editing' : 'Read as book'}
             >
-              <Icon name={reading ? 'pen' : 'read'} size={15} /> {reading ? 'Edit' : 'Read'}
+              {reading ? 'Edit' : 'Read'}
             </button>
             {!reading && (
-              <button
-                onClick={saveNow}
-                disabled={saving}
-                className="inline-flex h-8 items-center rounded-lg px-2 text-[13px] font-medium text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
-                title="Save now — it also saves itself as you write"
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
+              <Button variant="accent" size="sm" onClick={saveNow} disabled={saving}>
+                {saving ? '…' : 'Save'}
+              </Button>
             )}
           </span>
         </div>
       </div>
 
-      <div className={'relative min-h-0 flex-1 ' + (reading ? 'overflow-y-auto' : 'flex flex-col')}>
+      <div className={'min-h-0 flex-1 pb-16 ' + (reading ? 'overflow-y-auto ' : 'flex flex-col ') + measure}>
         {reading ? (
-          <div className="measure pb-64 pt-6">
-            <ReadingView
-              body={body}
-              notes={notes}
-              onAddNote={addNote}
-              onNoteBody={setNoteBody}
-              onDeleteNote={deleteNote}
-              onCommitNotes={() => commitNotes()}
-            />
-          </div>
+          <ReadingView
+            body={body}
+            notes={notes}
+            onAddNote={addNote}
+            onNoteBody={setNoteBody}
+            onDeleteNote={deleteNote}
+            onCommitNotes={() => commitNotes()}
+          />
         ) : (
-          <div className="relative flex min-h-0 flex-1">
-            {/* The ghost layer: the same text, invisible, with the suggestion in grey at
-                the caret. It sits behind the (transparent) textarea and scrolls with it. */}
-            {suggest && (
-              <div
-                ref={mirrorRef}
-                aria-hidden="true"
-                className="measure prose-page pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words pb-64 pt-6"
-                style={{ scrollbarGutter: 'stable' }}
-              >
-                <span className="text-transparent">{body.slice(0, suggest.at)}</span>
-                <span className="text-mute/70">{suggest.text}</span>
-                <span className="ml-2 rounded border hairline px-1.5 align-middle font-sans text-[11px] text-mute">Tab</span>
-              </div>
-            )}
-            <label htmlFor="chapter-body" className="sr-only">Chapter text</label>
-            <textarea
-              id="chapter-body"
-              ref={taRef}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              onSelect={captureSelection}
-              onKeyUp={captureSelection}
-              onMouseUp={captureSelection}
-              onKeyDown={onEditorKey}
-              onScroll={syncMirror}
-              onBlur={dropGhost}
-              spellCheck={false}
-              style={{ scrollbarGutter: 'stable' }}
-              className="measure prose-page relative min-h-0 w-full flex-1 resize-none border-none bg-transparent pb-64 pt-6 text-ink caret-accent placeholder:text-mute/50 focus:outline-none"
-              placeholder="The page is blank. The story begins here."
-            />
-          </div>
+          <textarea
+            ref={taRef}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            onSelect={captureSelection}
+            onKeyUp={captureSelection}
+            onMouseUp={captureSelection}
+            spellCheck={false}
+            className={'min-h-0 w-full flex-1 resize-none border-none bg-transparent font-serif text-ink/95 placeholder:text-mute/40 focus:outline-none ' + (focus ? 'text-[17.5px] leading-[1.95]' : 'text-[16px] leading-[1.85]')}
+            placeholder="The page is blank. The story begins here."
+          />
         )}
       </div>
     </main>
@@ -477,7 +320,4 @@ export default function Editor({ chapter, series, focus, onSelection, onHistory,
 }
 
 // Shared module object so the Muse + rewrite flow can apply text to the editor.
-export const editorApi = {
-  replaceSelection: null, insertAtCursor: null, appendToChapter: null, replaceAll: null,
-  loadSaved: null, flush: null, current: null
-}
+export const editorApi = { replaceSelection: null, insertAtCursor: null, appendToChapter: null, replaceAll: null }

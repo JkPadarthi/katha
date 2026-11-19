@@ -37,6 +37,11 @@ from .config import SECRET_KEY as _CFG_SECRET_KEY
 # Live values (monkeypatchable; config supplies the initial ones).
 PASSWORD = _CFG_PASSWORD
 SECRET_KEY = _CFG_SECRET_KEY
+# Set from the app's Settings (3.2, D62) — see settings_store.apply(). A stored
+# hash wins over the env password; LOCK_DISABLED is the author turning the lock
+# off in the app, which must survive a restart even with KATHA_PASSWORD still set.
+PASSWORD_HASH: dict | None = None     # {"salt", "hash", "epoch"}
+LOCK_DISABLED = False
 
 # --- paths that stay reachable without a session -------------------------------
 
@@ -69,10 +74,19 @@ def is_public(path: str) -> bool:
 
 def enabled() -> bool:
     """The lock is only armed when a password is configured."""
-    return bool(PASSWORD)
+    if LOCK_DISABLED:
+        return False
+    return bool(PASSWORD_HASH or PASSWORD)
 
 
 def signing_key() -> str:
+    if PASSWORD_HASH:
+        # A password set in the app carries a random epoch, regenerated on every
+        # change: every existing session is signed out, even when KATHA_SECRET_KEY
+        # pins the key (which would otherwise survive a password change).
+        base = SECRET_KEY or PASSWORD_HASH.get("hash", "")
+        return hashlib.sha256(
+            f"katha-auth-v2:{base}:{PASSWORD_HASH.get('epoch', '')}".encode()).hexdigest()
     if SECRET_KEY:
         return SECRET_KEY
     # Derived: rotating the password silently invalidates every session.
@@ -91,6 +105,9 @@ def verify(password: str) -> bool:
     """Constant-time check. Always False when no password is configured."""
     if not enabled():
         return False
+    if PASSWORD_HASH:
+        from .settings_store import check_password
+        return check_password(password, PASSWORD_HASH)
     return hmac.compare_digest(hash_password(password), hash_password(PASSWORD))
 
 
@@ -180,79 +197,85 @@ def cookie_kwargs(request) -> dict:
 # --- the login page (self-contained, themed) ----------------------------------
 
 # No build step and no SPA: this page must render before the app bundle is even
-# reachable. It carries the same three token sets as desktop/src/index.css and
+# reachable. It carries the same four token sets as desktop/src/index.css and
 # follows the same rule as the app — the OS decides until the author chooses
 # (`localStorage["katha.theme"]`, JSON-encoded, written by lib/settings.js).
 LOGIN_HTML = """<!doctype html>
-<html lang="en" data-theme="hermes">
+<html lang="en" data-theme="day">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0e0e12">
+<meta name="theme-color" content="#fbfbf9">
 <title>Katha — locked</title>
 <script>
   // Same contract as the app shell: stored choice wins, otherwise follow the OS.
   try {
     var pref = JSON.parse(localStorage.getItem('katha.theme') || 'null');
-    var theme = (pref === 'paper' || pref === 'slate' || pref === 'hermes')
+    var theme = (pref === 'day' || pref === 'paper' || pref === 'slate' || pref === 'hermes')
       ? pref
-      : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'paper' : 'hermes');
+      : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'day' : 'hermes');
     document.documentElement.dataset.theme = theme;
-  } catch (e) { /* storage unavailable — Hermes it is */ }
+  } catch (e) { /* storage unavailable — Day it is */ }
 </script>
 <style>
-  /* Katha design tokens — kept in sync with desktop/src/index.css */
+  /* Katha design tokens — kept in sync with desktop/src/index.css (4.0) */
+  html[data-theme="day"] {
+    color-scheme: light;
+    --base:#fbfbf9; --panel:#ffffff; --panel2:#f1f1ed; --line:#e3e3de;
+    --ink:#1c1d21; --mute:#5d6068; --accent:#3b4cca; --onaccent:#ffffff;
+    --err:#b42318; --serif:"Literata","Iowan Old Style",Georgia,serif;
+  }
   html[data-theme="hermes"] {
     color-scheme: dark;
-    --base:#0e0e12; --panel:#131318; --panel2:#1a1a22; --line:#26262e;
-    --ink:#e8e6e0; --mute:#8f8f98; --accent:#ffbf00; --onaccent:#0e0e12;
-    --err:#ff6b7d; --serif:"Georgia","Iowan Old Style","Times New Roman",serif;
+    --base:#0e0e12; --panel:#17171d; --panel2:#212129; --line:#2b2b34;
+    --ink:#ece9e1; --mute:#a09fa6; --accent:#ffbf00; --onaccent:#0e0e12;
+    --err:#ff6b7d; --serif:"Literata","Iowan Old Style",Georgia,serif;
   }
   html[data-theme="paper"] {
     color-scheme: light;
-    --base:#f6f1e7; --panel:#efe7d8; --panel2:#e6dbc7; --line:#d9ccb2;
+    --base:#f6f1e7; --panel:#fbf7ef; --panel2:#ebe2d0; --line:#d9ccb2;
     --ink:#2a241c; --mute:#6e6353; --accent:#9a5b17; --onaccent:#fbf7ef;
-    --err:#b23b3b; --serif:"Iowan Old Style","Palatino Linotype",Georgia,serif;
+    --err:#b23b3b; --serif:"Literata","Iowan Old Style",Georgia,serif;
   }
   html[data-theme="slate"] {
     color-scheme: dark;
-    --base:#0f1419; --panel:#151b22; --panel2:#1c242e; --line:#263240;
-    --ink:#dbe4ee; --mute:#8494a6; --accent:#5aa2f0; --onaccent:#0b1220;
-    --err:#f87171; --serif:"Georgia","Iowan Old Style",serif;
+    --base:#0f1419; --panel:#161d25; --panel2:#1e2731; --line:#263240;
+    --ink:#dbe4ee; --mute:#8fa0b2; --accent:#5aa2f0; --onaccent:#0b1220;
+    --err:#f87171; --serif:"Literata","Iowan Old Style",Georgia,serif;
   }
   * { box-sizing: border-box; }
   body {
     margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
     background:var(--base); color:var(--ink);
-    font-family:"Inter","Segoe UI",system-ui,sans-serif; font-size:13.5px;
+    font-family:"Inter","Segoe UI",system-ui,sans-serif; font-size:14px;
     -webkit-tap-highlight-color:transparent;
   }
   .card {
-    width:min(92vw,360px); background:var(--panel); border:1px solid var(--line);
-    border-radius:10px; padding:26px 24px 22px;
-    box-shadow:0 18px 50px rgba(0,0,0,.28);
+    width:min(92vw,380px); background:var(--panel); border:1px solid var(--line);
+    border-radius:16px; padding:30px 28px 24px;
+    box-shadow:0 12px 32px rgba(20,22,30,.10), 0 1px 2px rgba(20,22,30,.06);
   }
   .mark { display:flex; align-items:center; gap:10px; margin-bottom:2px; }
   /* the tile reads a hair high next to a cap-height wordmark: nudge it down */
   .mark img { width:28px; height:28px; border-radius:7px; display:block; transform:translateY(1px); }
   .mark b { color:var(--accent); font-size:10px; }
-  h1 { font-family:var(--serif); font-size:23px; font-weight:600; margin:0; letter-spacing:.4px; }
-  p.hint { color:var(--mute); font-size:12px; margin:6px 0 20px; }
-  label { display:block; font-size:11px; color:var(--mute); margin-bottom:6px; }
+  h1 { font-family:var(--serif); font-size:26px; font-weight:600; margin:0; }
+  p.hint { color:var(--mute); font-size:14px; margin:8px 0 22px; line-height:1.5; }
+  label { display:block; font-size:13px; font-weight:500; color:var(--ink); margin-bottom:6px; }
   input {
-    width:100%; padding:9px 11px; border-radius:7px; font-size:13.5px;
-    background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+    width:100%; height:44px; padding:0 12px; border-radius:10px; font-size:16px;
+    background:var(--base); color:var(--ink); border:1px solid var(--line);
     font-family:inherit; outline:none;
   }
   input:focus { border-color:var(--accent); }
   button {
-    width:100%; margin-top:14px; padding:9px 12px; border-radius:7px; cursor:pointer;
+    width:100%; height:44px; margin-top:14px; padding:0 12px; border-radius:10px; cursor:pointer;
     background:var(--accent); color:var(--onaccent); border:1px solid var(--accent);
-    font-weight:600; font-size:13px; font-family:inherit;
+    font-weight:600; font-size:15px; font-family:inherit;
   }
   button:disabled { opacity:.6; cursor:default; }
-  .err { color:var(--err); font-size:12px; margin:12px 0 0; min-height:15px; }
-  .foot { color:var(--mute); font-size:10.5px; margin-top:18px; text-align:center; opacity:.75; }
+  .err { color:var(--err); font-size:13px; margin:12px 0 0; min-height:15px; }
+  .foot { color:var(--mute); font-size:12.5px; margin-top:18px; text-align:center; }
 </style>
 </head>
 <body>

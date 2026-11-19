@@ -3,7 +3,6 @@ import * as api from '../lib/api.js'
 import { signOut } from '../lib/api.js'
 import { getSetting, setSetting } from '../lib/settings.js'
 import { THEMES } from '../lib/useTheme.js'
-import { Swatch } from './ThemePicker.jsx'
 import Overlay, { OverlayHeader } from '../ui/Overlay.jsx'
 import { Field, TextInput } from '../ui/Field.jsx'
 import { Button } from '../ui/Button.jsx'
@@ -13,7 +12,7 @@ import { Button } from '../ui/Button.jsx'
 // the theme (a small popover up there) and the lock (hidden entirely on narrow
 // screens, so a phone had no way to lock the archive at all).
 //
-// The trash is the other half of delete (D33): anything removed from the rail
+// The trash is the other half of delete (D33): anything removed from the book
 // waits here and can be put back exactly where it came from — every chapter file,
 // revision snapshot, notes sidecar and Muse thread. Restoring refuses rather than
 // overwrite a chapter that has since taken the same id, and says so.
@@ -23,7 +22,19 @@ const size = (n) =>
 
 const when = (iso) => (iso || '').replace('T', ' ').replace('Z', ' UTC')
 
-export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, onRestored, theme, onChooseTheme }) {
+function Swatch({ colors }) {
+  const [bg, accent] = colors
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-4 w-4 shrink-0 rounded-full border-2"
+      style={{ background: bg, borderColor: accent }}
+    />
+  )
+}
+
+export default function SettingsPanel({ goal, onGoal, nudge, onNudge, ghost, onGhost, onOpenSecurity, onClose, onRestored, theme, onChooseTheme }) {
+  const followsOs = getSetting('theme', null) === null
   const [trash, setTrash] = useState(null)     // null = still reading
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -79,36 +90,44 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
   return (
     <Overlay onClose={onClose} width={520} padTop="14vh" z={50}>
       <OverlayHeader title="Settings" onClose={onClose} />
-      <div className="space-y-4 px-4 py-4">
-        {/* Theme — the same choice as the title-bar picker, but somewhere it can
-            be found (and reached on a phone). */}
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-4 px-4 py-4">
+        {/* Theme (4.0): Light and Dark are the pair the menu flips between; Paper and
+            Slate stay for whoever lives in them. */}
         <div>
-          <span className="text-[11px] text-mute">Theme</span>
-          <div className="mt-1.5 flex gap-1.5">
+          <span className="text-[15px] font-medium text-ink">Theme</span>
+          <div className="mt-2 grid grid-cols-2 gap-2">
             {THEMES.map((t) => (
               <button
                 key={t.id}
                 onClick={() => onChooseTheme(t.id)}
-                title={t.hint}
+                aria-pressed={t.id === theme && !followsOs}
                 className={
-                  'flex flex-1 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ' +
+                  'flex min-h-11 items-center gap-2.5 rounded-lg border px-3 text-left text-[13.5px] transition-colors ' +
                   (t.id === theme
-                    ? 'border-accent/50 bg-panel-2 text-ink'
-                    : 'hairline text-mute hover:bg-panel-2/60 hover:text-ink')
+                    ? 'border-accent/60 bg-accent/5 text-ink'
+                    : 'hairline text-mute hover:bg-panel-2 hover:text-ink')
                 }
               >
-                <Swatch id={t.id} />
-                <span className="min-w-0 flex-1 truncate">{t.label}</span>
-                {t.id === theme && <span className="text-[9.5px] text-accent">✓</span>}
+                <Swatch colors={t.swatch} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{t.label}</span>
+                  <span className="block truncate text-[14px] text-mute">{t.hint}</span>
+                </span>
               </button>
             ))}
           </div>
-          <p className="mt-1 text-[10px] text-mute/60">
-            Follows the system until you choose one here; then it sticks on this device.
-          </p>
+          <label className="mt-2 flex items-center gap-2 text-[15px] text-mute">
+            <input
+              type="checkbox"
+              checked={followsOs}
+              onChange={(e) => onChooseTheme(e.target.checked ? null : theme)}
+              className="h-4 w-4 accent-[var(--color-accent)]"
+            />
+            Follow the system — Light by day, Dark at night (whatever the device is set to)
+          </label>
         </div>
 
-        <Field label="Daily word goal" hint="Drives the streak in the rail. Blank uses the server default.">
+        <Field label="Daily word goal" hint="Drives today's count in the top bar and the streak in the book menu. Blank uses the server default.">
           <TextInput
             type="number"
             min="0"
@@ -128,9 +147,9 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
         </Field>
 
         <label className="flex items-center justify-between gap-4">
-          <span className="text-[11px] text-mute">
+          <span className="text-[13px] text-mute">
             Proactive nudge
-            <span className="mt-0.5 block text-[10px] text-mute/60">
+            <span className="mt-0.5 block text-[12px] text-mute/60">
               After a few quiet minutes, offer to have the Muse continue.
             </span>
           </span>
@@ -142,13 +161,41 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
           />
         </label>
 
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-[13px] text-mute">
+            Ghost text
+            <span className="mt-0.5 block text-[12px] text-mute/60">
+              Pause at the end of a line and the Muse suggests the next sentence in grey —
+              Tab takes it. Each suggestion is a model call; off by default.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={!!ghost}
+            onChange={(e) => onGhost && onGhost(e.target.checked)}
+            className="h-4 w-4 shrink-0 accent-accent"
+          />
+        </label>
+
+        {onOpenSecurity && (
+          <div className="flex items-center justify-between gap-4 border-t hairline pt-3">
+            <span className="text-[13px] text-mute">
+              Muse & security
+              <span className="mt-0.5 block text-[12px] text-mute/60">
+                Which AI the Muse uses (provider, address, API key, models) and the password.
+              </span>
+            </span>
+            <Button size="sm" onClick={onOpenSecurity}>Open…</Button>
+          </div>
+        )}
+
         {/* Trash — the revive half of delete */}
         <div className="border-t hairline pt-3">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-mute">Trash</span>
+            <span className="text-[13px] text-mute">Trash</span>
             <span className="flex items-center gap-2">
               {trash && trash.length > 0 && (
-                <span className="text-[10px] text-mute/60">
+                <span className="text-[12px] text-mute/60">
                   {trash.length} item{trash.length === 1 ? '' : 's'}
                 </span>
               )}
@@ -164,19 +211,19 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
               )}
             </span>
           </div>
-          <p className="mt-0.5 text-[10px] text-mute/60">
+          <p className="mt-0.5 text-[12px] text-mute/60">
             Deleted chapters, books, bible files and whole series wait here. Restoring
             puts every file back where it was. Erasing is the only thing in Katha that
             destroys anything — and it asks first.
           </p>
 
           {confirmPurge && (
-            <div className="mt-2 rounded-md border border-err/40 bg-err/5 px-2 py-2">
-              <p className="text-[10.5px] text-ink">
+            <div className="mt-2 rounded-lg border border-err/40 bg-err/5 px-2 py-2">
+              <p className="text-[12.5px] text-ink">
                 {confirmPurge === '*'
                   ? 'Erase everything in the trash for good?'
                   : 'Erase this entry for good?'}
-                <span className="mt-0.5 block text-[10px] text-mute/70">
+                <span className="mt-0.5 block text-[12px] text-mute/70">
                   It will no longer be possible to restore.
                 </span>
               </p>
@@ -197,19 +244,19 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
           )}
 
           <div className="mt-2 max-h-56 space-y-1 overflow-y-auto">
-            {trash === null && <p className="text-[11px] text-mute/60">Reading the trash…</p>}
-            {trash?.length === 0 && <p className="text-[11px] text-mute/60">Nothing in the trash.</p>}
+            {trash === null && <p className="text-[13px] text-mute/60">Reading the trash…</p>}
+            {trash?.length === 0 && <p className="text-[13px] text-mute/60">Nothing in the trash.</p>}
             {(trash || []).map((e) => (
               <div
                 key={e.entry}
-                className="flex items-center gap-2 rounded-md border hairline bg-panel-2 px-2 py-1.5"
+                className="flex items-center gap-2 rounded-lg border hairline bg-panel-2 px-2 py-1.5"
               >
-                <span className="shrink-0 rounded border hairline px-1 text-[9.5px] uppercase tracking-wide text-mute/70">
+                <span className="shrink-0 rounded border hairline px-1 text-[11.5px] text-mute/70">
                   {e.kind}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11.5px] text-ink">{e.label}</span>
-                  <span className="block truncate text-[10px] text-mute/60">
+                  <span className="block truncate text-[13.5px] text-ink">{e.label}</span>
+                  <span className="block truncate text-[12px] text-mute/60">
                     {e.series}/{e.book_id}
                     {e.chapter_id ? `/${e.chapter_id}` : ''} · {when(e.deleted_at)} ·{' '}
                     {e.files} file{e.files === 1 ? '' : 's'}, {size(e.bytes)}
@@ -229,7 +276,7 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
                   disabled={!!busy}
                   title="Erase for good — not recoverable"
                   aria-label={`Erase ${e.label}`}
-                  className="shrink-0 rounded px-1 py-0.5 text-[11px] leading-none text-mute/40 transition-colors hover:text-err disabled:opacity-40"
+                  className="shrink-0 rounded px-1 py-0.5 text-[13px] leading-none text-mute/40 transition-colors hover:text-err disabled:opacity-40"
                 >
                   ×
                 </button>
@@ -237,16 +284,16 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
             ))}
           </div>
 
-          {error && <p className="mt-2 text-[11px] text-err">{error}</p>}
+          {error && <p className="mt-2 text-[13px] text-err">{error}</p>}
         </div>
 
         {/* The door, from the inside. Same call as the title bar's `lock`. */}
         <div className="border-t hairline pt-3">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-mute">Session</span>
-            <span className="text-[10px] text-mute/50">v{__APP_VERSION__}</span>
+            <span className="text-[13px] text-mute">Session</span>
+            <span className="text-[12px] text-mute/50">v{__APP_VERSION__}</span>
           </div>
-          <p className="mt-0.5 text-[10px] text-mute/60">
+          <p className="mt-0.5 text-[12px] text-mute/60">
             Katha sits behind one password. Locking signs this browser out — the
             archive asks for it again, and nothing is lost.
           </p>
@@ -254,7 +301,7 @@ export default function SettingsPanel({ goal, onGoal, nudge, onNudge, onClose, o
             <Button size="sm" onClick={signOut} title="Sign out and lock the archive">
               Lock now
             </Button>
-            <span className="text-[10px] text-mute/50">the same as lock in the title bar</span>
+            <span className="text-[12px] text-mute/50">the same as Lock in the ••• menu</span>
           </div>
         </div>
       </div>

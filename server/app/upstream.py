@@ -33,8 +33,13 @@ Nothing here holds a client of its own: `muse.py` passes its module-level
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import secrets
+from contextvars import ContextVar
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 import httpx
 
@@ -45,7 +50,22 @@ from .config import (
     MUSE_UPSTREAM_CONNECT_TIMEOUT,
     MUSE_UPSTREAM_TIMEOUT,
     OLLAMA_BASE,
+    VERSION,
 )
+
+# Which conversation a request belongs to (4.1.3). OpenCode Go refuses a request
+# without a stable `x-opencode-session` per conversation ("cannot be routed
+# efficiently") and uses it for routing and prompt caching. The Muse sets it per
+# chapter (`set_session`); anything else shares one id per server process.
+_PROCESS_SESSION = "katha-" + secrets.token_hex(8)
+SESSION: ContextVar[str] = ContextVar("katha_session", default=_PROCESS_SESSION)
+
+
+def set_session(scope: str | None) -> None:
+    """One stable, opaque id per conversation scope (a chapter): the same chapter
+    always maps to the same id, and nothing about the book leaves in it."""
+    if scope:
+        SESSION.set("katha-" + hashlib.sha256(scope.encode()).hexdigest()[:32])
 
 OLLAMA = "ollama"
 OPENAI = "openai"
@@ -104,11 +124,45 @@ def chat_url() -> str:
 def headers() -> dict[str, str]:
     """Auth headers. The key is a header, never a body field: it must never
     reach a log line, an error message, or an API response."""
-    if is_messages() and MUSE_API_KEY:
-        return {"x-api-key": MUSE_API_KEY, "anthropic-version": ANTHROPIC_VERSION}
-    if is_openai() and MUSE_API_KEY:
-        return {"Authorization": f"Bearer {MUSE_API_KEY}"}
-    return {}
+    return headers_for(MUSE_API, base_url(), MUSE_API_KEY)
+
+
+def headers_for(api: str, base: str, key: str) -> dict[str, str]:
+    """The headers one dialect wants at one address (4.1: also used to list models
+    for a connection that is not saved yet)."""
+    # Say who is calling: providers that watch their traffic (OpenCode Go) ask for it.
+    out: dict[str, str] = {"User-Agent": f"Katha/{VERSION}"}
+    if api in MESSAGES_SHAPES:
+        # the version pin goes even without a key: native Anthropic rejects a request
+        # that lacks it, and a gateway ignores it
+        out["anthropic-version"] = ANTHROPIC_VERSION
+        if key:
+            out["x-api-key"] = key
+    elif api == OPENAI and key:
+        out["Authorization"] = f"Bearer {key}"
+    if _host(base) == "opencode.ai":
+        out["x-opencode-session"] = SESSION.get()
+    if _host(base).endswith("openrouter.ai"):
+        # OpenRouter's optional app attribution — no personal data, just the app name
+        out["X-Title"] = "Katha"
+    return out
+
+
+def _host(base: str) -> str:
+    try:
+        return (urlparse(base).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+# OpenAI's own reasoning models (o1, o3, o4-mini, gpt-5…) take only the default
+# temperature, and every OpenAI model now names the ceiling `max_completion_tokens`
+# (`max_tokens` is refused by the reasoning ones). Gateways keep the classic names.
+_OPENAI_REASONING = re.compile(r"^(o\d|gpt-5)", re.I)
+
+
+def _is_openai_native() -> bool:
+    return _host(base_url()) == "api.openai.com"
 
 
 def timeout() -> httpx.Timeout:
@@ -188,10 +242,11 @@ def to_openai_payload(payload: dict) -> dict:
         "messages": to_openai_messages(payload.get("messages") or []),
         "stream": bool(payload.get("stream")),
     }
+    native = _is_openai_native()
     if "num_predict" in opts:
         # Internal `num_predict` is Ollama's name for the completion ceiling.
-        body["max_tokens"] = opts["num_predict"]
-    if "temperature" in opts:
+        body["max_completion_tokens" if native else "max_tokens"] = opts["num_predict"]
+    if "temperature" in opts and not (native and _OPENAI_REASONING.match(str(body["model"] or ""))):
         body["temperature"] = opts["temperature"]
     if payload.get("tools"):
         # Already OpenAI shape internally ({"type": "function", "function": …}).
@@ -336,6 +391,10 @@ async def _stream_ollama(payload: dict, client: httpx.AsyncClient) -> AsyncItera
                 event["content"] = msg["content"]
             if msg.get("tool_calls"):
                 event["tool_calls"] = msg["tool_calls"]
+            # The final chunk carries the counts (3.1, D59).
+            if obj.get("done") and ("prompt_eval_count" in obj or "eval_count" in obj):
+                event["usage"] = {"input": obj.get("prompt_eval_count") or 0,
+                                  "output": obj.get("eval_count") or 0}
             if event:
                 yield event
 
@@ -369,6 +428,12 @@ async def _stream_openai(payload: dict, client: httpx.AsyncClient) -> AsyncItera
             except json.JSONDecodeError:
                 continue
 
+            # Usage rides on the last chunk when the gateway sends it (some always
+            # do; we don't ask, so a strict gateway never sees an unknown field).
+            if obj.get("usage"):
+                use = obj["usage"]
+                yield {"usage": {"input": use.get("prompt_tokens") or 0,
+                                 "output": use.get("completion_tokens") or 0}}
             choices = obj.get("choices") or []
             if not choices:
                 continue
@@ -424,6 +489,7 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
     calls: dict[int, dict] = {}
     text_seen = False
     stop_reason = ""
+    usage = {"input": 0, "output": 0}
 
     async with client.stream(
         "POST", chat_url(), json=body, headers=headers(), timeout=timeout(),
@@ -446,9 +512,16 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
                 err = obj.get("error") or {}
                 raise RuntimeError(err.get("message") or "upstream error")
 
+            if kind == "message_start":
+                use = (obj.get("message") or {}).get("usage") or {}
+                usage["input"] = use.get("input_tokens") or usage["input"]
+                usage["output"] = use.get("output_tokens") or usage["output"]
+
             if kind == "message_delta":
                 stop_reason = ((obj.get("delta") or {}).get("stop_reason")
                                or obj.get("stop_reason") or stop_reason)
+                use = obj.get("usage") or {}
+                usage["output"] = use.get("output_tokens") or usage["output"]
 
             if kind == "content_block_start":
                 block = obj.get("content_block") or {}
@@ -493,18 +566,24 @@ async def _stream_anthropic(payload: dict, client: httpx.AsyncClient) -> AsyncIt
         # reasoning-heavy prompt with a small ceiling can finish having written nothing at
         # all. The sweep did exactly that (0 chars, stop_reason=max_tokens) and the panel
         # showed an empty report with no explanation (3.0.9).
+        # `notice` marks it as a message to the author, never content — so nothing
+        # downstream can stage it as a file's new text (3.1).
         if stop_reason == "max_tokens":
-            yield {"content": (
+            yield {"notice": True, "content": (
                 "\n\n_[The model spent its entire output budget on reasoning and never "
                 "reached the answer. Nothing is wrong with your book — ask again, or ask "
                 "for something smaller (one chapter at a time).]_"
             )}
         else:
-            yield {"content": "\n\n_[The model returned an empty reply. Try again.]_"}
+            yield {"notice": True,
+                   "content": "\n\n_[The model returned an empty reply. Try again.]_"}
+    if usage["input"] or usage["output"]:
+        yield {"usage": usage}
 
 
 async def stream_events(payload: dict, client: httpx.AsyncClient) -> AsyncIterator[dict]:
-    """Stream normalized `{"content"|"tool_calls"}` events from the active upstream."""
+    """Stream normalized `{"content"|"tool_calls"|"usage"|"notice"}` events from the
+    active upstream."""
     if is_messages():
         gen = _stream_anthropic(payload, client)
     elif is_openai():
@@ -545,3 +624,56 @@ async def complete(payload: dict, client: httpx.AsyncClient) -> dict:
     r.raise_for_status()
     obj = r.json()
     return {"message": {"content": (obj.get("message") or {}).get("content") or ""}}
+
+
+# --- listing a provider's models (4.1) -------------------------------------
+
+def _format_of(row: dict) -> str | None:
+    """A gateway that publishes `supported_endpoints` per model (D42) says which wire
+    format the model needs: 'messages' when it is served only on /messages, 'openai'
+    when /chat/completions is offered. None when the gateway doesn't say."""
+    eps = row.get("supported_endpoints") if isinstance(row, dict) else None
+    if not isinstance(eps, list) or not eps:
+        return None
+    eps = [str(e) for e in eps]
+    if any(e.endswith("/chat/completions") for e in eps):
+        return OPENAI
+    if any(e.endswith("/messages") for e in eps):
+        return MESSAGES
+    return None
+
+
+async def list_models(api: str, base: str, key: str, client: httpx.AsyncClient) -> list[str]:
+    """The model ids a connection offers, so the author picks one instead of typing it."""
+    return (await models_and_formats(api, base, key, client))[0]
+
+
+async def models_and_formats(api: str, base: str, key: str,
+                             client: httpx.AsyncClient) -> tuple[list[str], dict[str, str]]:
+    """One request for both: the model ids, and {id: wire format} for the models whose
+    gateway says which endpoint they need (Command Code, OpenCode — D42).
+
+    Ollama: `GET {base}/api/tags`. Everything else — OpenAI, OpenRouter, OpenCode,
+    Anthropic, most gateways — answers `GET {base}/models` with `{"data": [{"id": …}]}`."""
+    base = (base or "").rstrip("/")
+    formats: dict[str, str] = {}
+    # A list is a quick question: an unreachable box must fail in seconds, not hold
+    # the form for the five minutes a long generation is allowed.
+    quick = httpx.Timeout(20.0, connect=6.0)
+    if api == OLLAMA:
+        r = await client.get(f"{base}/api/tags", timeout=quick)
+        r.raise_for_status()
+        names = [m.get("name") or m.get("model") for m in (r.json().get("models") or [])]
+    else:
+        r = await client.get(f"{base}/models", headers=headers_for(api, base, key), timeout=quick)
+        r.raise_for_status()
+        data = r.json()
+        rows = data.get("data") if isinstance(data, dict) else data
+        names = []
+        for m in rows or []:
+            mid = m.get("id") if isinstance(m, dict) else m
+            names.append(mid)
+            f = _format_of(m) if isinstance(m, dict) else None
+            if f and isinstance(mid, str):
+                formats[mid] = f
+    return sorted({n for n in names if isinstance(n, str) and n}), formats

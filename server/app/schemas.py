@@ -116,7 +116,13 @@ class MuseMessage(BaseModel):
 class MuseChatRequest(BaseModel):
     messages: list[MuseMessage]
     chapter_id: str | None = None
-    chip: str | None = None  # 'rewrite' | 'continue' | 'scene' | 'canon'
+    chip: str | None = None  # 'rewrite'|'continue'|'scene'|'canon'|'inline'|'fix'
+
+
+class MuseCompleteRequest(BaseModel):
+    """Ghost text (3.1): the prose before the cursor → a one-sentence continuation."""
+    before: str
+    chapter_id: str | None = None
 
 
 class MuseRewriteRequest(BaseModel):
@@ -171,3 +177,33 @@ class NotesUpdate(BaseModel):
 
 class LoginIn(BaseModel):
     password: str
+
+
+# --- settings changed in the app (3.2, D62) --------------------------------
+
+class MuseSettingsIn(BaseModel):
+    api: str
+    base: str = ""
+    # None = keep the stored key; "" = clear it; anything else = the new key.
+    key: str | None = None
+    agent_model: str = ""
+    rewrite_model: str = ""
+    current_password: str = ""        # required whenever the lock is on
+
+
+class MuseModelsIn(BaseModel):
+    """List the models of a connection as typed in the form, before it is saved."""
+    api: str
+    base: str = ""
+    key: str | None = None            # None = the stored key, if the address is the same
+    current_password: str = ""
+
+
+class PasswordChangeIn(BaseModel):
+    current: str = ""
+    new: str = ""
+    disable: bool = False              # turn the lock off (still needs `current`)
+
+
+class CurrentPasswordIn(BaseModel):
+    current_password: str = ""

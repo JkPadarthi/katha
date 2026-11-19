@@ -50,29 +50,46 @@ export default function CommandPalette({ onClose, onJump, onOpenHit, archive, se
     return b?.chapters || []
   }, [archive, series])
   const showChapters = !q.trim()
+  // Typing filters the commands too (3.1): "sweep" finds Canon sweep, "hist" finds
+  // Revision history — the palette is how an IDE reaches what has no button.
+  const matched = useMemo(() => {
+    const term = q.trim().toLowerCase()
+    if (!term) return commands
+    return commands.filter((c) => c.label.toLowerCase().includes(term))
+  }, [q, commands])
+  const runFirst = () => {
+    if (matched.length) { matched[0].run(); onClose(); return }
+    const h = Array.isArray(hits) && hits[0]
+    if (h) {
+      if (onOpenHit) onOpenHit(h)
+      else if (h.kind === 'chapter') onJump(h.doc_id)
+      onClose()
+    }
+  }
 
   return (
     <Overlay onClose={onClose} width={560} padTop="18vh" z={50}>
       <div className="flex items-center gap-2 border-b hairline px-3">
-        <span className="text-[11px] text-mute">{MOD_LABEL}</span>
+        <span className="text-[13px] text-mute">{MOD_LABEL}</span>
         <input
           ref={inputRef}
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); runFirst() } }}
           placeholder="Search chapters and canon…"
-          className="w-full bg-transparent py-2.5 text-[13px] text-ink placeholder:text-mute/50 focus:outline-none"
+          className="w-full bg-transparent py-2.5 text-[15px] text-ink placeholder:text-mute/50 focus:outline-none"
         />
       </div>
 
       <ul className="max-h-[340px] overflow-y-auto p-1.5">
-        {showChapters && commands.map((cmd) => (
+        {matched.map((cmd) => (
           <li key={cmd.id}>
             <button
               onClick={() => { cmd.run(); onClose() }}
-              className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12.5px] hover:bg-panel-2"
+              className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[14px] hover:bg-panel-2"
             >
               <span className="text-ink">{cmd.label}</span>
-              {cmd.hint && <span className="text-[10px] uppercase tracking-wide text-mute/60">{cmd.hint}</span>}
+              {cmd.hint && <span className="text-[12px] text-mute/60">{cmd.hint}</span>}
             </button>
           </li>
         ))}
@@ -81,16 +98,16 @@ export default function CommandPalette({ onClose, onJump, onOpenHit, archive, se
           <li key={c.id}>
             <button
               onClick={() => { onJump(c.id); onClose() }}
-              className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12.5px] hover:bg-panel-2"
+              className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[14px] hover:bg-panel-2"
             >
               <span className="text-ink">{c.title}</span>
-              <span className="text-[10px] uppercase tracking-wide text-mute/60">chapter</span>
+              <span className="text-[12px] text-mute/60">chapter</span>
             </button>
           </li>
         ))}
 
         {!showChapters && hits === null && (
-          <li className="px-2.5 py-3 text-center text-[12px] text-mute">Searching…</li>
+          <li className="px-2.5 py-3 text-center text-[14px] text-mute">Searching…</li>
         )}
 
         {!showChapters && Array.isArray(hits) && hits.map((h) => (
@@ -101,16 +118,16 @@ export default function CommandPalette({ onClose, onJump, onOpenHit, archive, se
                 else if (h.kind === 'chapter') onJump(h.doc_id)
                 onClose()
               }}
-              className="flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left hover:bg-panel-2"
+              className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left hover:bg-panel-2"
             >
               <span className="flex w-full items-center justify-between gap-2">
-                <span className="truncate text-[12.5px] text-ink">{h.title}</span>
-                <span className="shrink-0 text-[10px] uppercase tracking-wide text-mute/60">
+                <span className="truncate text-[14px] text-ink">{h.title}</span>
+                <span className="shrink-0 text-[12px] text-mute/60">
                   {h.kind === 'chapter' ? 'chapter' : 'bible'}
                 </span>
               </span>
               {h.snippet && (
-                <span className="line-clamp-2 text-[11px] leading-snug text-mute">
+                <span className="line-clamp-2 text-[13px] leading-snug text-mute">
                   <Snippet html={h.snippet} />
                 </span>
               )}
@@ -118,8 +135,8 @@ export default function CommandPalette({ onClose, onJump, onOpenHit, archive, se
           </li>
         ))}
 
-        {!showChapters && Array.isArray(hits) && hits.length === 0 && (
-          <li className="px-2.5 py-3 text-center text-[12px] text-mute">No roads lead there.</li>
+        {!showChapters && Array.isArray(hits) && hits.length === 0 && !matched.length && (
+          <li className="px-2.5 py-3 text-center text-[14px] text-mute">No roads lead there.</li>
         )}
       </ul>
     </Overlay>
